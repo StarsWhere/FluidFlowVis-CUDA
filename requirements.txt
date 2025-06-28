@@ -1,0 +1,20 @@
+# 核心依赖 (必须安装)
+PyQt6>=6.4.0
+numpy>=1.21.0
+pandas>=1.3.0
+scipy>=1.7.0
+matplotlib>=3.5.0
+
+# 视频导出功能依赖 (推荐安装)
+moviepy>=1.0.3
+imageio>=2.9.0
+imageio-ffmpeg>=0.4.5  # moviepy 和 imageio 都可能需要 ffmpeg
+
+# 注意: PyQt6-tools (如 Qt Designer) 不是运行时的依赖，
+# 但在开发过程中可能有用，因此不包含在此文件中。
+
+# GPU加速功能 (可选，仅在有兼容的NVIDIA显卡和CUDA环境时安装)
+# 请不要直接将下面这行取消注释，因为它需要根据您的CUDA版本手动选择。
+# 访问 https://cupy.dev/ 获取适合您环境的安装命令。
+# cupy-cuda11x  # 示例：适用于CUDA 11.x
+cupy-cuda12x  # 示例：适用于CUDA 12.x
