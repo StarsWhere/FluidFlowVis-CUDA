@@ -20,7 +20,7 @@ def setup_logger(log_level=logging.INFO):
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
     
-    log_filename = os.path.join(log_dir, f"intervis_{datetime.now().strftime('%Y%m%d')}.log")
+    log_filename = os.path.join(log_dir, f"InterVis{datetime.now().strftime('%Y%m%d')}.log")
     file_handler = logging.FileHandler(log_filename, encoding='utf-8')
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)

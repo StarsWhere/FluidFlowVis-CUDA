@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-流场数据交互式分析平台
+InterVis
 主程序入口
 """
 
@@ -24,7 +24,7 @@ def main():
     try:
         # 创建QApplication实例
         app = QApplication(sys.argv)
-        app.setApplicationName("流场数据交互式分析平台")
+        app.setApplicationName("InterVis")
         app.setApplicationVersion("1.3-Final") # 更新版本号
         app.setOrganizationName("StarsWhere")
         
@@ -34,7 +34,7 @@ def main():
         main_window = MainWindow()
         main_window.show()
         
-        logger.info("流场数据交互式分析平台 启动成功")
+        logger.info("InterVis 启动成功")
         
         # 启动事件循环
         sys.exit(app.exec())

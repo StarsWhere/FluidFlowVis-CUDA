@@ -182,7 +182,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         
         # --- 初始化核心组件 ---
-        self.settings = QSettings("StarsWhere", "InteractiveFlowVis")
+        self.settings = QSettings("StarsWhere", "InterVis")
         self.data_manager = DataManager()
         self.formula_validator = FormulaValidator()
         
@@ -220,7 +220,7 @@ class MainWindow(QMainWindow):
     # region UI 初始化
     def _init_ui(self):
         """初始化整体UI布局"""
-        self.setWindowTitle("流场数据交互式分析平台 v1.3")
+        self.setWindowTitle("InterVis v1.3")
         self.setGeometry(100, 100, 1600, 950)
         
         central_widget = QWidget()
@@ -674,7 +674,7 @@ class MainWindow(QMainWindow):
 
     # region 菜单与文件操作
     def _show_formula_help(self): HelpDialog(self.formula_validator.get_formula_help_html(), self).exec()
-    def _show_about(self): QMessageBox.about(self, "关于", "<h2>流场数据交互式分析平台 v1.3</h2><p>作者: StarsWhere</p><p>一个使用PyQt6和Matplotlib构建的数据可视化工具。</p>")
+    def _show_about(self): QMessageBox.about(self, "关于", "<h2>InterVis v1.3</h2><p>作者: StarsWhere</p><p>一个使用PyQt6和Matplotlib构建的数据可视化工具。</p>")
     def _reload_data(self):
         if self.is_playing: self._toggle_play()
         self.data_manager.clear_all(); self._initialize_data()

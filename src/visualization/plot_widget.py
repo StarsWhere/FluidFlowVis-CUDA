@@ -89,7 +89,7 @@ class PlotWidget(QWidget):
 
     def _setup_plot_style(self):
         self.ax.set_aspect('auto', adjustable='box'); self.ax.grid(True, linestyle='--', alpha=0.5)
-        self.ax.set_xlabel(self.x_axis); self.ax.set_ylabel(self.y_axis); self.ax.set_title('Flow Field Visualization')
+        self.ax.set_xlabel(self.x_axis); self.ax.set_ylabel(self.y_axis); self.ax.set_title('InterVis')
         formatter = ticker.ScalarFormatter(useMathText=True); formatter.set_scientific(True); formatter.set_powerlimits((-3, 3))
         self.ax.xaxis.set_major_formatter(formatter); self.ax.yaxis.set_major_formatter(formatter)
     
