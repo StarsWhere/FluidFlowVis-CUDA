@@ -191,13 +191,35 @@ class GlobalStatsWorker(QThread):
             logger.error(f"全局统计计算失败: {e}", exc_info=True)
             self.error.emit(str(e))
 
+class CustomGlobalStatsWorker(QThread):
+    """在后台计算自定义全局常量"""
+    progress = pyqtSignal(int, int, str)
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, data_manager: DataManager, definitions: List[str], parent=None):
+        super().__init__(parent)
+        self.data_manager = data_manager
+        self.definitions = definitions
+    
+    def run(self):
+        try:
+            results = self.data_manager.calculate_custom_global_stats(
+                self.definitions,
+                lambda current, total, msg: self.progress.emit(current, total, msg)
+            )
+            self.finished.emit(results)
+        except Exception as e:
+            logger.error(f"自定义全局常量计算失败: {e}", exc_info=True)
+            self.error.emit(str(e))
+
 class StatsProgressDialog(QDialog):
     """显示全局统计计算进度的对话框"""
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, title="正在计算统计数据"):
         super().__init__(parent)
-        self.setWindowTitle("正在计算全局统计数据")
+        self.setWindowTitle(title)
         self.setModal(True)
-        self.setFixedSize(400, 120)
+        self.setFixedSize(450, 120)
         layout = QVBoxLayout(self)
         self.status_label = QLabel("正在初始化...")
         layout.addWidget(self.status_label)
@@ -206,10 +228,13 @@ class StatsProgressDialog(QDialog):
         self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
         self.setWindowFlag(Qt.WindowType.WindowSystemMenuHint, False)
 
-    def update_progress(self, current: int, total: int):
+    def update_progress(self, current: int, total: int, msg: str = ""):
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current)
-        self.status_label.setText(f"正在处理第 {current}/{total} 个数据文件...")
+        if msg:
+            self.status_label.setText(msg)
+        else:
+            self.status_label.setText(f"正在处理第 {current}/{total} 个数据文件...")
 
 class MainWindow(QMainWindow):
     """
@@ -382,23 +407,51 @@ class MainWindow(QMainWindow):
         
     def _create_statistics_tab(self) -> QWidget:
         tab = QWidget()
-        layout = QVBoxLayout(tab)
+        main_layout = QVBoxLayout(tab)
         
-        info_label = QLabel("在这里，您可以计算所有数据文件的全局统计特征。\n这些特征（如 `var_global_mean`）将作为常量在公式中使用。")
+        # --- Basic Stats ---
+        basic_group = QGroupBox("基础统计")
+        basic_layout = QVBoxLayout(basic_group)
+        
+        info_label = QLabel("计算所有数据文件中每个原始变量的全局统计特征(均值、标准差等)。\n这些特征将作为常量在公式中使用。")
         info_label.setWordWrap(True)
-        layout.addWidget(info_label)
+        basic_layout.addWidget(info_label)
 
-        action_group = QGroupBox("操作")
-        action_layout = QHBoxLayout(action_group)
-        self.calc_stats_btn = QPushButton("开始计算全局统计")
-        self.calc_stats_btn.setToolTip("遍历所有CSV文件计算统计数据，过程可能较慢。")
+        action_layout = QHBoxLayout()
+        self.calc_basic_stats_btn = QPushButton("开始计算基础统计")
+        self.calc_basic_stats_btn.setToolTip("遍历所有CSV文件计算统计数据，过程可能较慢。")
         self.export_stats_btn = QPushButton("导出统计结果")
         self.export_stats_btn.setToolTip("将当前显示的统计结果直接保存到输出目录。")
         self.export_stats_btn.setEnabled(False)
-        action_layout.addWidget(self.calc_stats_btn)
+        action_layout.addWidget(self.calc_basic_stats_btn)
         action_layout.addWidget(self.export_stats_btn)
-        layout.addWidget(action_group)
+        basic_layout.addLayout(action_layout)
+        main_layout.addWidget(basic_group)
+        
+        # --- Custom Constants ---
+        custom_group = QGroupBox("自定义常量计算")
+        custom_layout = QVBoxLayout(custom_group)
+        
+        custom_info = QLabel("在此定义新的全局常量，每行一个。您可以使用基础统计的结果。\n格式: <code>new_name = agg_func(expression)</code>")
+        custom_info.setWordWrap(True)
+        custom_layout.addWidget(custom_info)
+        
+        self.custom_stats_input = QTextEdit()
+        self.custom_stats_input.setFont(QFont("Courier New", 9))
+        self.custom_stats_input.setPlaceholderText("示例:\nreynolds_stress_uv = mean((u - u_global_mean) * (v - v_global_mean))\ntke_global = mean(0.5 * (u**2 + v**2))")
+        self.custom_stats_input.setFixedHeight(100)
+        custom_layout.addWidget(self.custom_stats_input)
 
+        self.calc_custom_stats_btn = QPushButton("计算自定义常量")
+        self.calc_custom_stats_btn.setToolTip("基于基础统计和公式计算新的常量。")
+        self.calc_custom_stats_btn.setEnabled(False)
+        custom_btn_layout = QHBoxLayout()
+        custom_btn_layout.addStretch()
+        custom_btn_layout.addWidget(self.calc_custom_stats_btn)
+        custom_layout.addLayout(custom_btn_layout)
+        main_layout.addWidget(custom_group)
+
+        # --- Results ---
         results_group = QGroupBox("计算结果")
         results_layout = QVBoxLayout(results_group)
         self.stats_results_text = QTextEdit()
@@ -406,12 +459,13 @@ class MainWindow(QMainWindow):
         self.stats_results_text.setFont(QFont("Courier New", 9))
         self.stats_results_text.setText("尚未计算。点击上方按钮开始。")
         results_layout.addWidget(self.stats_results_text)
-        layout.addWidget(results_group)
+        main_layout.addWidget(results_group)
         
-        self.calc_stats_btn.clicked.connect(self._start_global_stats_calculation)
+        self.calc_basic_stats_btn.clicked.connect(self._start_global_stats_calculation)
+        self.calc_custom_stats_btn.clicked.connect(self._start_custom_stats_calculation)
         self.export_stats_btn.clicked.connect(self._export_global_stats)
 
-        layout.addStretch()
+        main_layout.addStretch()
         return tab
 
     def _create_export_tab(self) -> QWidget:
@@ -561,13 +615,13 @@ class MainWindow(QMainWindow):
                 self.video_end_frame.setMaximum(frame_count - 1)
                 self.video_end_frame.setValue(frame_count - 1)
                 self._populate_config_combobox()
-                self.calc_stats_btn.setEnabled(True)
+                self.calc_basic_stats_btn.setEnabled(True)
             else:
                 QMessageBox.warning(self, "数据为空", "指定的数据目录中没有找到有效的CSV文件。")
-                self.calc_stats_btn.setEnabled(False)
+                self.calc_basic_stats_btn.setEnabled(False)
         else:
             QMessageBox.critical(self, "错误", f"无法初始化数据管理器: {message}")
-            self.calc_stats_btn.setEnabled(False)
+            self.calc_basic_stats_btn.setEnabled(False)
 
     def _on_error(self, message: str):
         self.status_bar.showMessage(f"错误: {message}", 5000)
@@ -782,12 +836,13 @@ class MainWindow(QMainWindow):
         self.formula_validator.update_custom_global_variables({})
         self.stats_results_text.setText("数据已重载，请重新计算。")
         self.export_stats_btn.setEnabled(False)
+        self.calc_custom_stats_btn.setEnabled(False)
 
     def _start_global_stats_calculation(self):
         if self.data_manager.get_frame_count() == 0:
             QMessageBox.warning(self, "无数据", "请先加载数据再计算统计量。"); return
             
-        self.stats_progress_dialog = StatsProgressDialog(self)
+        self.stats_progress_dialog = StatsProgressDialog(self, "正在计算基础统计")
         self.stats_worker = GlobalStatsWorker(self.data_manager)
         self.stats_worker.progress.connect(self.stats_progress_dialog.update_progress)
         self.stats_worker.finished.connect(self._on_global_stats_finished)
@@ -803,34 +858,84 @@ class MainWindow(QMainWindow):
         if not results:
             self.stats_results_text.setText("计算完成，但没有得到任何结果。\n请检查数据文件是否有效。")
             self.export_stats_btn.setEnabled(False)
+            self.calc_custom_stats_btn.setEnabled(False)
             QMessageBox.warning(self, "计算完成", "未计算出任何统计数据。")
             return
 
+        self._update_stats_display()
         self.export_stats_btn.setEnabled(True)
-        
-        header = f"全局统计计算结果 ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})"
-        lines = [header, "=" * len(header)]
-        for var in self.data_manager.get_variables():
-            lines.append(f"\n--- 变量: {var} ---")
-            for stat_key, value in results.items():
-                if stat_key.startswith(var + "_"):
-                    stat_name = stat_key.replace(var + "_global_", "").capitalize()
-                    lines.append(f"{stat_name:<10s}: {value:15.6e}")
-
-        self.stats_results_text.setText("\n".join(lines))
+        self.calc_custom_stats_btn.setEnabled(True)
         
         self.formula_validator.update_custom_global_variables(self.global_stats)
         self._trigger_auto_apply()
 
-        QMessageBox.information(self, "计算完成", "全局统计数据已计算并可用于公式中。")
-        self.tab_widget.setCurrentIndex(self.tab_widget.indexOf(self.tab_widget.findChild(QWidget, "全局统计")))
-
+        QMessageBox.information(self, "计算完成", "基础统计数据已计算并可用于公式中。")
 
     def _on_global_stats_error(self, error_msg: str):
         self.stats_progress_dialog.accept()
-        QMessageBox.critical(self, "计算失败", f"计算全局统计时发生错误: \n{error_msg}")
+        QMessageBox.critical(self, "计算失败", f"计算基础统计时发生错误: \n{error_msg}")
         self.stats_results_text.setText(f"计算失败: {error_msg}")
         self.export_stats_btn.setEnabled(False)
+        self.calc_custom_stats_btn.setEnabled(False)
+
+    def _start_custom_stats_calculation(self):
+        definitions_text = self.custom_stats_input.toPlainText().strip()
+        if not definitions_text:
+            QMessageBox.information(self, "无定义", "请输入至少一个自定义常量定义。"); return
+        
+        definitions = [line.strip() for line in definitions_text.split('\n') if line.strip()]
+        
+        self.stats_progress_dialog = StatsProgressDialog(self, "正在计算自定义常量")
+        self.custom_stats_worker = CustomGlobalStatsWorker(self.data_manager, definitions)
+        self.custom_stats_worker.progress.connect(self.stats_progress_dialog.update_progress)
+        self.custom_stats_worker.finished.connect(self._on_custom_stats_finished)
+        self.custom_stats_worker.error.connect(self._on_custom_stats_error)
+        
+        self.custom_stats_worker.start()
+        self.stats_progress_dialog.exec()
+
+    def _on_custom_stats_finished(self, new_stats: Dict[str, float]):
+        self.stats_progress_dialog.accept()
+        if not new_stats:
+            QMessageBox.warning(self, "计算完成", "未计算出任何新的自定义常量。")
+            return
+        
+        self._update_stats_display()
+        self.formula_validator.update_custom_global_variables(self.data_manager.global_stats)
+        self._trigger_auto_apply()
+        QMessageBox.information(self, "计算完成", f"成功计算了 {len(new_stats)} 个自定义常量。")
+
+    def _on_custom_stats_error(self, error_msg: str):
+        self.stats_progress_dialog.accept()
+        QMessageBox.critical(self, "计算失败", f"计算自定义常量时发生错误: \n{error_msg}")
+
+    def _update_stats_display(self):
+        """Helper to refresh the stats text edit from data_manager.global_stats"""
+        all_stats = self.data_manager.global_stats
+        if not all_stats:
+            self.stats_results_text.setText("无统计结果。")
+            return
+        
+        basic_stats_keys = {key for var in self.data_manager.get_variables() for key in all_stats if key.startswith(var + "_global_")}
+        custom_stats_keys = set(all_stats.keys()) - basic_stats_keys
+        
+        lines = [f"全局统计计算结果 ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})", "="*50]
+        
+        if basic_stats_keys:
+            lines.append("\n--- 基础统计 ---")
+            for var in self.data_manager.get_variables():
+                lines.append(f"\n[ 变量: {var} ]")
+                var_keys = sorted([key for key in basic_stats_keys if key.startswith(var + "_global_")])
+                for key in var_keys:
+                    stat_name = key.replace(var + "_global_", "")
+                    lines.append(f"  {stat_name:<10s}: {all_stats[key]:15.6e}")
+        
+        if custom_stats_keys:
+            lines.append("\n--- 自定义常量 ---")
+            for key in sorted(list(custom_stats_keys)):
+                lines.append(f"{key:<25s}: {all_stats[key]:15.6e}")
+                
+        self.stats_results_text.setText("\n".join(lines))
 
     def _export_global_stats(self):
         if not self.global_stats:
@@ -845,7 +950,6 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "导出成功", f"统计结果已直接保存到输出目录:\n{filepath}")
         except Exception as e:
             QMessageBox.critical(self, "导出失败", f"无法保存文件: {e}")
-
     # endregion
 
     # region 设置管理逻辑

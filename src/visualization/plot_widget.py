@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 import re
+import ast
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.ticker as ticker
@@ -49,37 +50,58 @@ class InterpolationWorker(QRunnable):
 
         def _preprocess_formula(formula):
             """
-            预处理公式，计算单帧聚合函数并替换为占位符。
-            返回处理后的公式和包含聚合结果的字典。
+            Pre-processes a formula string. It finds all single-frame aggregate
+            function calls (e.g., mean(u*v)), evaluates them against the current
+            frame's data, and replaces the call in the formula with a placeholder
+            for the calculated scalar value.
             """
             local_aggregates = {}
             processed_formula = formula
             
-            # 正则表达式查找 func(var) 模式
-            pattern = re.compile(r'(\w+)\s*\(\s*(\w+)\s*\)')
+            try:
+                tree = ast.parse(formula, mode='eval').body
+            except SyntaxError:
+                return formula, {}
+
+            replacements = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in self.validator.allowed_aggregates:
+                    func_name = node.func.id
+                    if len(node.args) == 1:
+                        try:
+                            # Python 3.8+ required
+                            inner_expr_str = ast.get_source_segment(formula, node.args[0])
+                            call_expr_str = ast.get_source_segment(formula, node)
+                        except TypeError:
+                             logger.error("Could not get source segment. Python 3.8+ is required.")
+                             continue
+                        
+                        placeholder = f"__agg_{len(replacements)}__"
+                        
+                        try:
+                            # Use pandas.eval for safe, fast evaluation of the inner expression
+                            inner_values = self.data.eval(inner_expr_str, global_dict={}, local_dict=eval_globals)
+                            
+                            if func_name == 'mean': val = inner_values.mean()
+                            elif func_name == 'sum': val = inner_values.sum()
+                            elif func_name == 'median': val = inner_values.median()
+                            elif func_name == 'std': val = inner_values.std()
+                            elif func_name == 'var': val = inner_values.var()
+                            elif func_name == 'min_frame': val = inner_values.min()
+                            elif func_name == 'max_frame': val = inner_values.max()
+                            else: continue
+
+                            local_aggregates[placeholder] = val
+                            replacements.append((call_expr_str, placeholder))
+                        except Exception as e:
+                            logger.warning(f"Could not evaluate aggregate expression '{call_expr_str}': {e}")
+                            # Do not replace, let the main eval fail to show a proper error to the user
+                            pass
             
-            # 从后往前替换，避免索引问题
-            for match in reversed(list(pattern.finditer(formula))):
-                func_name, var_name = match.groups()
-                
-                if func_name in self.validator.allowed_aggregates and var_name in self.data.columns:
-                    placeholder = f"__agg_{func_name}_{var_name}__"
-                    
-                    if placeholder not in local_aggregates:
-                        series = self.data[var_name]
-                        if func_name == 'mean': val = series.mean()
-                        elif func_name == 'sum': val = series.sum()
-                        elif func_name == 'median': val = series.median()
-                        elif func_name == 'std': val = series.std()
-                        elif func_name == 'var': val = series.var()
-                        elif func_name == 'min_frame': val = series.min()
-                        elif func_name == 'max_frame': val = series.max()
-                        else: continue # 不支持的聚合函数
-                        local_aggregates[placeholder] = val
-                    
-                    # 替换公式中的部分
-                    start, end = match.span()
-                    processed_formula = processed_formula[:start] + placeholder + processed_formula[end:]
+            # Replace from longest to shortest to avoid replacing substrings
+            replacements.sort(key=lambda x: len(x[0]), reverse=True)
+            for old, new in replacements:
+                processed_formula = processed_formula.replace(old, new)
 
             return processed_formula, local_aggregates
 
@@ -92,6 +114,8 @@ class InterpolationWorker(QRunnable):
             
         def _eval_gpu(formula, req_vars, local_aggregates):
             var_data = {var: self.data[var].values for var in req_vars}
+            # Note: GPU eval doesn't support pre-processed aggregate functions yet
+            # For simplicity, we assume formulas passed to GPU are point-wise
             combined_vars = {**eval_globals, **local_aggregates, **var_data}
             gpu_res = evaluate_formula_gpu(formula, combined_vars)
             return griddata(points, gpu_res, (gx, gy), method='linear', fill_value=np.nan)
@@ -102,8 +126,12 @@ class InterpolationWorker(QRunnable):
             if formula:
                 processed_formula, local_aggregates = _preprocess_formula(formula)
                 req_vars = self.validator.get_used_variables(processed_formula)
-                if self.use_gpu:
-                    return _eval_gpu(processed_formula, req_vars, local_aggregates)
+                
+                # GPU path currently does not support the pre-processed aggregates easily.
+                # Fallback to CPU if aggregates are used.
+                if self.use_gpu and not local_aggregates:
+                    # We pass the original formula to GPU as it handles its own parsing
+                    return _eval_gpu(formula, self.validator.get_used_variables(formula), {})
                 else:
                     return _eval_cpu(processed_formula, req_vars, local_aggregates)
             elif var: return _interp(var)

@@ -7,7 +7,7 @@ class HelpDialog(QDialog):
     def __init__(self, help_text, parent=None):
         super().__init__(parent)
         self.setWindowTitle("公式使用指南")
-        self.setMinimumSize(550, 450)
+        self.setMinimumSize(600, 500)
         layout = QVBoxLayout(self)
         text_edit = QTextEdit()
         text_edit.setReadOnly(True)

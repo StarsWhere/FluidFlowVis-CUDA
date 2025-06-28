@@ -54,14 +54,12 @@ class FormulaValidator:
         if isinstance(node, ast.BinOp): return type(node.op) in self.allowed_op_types and self._validate_node(node.left) and self._validate_node(node.right)
         if isinstance(node, ast.UnaryOp): return type(node.op) in self.allowed_op_types and self._validate_node(node.operand)
         if isinstance(node, ast.Call):
-            # 标准数学函数
-            if isinstance(node.func, ast.Name) and node.func.id in self.allowed_functions:
+            func_name = getattr(node.func, 'id', None)
+            if func_name in self.allowed_functions:
                 return all(self._validate_node(arg) for arg in node.args)
-            # 新增：聚合函数
-            if isinstance(node.func, ast.Name) and node.func.id in self.allowed_aggregates:
-                # 聚合函数只接受一个参数，且该参数必须是合法的逐点变量
-                if len(node.args) == 1 and isinstance(node.args[0], ast.Name):
-                    return node.args[0].id in self.allowed_variables
+            if func_name in self.allowed_aggregates:
+                # 聚合函数只接受一个参数，该参数必须是合法的表达式
+                return len(node.args) == 1 and self._validate_node(node.args[0])
         return False
             
     def get_used_variables(self, formula: str) -> Set[str]:
@@ -71,8 +69,6 @@ class FormulaValidator:
         for node in ast.walk(tree):
             # 提取作为逐点数组使用的变量
             if isinstance(node, ast.Name) and node.id in self.allowed_variables:
-                # 确保它不是聚合函数的参数，因为那些是预先计算的
-                # (这个逻辑在插值器中处理，这里简单提取所有用到的变量即可)
                 variables.add(node.id)
         return variables
 
@@ -101,15 +97,15 @@ class FormulaValidator:
             <h3>数据变量 (逐点变化)</h3><p>以下变量来自您加载的数据文件:</p><ul>{var_list_html or "<li>(无可用数据)</li>"}</ul>
             
             <h3>单帧聚合函数 (对当前帧计算)</h3>
-            <p>这些函数对当前帧的所有数据点进行计算，返回一个标量值:</p>
+            <p>这些函数对当前帧的所有数据点进行计算，返回一个标量值。聚合函数内部也支持公式:</p>
             <ul>
-                <li><code>mean(var)</code>: 平均值, 如 <code>mean(p)</code></li>
-                <li><code>sum(var)</code>: 总和</li>
-                <li><code>median(var)</code>: 中位数</li>
-                <li><code>std(var)</code>: 标准差</li>
-                <li><code>var(var)</code>: 方差</li>
-                <li><code>min_frame(var)</code>: 帧内最小值</li>
-                <li><code>max_frame(var)</code>: 帧内最大值</li>
+                <li><code>mean(expr)</code>: 平均值, 如 <code>mean(p)</code> 或 <code>mean(u*u + v*v)</code></li>
+                <li><code>sum(expr)</code>: 总和</li>
+                <li><code>median(expr)</code>: 中位数</li>
+                <li><code>std(expr)</code>: 标准差</li>
+                <li><code>var(expr)</code>: 方差</li>
+                <li><code>min_frame(expr)</code>: 帧内最小值</li>
+                <li><code>max_frame(expr)</code>: 帧内最大值</li>
             </ul>
             <p><b>注意:</b> 为避免与 `min/max` 数学函数冲突, 帧内聚合请使用 `min_frame/max_frame`。</p>
 
@@ -124,7 +120,9 @@ class FormulaValidator:
             </ul>
             <h3>示例</h3><ul>
                 <li><b>速度大小:</b> <code>sqrt(u**2 + v**2)</code></li>
+                <li><b>动压:</b> <code>0.5 * rho * (u**2 + v**2)</code></li>
                 <li><b>雷诺应力分量 (全局):</b> <code>rho * (u - u_global_mean) * (v - v_global_mean)</code></li>
                 <li><b>压力波动 (帧内):</b> <code>p - mean(p)</code></li>
+                <li><b>湍动能 (帧内):</b> <code>0.5 * (std(u)**2 + std(v)**2)</code></li>
             </ul>
         </body></html>"""
