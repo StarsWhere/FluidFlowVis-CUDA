@@ -20,7 +20,7 @@ class UiMainWindow:
     此类负责创建和布局主窗口的所有UI组件。
     """
     def setup_ui(self, main_window: QMainWindow, formula_validator):
-        main_window.setWindowTitle("InterVis v1.4")
+        main_window.setWindowTitle("InterVis v1.5")
         main_window.setGeometry(100, 100, 1600, 950)
         
         central_widget = QWidget()
@@ -120,6 +120,36 @@ class UiMainWindow:
         c_layout.addWidget(QLabel("线条宽度:"), 5, 0); self.contour_linewidth = QDoubleSpinBox(); self.contour_linewidth.setRange(0.1, 10.0); self.contour_linewidth.setValue(1.0); self.contour_linewidth.setSingleStep(0.1); c_layout.addWidget(self.contour_linewidth, 5, 1)
         self.contour_labels = QCheckBox("显示数值标签"); self.contour_labels.setChecked(True); c_layout.addWidget(self.contour_labels, 6, 0, 1, 2)
         scroll_layout.addWidget(contour_group)
+
+        # --- 新增：矢量/流线图 ---
+        vector_group = QGroupBox("矢量/流线图")
+        v_layout = QGridLayout(vector_group)
+        self.vector_enabled = QCheckBox("启用"); v_layout.addWidget(self.vector_enabled, 0, 0)
+        self.vector_plot_type = QComboBox(); self.vector_plot_type.addItems(["矢量图 (Quiver)", "流线图 (Streamline)"]); v_layout.addWidget(self.vector_plot_type, 0, 1)
+        
+        v_layout.addWidget(QLabel("U分量变量:"), 1, 0); self.vector_u_variable = QComboBox(); v_layout.addWidget(self.vector_u_variable, 1, 1)
+        v_layout.addWidget(QLabel("U分量公式:"), 2, 0); self.vector_u_formula = QLineEdit(); self.vector_u_formula.setPlaceholderText("例: u - u_global_mean"); v_layout.addWidget(self.vector_u_formula, 2, 1)
+        
+        v_layout.addWidget(QLabel("V分量变量:"), 3, 0); self.vector_v_variable = QComboBox(); v_layout.addWidget(self.vector_v_variable, 3, 1)
+        v_layout.addWidget(QLabel("V分量公式:"), 4, 0); self.vector_v_formula = QLineEdit(); self.vector_v_formula.setPlaceholderText("例: v - v_global_mean"); v_layout.addWidget(self.vector_v_formula, 4, 1)
+
+        # 矢量图选项
+        self.quiver_options_group = QGroupBox("矢量图选项")
+        quiver_layout = QGridLayout(self.quiver_options_group)
+        quiver_layout.addWidget(QLabel("矢量密度:"), 0, 0); self.quiver_density_spinbox = QSpinBox(); self.quiver_density_spinbox.setRange(1, 50); self.quiver_density_spinbox.setValue(10); self.quiver_density_spinbox.setToolTip("每N个点绘制一个矢量"); quiver_layout.addWidget(self.quiver_density_spinbox, 0, 1)
+        quiver_layout.addWidget(QLabel("矢量缩放:"), 1, 0); self.quiver_scale_spinbox = QDoubleSpinBox(); self.quiver_scale_spinbox.setRange(0.1, 100.0); self.quiver_scale_spinbox.setValue(1.0); self.quiver_scale_spinbox.setSingleStep(0.5); self.quiver_scale_spinbox.setToolTip("调整矢量箭头的全局长度"); quiver_layout.addWidget(self.quiver_scale_spinbox, 1, 1)
+        v_layout.addWidget(self.quiver_options_group, 5, 0, 1, 2)
+
+        # 流线图选项
+        self.streamline_options_group = QGroupBox("流线图选项")
+        stream_layout = QGridLayout(self.streamline_options_group)
+        stream_layout.addWidget(QLabel("流线密度:"), 0, 0); self.stream_density_spinbox = QDoubleSpinBox(); self.stream_density_spinbox.setRange(0.2, 10.0); self.stream_density_spinbox.setValue(1.0); self.stream_density_spinbox.setSingleStep(0.2); stream_layout.addWidget(self.stream_density_spinbox, 0, 1)
+        stream_layout.addWidget(QLabel("流线线宽:"), 1, 0); self.stream_linewidth_spinbox = QDoubleSpinBox(); self.stream_linewidth_spinbox.setRange(0.2, 10.0); self.stream_linewidth_spinbox.setValue(1.0); self.stream_linewidth_spinbox.setSingleStep(0.2); stream_layout.addWidget(self.stream_linewidth_spinbox, 1, 1)
+        stream_layout.addWidget(QLabel("流线颜色:"), 2, 0); self.stream_color_combo = QComboBox(); self.stream_color_combo.addItems(["速度大小", "U分量", "V分量", "黑色", "白色", "灰色"]); stream_layout.addWidget(self.stream_color_combo, 2, 1)
+        v_layout.addWidget(self.streamline_options_group, 6, 0, 1, 2)
+
+        scroll_layout.addWidget(vector_group)
+        # --- 结束新增 ---
 
         btn_layout = QHBoxLayout()
         reset_btn = QPushButton("重置视图"); reset_btn.clicked.connect(self.plot_widget.reset_view)
@@ -237,8 +267,17 @@ class UiMainWindow:
         vid_layout.addWidget(QLabel("起始帧:"), 0, 0); self.video_start_frame = QSpinBox(); self.video_start_frame.setMinimum(0); vid_layout.addWidget(self.video_start_frame, 0, 1)
         vid_layout.addWidget(QLabel("结束帧:"), 1, 0); self.video_end_frame = QSpinBox(); self.video_end_frame.setMinimum(0); vid_layout.addWidget(self.video_end_frame, 1, 1)
         vid_layout.addWidget(QLabel("帧率(FPS):"), 2, 0); self.video_fps = QSpinBox(); self.video_fps.setRange(1, 60); self.video_fps.setValue(15); vid_layout.addWidget(self.video_fps, 2, 1)
+        
+        # 新增视频网格分辨率
+        vid_layout.addWidget(QLabel("渲染网格:"), 3, 0)
+        grid_res_layout = QHBoxLayout()
+        self.video_grid_w = QSpinBox(); self.video_grid_w.setRange(50, 2000); self.video_grid_w.setValue(300); self.video_grid_w.setSingleStep(10); grid_res_layout.addWidget(self.video_grid_w)
+        grid_res_layout.addWidget(QLabel("x"))
+        self.video_grid_h = QSpinBox(); self.video_grid_h.setRange(50, 2000); self.video_grid_h.setValue(300); self.video_grid_h.setSingleStep(10); grid_res_layout.addWidget(self.video_grid_h)
+        vid_layout.addLayout(grid_res_layout, 3, 1)
+
         self.export_vid_btn = QPushButton("导出视频")
-        vid_layout.addWidget(self.export_vid_btn, 3, 0, 1, 2)
+        vid_layout.addWidget(self.export_vid_btn, 4, 0, 1, 2)
         layout.addWidget(vid_group)
         
         batch_vid_group = QGroupBox("批量视频导出")

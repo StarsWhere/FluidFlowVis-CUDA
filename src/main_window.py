@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-主窗口逻辑 (UI分离后)
-"""
 import os
 import json
 import logging
@@ -76,6 +71,7 @@ class MainWindow(QMainWindow):
         self.ui.data_dir_line_edit.setText(self.data_dir)
         self.ui.output_dir_line_edit.setText(self.output_dir)
         self._update_gpu_status_label()
+        self._on_vector_plot_type_changed() # 初始化矢量图选项可见性
 
     def _connect_signals(self):
         # Data & Plot signals
@@ -105,7 +101,7 @@ class MainWindow(QMainWindow):
         self.ui.change_data_dir_btn.clicked.connect(self._change_data_directory)
         self.ui.change_output_dir_btn.clicked.connect(self._change_output_directory)
 
-        # Visualization tab controls
+        # Visualization tab controls (Heatmap & Contour)
         for widget in [self.ui.x_axis_combo, self.ui.y_axis_combo, self.ui.heatmap_variable, 
                        self.ui.heatmap_colormap, self.ui.contour_variable, self.ui.contour_colors,
                        self.ui.heatmap_enabled, self.ui.contour_enabled, self.ui.contour_labels,
@@ -120,6 +116,21 @@ class MainWindow(QMainWindow):
         for widget in [self.ui.x_axis_formula, self.ui.y_axis_formula, self.ui.heatmap_formula,
                        self.ui.heatmap_vmin, self.ui.heatmap_vmax, self.ui.contour_formula]:
             widget.editingFinished.connect(self._trigger_auto_apply)
+
+        # Visualization tab controls (Vector/Streamline)
+        self.ui.vector_plot_type.currentIndexChanged.connect(self._on_vector_plot_type_changed)
+        for widget in [self.ui.vector_enabled, self.ui.vector_u_variable, self.ui.vector_v_variable,
+                       self.ui.vector_plot_type, self.ui.quiver_density_spinbox, self.ui.quiver_scale_spinbox,
+                       self.ui.stream_density_spinbox, self.ui.stream_linewidth_spinbox, self.ui.stream_color_combo]:
+            if isinstance(widget, QCheckBox):
+                widget.toggled.connect(self._trigger_auto_apply)
+            elif isinstance(widget, QComboBox):
+                widget.currentIndexChanged.connect(self._trigger_auto_apply)
+            else: # SpinBox, DoubleSpinBox
+                widget.valueChanged.connect(self._trigger_auto_apply)
+
+        for widget in [self.ui.vector_u_formula, self.ui.vector_v_formula]:
+             widget.editingFinished.connect(self._trigger_auto_apply)
         
         # Statistics tab controls
         self.ui.calc_basic_stats_btn.clicked.connect(self._start_global_stats_calculation)
@@ -140,7 +151,8 @@ class MainWindow(QMainWindow):
 
         # Connect settings that mark config as dirty
         for widget in [self.ui.gpu_checkbox, self.ui.cache_size_spinbox, self.ui.frame_skip_spinbox,
-                       self.ui.export_dpi, self.ui.video_fps, self.ui.video_start_frame, self.ui.video_end_frame]:
+                       self.ui.export_dpi, self.ui.video_fps, self.ui.video_start_frame, 
+                       self.ui.video_end_frame, self.ui.video_grid_w, self.ui.video_grid_h]:
             if isinstance(widget, QCheckBox):
                 widget.toggled.connect(self._mark_config_as_dirty)
             else: # Spinboxes
@@ -184,6 +196,8 @@ class MainWindow(QMainWindow):
         if "Y轴" in message: self.ui.y_axis_formula.clear()
         if self.ui.heatmap_formula.text() and not self.formula_validator.validate(self.ui.heatmap_formula.text()): self.ui.heatmap_formula.clear()
         if self.ui.contour_formula.text() and not self.formula_validator.validate(self.ui.contour_formula.text()): self.ui.contour_formula.clear()
+        if self.ui.vector_u_formula.text() and not self.formula_validator.validate(self.ui.vector_u_formula.text()): self.ui.vector_u_formula.clear()
+        if self.ui.vector_v_formula.text() and not self.formula_validator.validate(self.ui.vector_v_formula.text()): self.ui.vector_v_formula.clear()
         msg_box.exec()
 
     def _on_error(self, message: str):
@@ -257,6 +271,12 @@ class MainWindow(QMainWindow):
         self._update_gpu_status_label()
         self._trigger_auto_apply()
         self._mark_config_as_dirty()
+
+    def _on_vector_plot_type_changed(self, *args):
+        is_quiver = self.ui.vector_plot_type.currentText().startswith("矢量图")
+        self.ui.quiver_options_group.setVisible(is_quiver)
+        self.ui.streamline_options_group.setVisible(not is_quiver)
+        self._trigger_auto_apply()
     # endregion
     
     # region 核心逻辑
@@ -268,7 +288,8 @@ class MainWindow(QMainWindow):
         variables = self.data_manager.get_variables()
         if not variables: return
         
-        combos = [self.ui.x_axis_combo, self.ui.y_axis_combo, self.ui.heatmap_variable, self.ui.contour_variable]
+        combos = [self.ui.x_axis_combo, self.ui.y_axis_combo, self.ui.heatmap_variable, 
+                  self.ui.contour_variable, self.ui.vector_u_variable, self.ui.vector_v_variable]
         for combo in combos:
             current_text = combo.currentText()
             combo.blockSignals(True)
@@ -276,6 +297,8 @@ class MainWindow(QMainWindow):
         
         self.ui.heatmap_variable.addItem("无", None)
         self.ui.contour_variable.addItem("无", None)
+        self.ui.vector_u_variable.addItem("无", None)
+        self.ui.vector_v_variable.addItem("无", None)
         
         for var in variables:
             for combo in combos: combo.addItem(var, var)
@@ -283,10 +306,13 @@ class MainWindow(QMainWindow):
         for combo in combos:
             if combo.findText(current_text) != -1: combo.setCurrentText(current_text)
         
+        # Sensible defaults
         if 'x' in variables: self.ui.x_axis_combo.setCurrentText('x')
         if 'y' in variables: self.ui.y_axis_combo.setCurrentText('y')
         if 'p' in variables: self.ui.heatmap_variable.setCurrentText('p')
-        
+        if 'u' in variables: self.ui.vector_u_variable.setCurrentText('u')
+        if 'v' in variables: self.ui.vector_v_variable.setCurrentText('v')
+
         for combo in combos:
             combo.blockSignals(False)
 
@@ -312,13 +338,27 @@ class MainWindow(QMainWindow):
     def _apply_visualization_settings(self):
         if self.data_manager.get_frame_count() == 0: return
 
-        x_formula = self.ui.x_axis_formula.text().strip()
-        y_formula = self.ui.y_axis_formula.text().strip()
-        if x_formula and not self.formula_validator.validate(x_formula):
-            self.ui.x_axis_formula.clear(); QMessageBox.warning(self, "公式错误", "X轴公式无效"); return
-        if y_formula and not self.formula_validator.validate(y_formula):
-            self.ui.y_axis_formula.clear(); QMessageBox.warning(self, "公式错误", "Y轴公式无效"); return
-
+        def check_formula(widget, name):
+            formula = widget.text().strip()
+            if formula and not self.formula_validator.validate(formula):
+                widget.clear()
+                QMessageBox.warning(self, "公式错误", f"{name}公式无效")
+                return False, None
+            return True, formula
+        
+        valid, x_formula = check_formula(self.ui.x_axis_formula, "X轴")
+        if not valid: return
+        valid, y_formula = check_formula(self.ui.y_axis_formula, "Y轴")
+        if not valid: return
+        valid, heat_formula = check_formula(self.ui.heatmap_formula, "热力图")
+        if not valid: return
+        valid, contour_formula = check_formula(self.ui.contour_formula, "等高线")
+        if not valid: return
+        valid, u_formula = check_formula(self.ui.vector_u_formula, "矢量U分量")
+        if not valid: return
+        valid, v_formula = check_formula(self.ui.vector_v_formula, "矢量V分量")
+        if not valid: return
+        
         try:
             vmin = float(self.ui.heatmap_vmin.text()) if self.ui.heatmap_vmin.text().strip() else None
             vmax = float(self.ui.heatmap_vmax.text()) if self.ui.heatmap_vmax.text().strip() else None
@@ -326,16 +366,28 @@ class MainWindow(QMainWindow):
             vmin, vmax = None, None
             self.ui.heatmap_vmin.clear(); self.ui.heatmap_vmax.clear()
 
-        heat_cfg = {'enabled': self.ui.heatmap_enabled.isChecked(), 'variable': self.ui.heatmap_variable.currentData(), 'formula': self.ui.heatmap_formula.text().strip(), 'colormap': self.ui.heatmap_colormap.currentText(), 'vmin': vmin, 'vmax': vmax}
-        if heat_cfg['formula'] and not self.formula_validator.validate(heat_cfg['formula']):
-            self.ui.heatmap_formula.clear(); QMessageBox.warning(self, "公式错误", "热力图公式无效"); return
+        heat_cfg = {'enabled': self.ui.heatmap_enabled.isChecked(), 'variable': self.ui.heatmap_variable.currentData(), 'formula': heat_formula, 'colormap': self.ui.heatmap_colormap.currentText(), 'vmin': vmin, 'vmax': vmax}
             
-        contour_cfg = {'enabled': self.ui.contour_enabled.isChecked(), 'variable': self.ui.contour_variable.currentData(), 'formula': self.ui.contour_formula.text().strip(), 'levels': self.ui.contour_levels.value(), 'colors': self.ui.contour_colors.currentText(), 'linewidths': self.ui.contour_linewidth.value(), 'show_labels': self.ui.contour_labels.isChecked()}
-        if contour_cfg['formula'] and not self.formula_validator.validate(contour_cfg['formula']):
-            self.ui.contour_formula.clear(); QMessageBox.warning(self, "公式错误", "等高线公式无效"); return
+        contour_cfg = {'enabled': self.ui.contour_enabled.isChecked(), 'variable': self.ui.contour_variable.currentData(), 'formula': contour_formula, 'levels': self.ui.contour_levels.value(), 'colors': self.ui.contour_colors.currentText(), 'linewidths': self.ui.contour_linewidth.value(), 'show_labels': self.ui.contour_labels.isChecked()}
 
+        vector_cfg = {
+            'enabled': self.ui.vector_enabled.isChecked(),
+            'type': "Quiver" if self.ui.vector_plot_type.currentText().startswith("矢量图") else "Streamline",
+            'u_variable': self.ui.vector_u_variable.currentData(), 'u_formula': u_formula,
+            'v_variable': self.ui.vector_v_variable.currentData(), 'v_formula': v_formula,
+            'quiver_options': {
+                'density': self.ui.quiver_density_spinbox.value(),
+                'scale': self.ui.quiver_scale_spinbox.value()
+            },
+            'streamline_options': {
+                'density': self.ui.stream_density_spinbox.value(),
+                'linewidth': self.ui.stream_linewidth_spinbox.value(),
+                'color_by': self.ui.stream_color_combo.currentText()
+            }
+        }
+        
         self.ui.plot_widget.set_config(
-            heatmap_config=heat_cfg, contour_config=contour_cfg, 
+            heatmap_config=heat_cfg, contour_config=contour_cfg, vector_config=vector_cfg,
             x_axis=self.ui.x_axis_combo.currentText(), y_axis=self.ui.y_axis_combo.currentText(),
             x_axis_formula=x_formula, y_axis_formula=y_formula
         )
@@ -353,7 +405,7 @@ class MainWindow(QMainWindow):
         help_text = "<html>...</html>" # Omitted for brevity, content is the same as original
         HelpDialog(help_text, self).exec()
         
-    def _show_about(self): QMessageBox.about(self, "关于", "<h2>InterVis v1.4</h2><p>作者: StarsWhere</p><p>一个使用PyQt6和Matplotlib构建的数据可视化工具。</p><p>此版本经过重构，UI代码与逻辑代码已分离。</p>")
+    def _show_about(self): QMessageBox.about(self, "关于", "<h2>InterVis v1.5</h2><p>作者: StarsWhere</p><p>一个使用PyQt6和Matplotlib构建的数据可视化工具。</p><p>此版本经过重构，UI代码与逻辑代码已分离，并新增矢量图与流线图支持。</p>")
     
     def _reload_data(self):
         if self.is_playing: self._toggle_play()
@@ -392,6 +444,9 @@ class MainWindow(QMainWindow):
             'x_axis_formula': axes_cfg['x_formula'], 'y_axis_formula': axes_cfg['y_formula'],
             'use_gpu': self.ui.gpu_checkbox.isChecked(), 
             'heatmap_config': current_config['heatmap'], 'contour_config': current_config['contour'],
+            'vector_config': current_config.get('vector', {}), # 新增
+            'export_dpi': self.ui.export_dpi.value(), # 传递DPI
+            'grid_resolution': (self.ui.video_grid_w.value(), self.ui.video_grid_h.value()), # 新增
             'global_scope': self.data_manager.global_stats
         }
         VideoExportDialog(self, self.data_manager, p_conf, fname, s_f, e_f, self.ui.video_fps.value()).exec()
@@ -588,35 +643,63 @@ class MainWindow(QMainWindow):
 
     def _get_current_config(self) -> Dict[str, Any]:
         return {
-            "version": "1.4",
+            "version": "1.5",
             "axes": {"x": self.ui.x_axis_combo.currentText(), "x_formula": self.ui.x_axis_formula.text(), "y": self.ui.y_axis_combo.currentText(), "y_formula": self.ui.y_axis_formula.text()},
             "heatmap": {'enabled': self.ui.heatmap_enabled.isChecked(), 'variable': self.ui.heatmap_variable.currentData(), 'formula': self.ui.heatmap_formula.text(), 'colormap': self.ui.heatmap_colormap.currentText(), 'vmin': self.ui.heatmap_vmin.text().strip() or None, 'vmax': self.ui.heatmap_vmax.text().strip() or None},
             "contour": {'enabled': self.ui.contour_enabled.isChecked(), 'variable': self.ui.contour_variable.currentData(), 'formula': self.ui.contour_formula.text(), 'levels': self.ui.contour_levels.value(), 'colors': self.ui.contour_colors.currentText(), 'linewidths': self.ui.contour_linewidth.value(), 'show_labels': self.ui.contour_labels.isChecked()},
+            "vector": {
+                'enabled': self.ui.vector_enabled.isChecked(),
+                'type': "Quiver" if self.ui.vector_plot_type.currentText().startswith("矢量图") else "Streamline",
+                'u_variable': self.ui.vector_u_variable.currentData(), 'u_formula': self.ui.vector_u_formula.text(),
+                'v_variable': self.ui.vector_v_variable.currentData(), 'v_formula': self.ui.vector_v_formula.text(),
+                'quiver_options': {'density': self.ui.quiver_density_spinbox.value(), 'scale': self.ui.quiver_scale_spinbox.value()},
+                'streamline_options': {'density': self.ui.stream_density_spinbox.value(), 'linewidth': self.ui.stream_linewidth_spinbox.value(), 'color_by': self.ui.stream_color_combo.currentText()}
+            },
             "playback": {"frame_skip_step": self.ui.frame_skip_spinbox.value()},
-            "export": {"dpi": self.ui.export_dpi.value(), "video_fps": self.ui.video_fps.value(), "video_start_frame": self.ui.video_start_frame.value(), "video_end_frame": self.ui.video_end_frame.value()},
+            "export": {"dpi": self.ui.export_dpi.value(), "video_fps": self.ui.video_fps.value(), "video_start_frame": self.ui.video_start_frame.value(), "video_end_frame": self.ui.video_end_frame.value(), "video_grid_w": self.ui.video_grid_w.value(), "video_grid_h": self.ui.video_grid_h.value()},
             "performance": {"gpu": self.ui.gpu_checkbox.isChecked(), "cache": self.ui.cache_size_spinbox.value()}
         }
     
     def _apply_config(self, config: Dict[str, Any]):
         for widget in self.findChildren(QWidget): widget.blockSignals(True)
         try:
-            perf = config.get("performance", {}); axes = config.get("axes", {}); heatmap = config.get("heatmap", {}); contour = config.get("contour", {}); playback = config.get("playback", {}); export = config.get("export", {})
+            perf = config.get("performance", {}); axes = config.get("axes", {}); heatmap = config.get("heatmap", {}); contour = config.get("contour", {}); vector = config.get("vector", {}); playback = config.get("playback", {}); export = config.get("export", {})
+            
             if self.ui.gpu_checkbox.isEnabled(): self.ui.gpu_checkbox.setChecked(perf.get("gpu", False))
             self.ui.cache_size_spinbox.setValue(perf.get("cache", 100)); self.data_manager.set_cache_size(self.ui.cache_size_spinbox.value())
+            
             if axes.get("x"): self.ui.x_axis_combo.setCurrentText(axes["x"]); self.ui.x_axis_formula.setText(axes.get("x_formula", ""))
             if axes.get("y"): self.ui.y_axis_combo.setCurrentText(axes["y"]); self.ui.y_axis_formula.setText(axes.get("y_formula", ""))
+            
             self.ui.heatmap_enabled.setChecked(heatmap.get("enabled", True)); self.ui.heatmap_variable.setCurrentText(heatmap.get("variable") or "无"); self.ui.heatmap_formula.setText(heatmap.get("formula", "")); self.ui.heatmap_colormap.setCurrentText(heatmap.get("colormap", "viridis")); self.ui.heatmap_vmin.setText(str(heatmap.get("vmin") or "")); self.ui.heatmap_vmax.setText(str(heatmap.get("vmax") or ""))
+            
             self.ui.contour_enabled.setChecked(contour.get("enabled", False)); self.ui.contour_variable.setCurrentText(contour.get("variable") or "无"); self.ui.contour_formula.setText(contour.get("formula", "")); self.ui.contour_levels.setValue(contour.get("levels", 10)); self.ui.contour_colors.setCurrentText(contour.get("colors", "black")); self.ui.contour_linewidth.setValue(contour.get("linewidths", 1.0)); self.ui.contour_labels.setChecked(contour.get("show_labels", True))
+            
+            # New vector config
+            q_opts = vector.get('quiver_options', {}); s_opts = vector.get('streamline_options', {})
+            self.ui.vector_enabled.setChecked(vector.get("enabled", False))
+            self.ui.vector_plot_type.setCurrentText("矢量图 (Quiver)" if vector.get("type") == "Quiver" else "流线图 (Streamline)")
+            self.ui.vector_u_variable.setCurrentText(vector.get("u_variable") or "无"); self.ui.vector_u_formula.setText(vector.get("u_formula", ""))
+            self.ui.vector_v_variable.setCurrentText(vector.get("v_variable") or "无"); self.ui.vector_v_formula.setText(vector.get("v_formula", ""))
+            self.ui.quiver_density_spinbox.setValue(q_opts.get("density", 10)); self.ui.quiver_scale_spinbox.setValue(q_opts.get("scale", 1.0))
+            self.ui.stream_density_spinbox.setValue(s_opts.get("density", 1.0)); self.ui.stream_linewidth_spinbox.setValue(s_opts.get("linewidth", 1.0)); self.ui.stream_color_combo.setCurrentText(s_opts.get("color_by", "速度大小"))
+
             self.ui.frame_skip_spinbox.setValue(playback.get("frame_skip_step", 1))
+
             self.ui.export_dpi.setValue(export.get("dpi", 300)); self.ui.video_fps.setValue(export.get("video_fps", 15)); self.ui.video_start_frame.setValue(export.get("video_start_frame", 0)); self.ui.video_end_frame.setValue(export.get("video_end_frame", 0))
+            self.ui.video_grid_w.setValue(export.get("video_grid_w", 150)); self.ui.video_grid_h.setValue(export.get("video_grid_h", 150))
+
         finally:
             for widget in self.findChildren(QWidget): widget.blockSignals(False)
             self._connect_signals_for_config()
             self._update_gpu_status_label()
+            self._on_vector_plot_type_changed() # Ensure correct options are visible after load
 
     def _connect_signals_for_config(self):
         # Reconnect signals that might have been disconnected
-        for combo in [self.ui.x_axis_combo, self.ui.y_axis_combo, self.ui.heatmap_variable, self.ui.contour_variable]:
+        for combo in [self.ui.x_axis_combo, self.ui.y_axis_combo, self.ui.heatmap_variable, 
+                      self.ui.contour_variable, self.ui.vector_u_variable, self.ui.vector_v_variable,
+                      self.ui.vector_plot_type]:
             combo.currentIndexChanged.connect(self._trigger_auto_apply)
         self.ui.config_combo.currentIndexChanged.connect(self._on_config_selected)
     # endregion

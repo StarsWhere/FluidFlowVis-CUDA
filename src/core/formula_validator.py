@@ -182,39 +182,59 @@ class FormulaValidator:
             code {{ background-color: #f0f0f0; padding: 2px 5px; border: 1px solid #ddd; border-radius: 3px; font-family: monospace; }}
             ul {{ list-style-type: none; padding-left: 0; }} li {{ margin-bottom: 5px; }}
         </style></head><body>
-            <h3>公式语法说明</h3><p>您可以使用标准的Python数学表达式来创建新的派生变量。</p>
-            <h3>基本运算符</h3><ul><li><code>+</code>, <code>-</code>, <code>*</code>, <code>/</code>, <code>**</code> (乘方), <code>()</code></li></ul>
-            <h3>数据变量 (逐点变化)</h3><p>以下变量来自您加载的数据文件:</p><ul>{var_list_html or "<li>(无可用数据)</li>"}</ul>
+            <h2>公式语法说明</h2><p>您可以使用标准的Python数学表达式来创建新的派生变量。</p>
             
-            <h3>单帧聚合函数 (对当前帧计算)</h3>
+            <h3>通用语法</h3>
+            <ul>
+                <li><b>基本运算符:</b> <code>+</code>, <code>-</code>, <code>*</code>, <code>/</code>, <code>**</code> (乘方), <code>()</code></li>
+                <li><b>标准数学函数:</b> <code>sin</code>, <code>cos</code>, <code>sqrt</code>, <code>log</code>, <code>abs</code>, <code>min(a,b)</code>, <code>max(a,b)</code> 等。</li>
+            </ul>
+
+            <h3>公式应用场景</h3>
+            <p>您可以在以下场景中使用公式:</p>
+            <ul>
+                <li><b>坐标轴:</b> 变换X轴和Y轴的显示坐标。</li>
+                <li><b>热力图/等高线:</b> 定义用于着色或绘制等高线的标量场。</li>
+                <li><b>矢量/流线图:</b> 定义矢量场的U (水平) 和V (垂直) 分量。</li>
+            </ul>
+
+            <h3>可用变量与常量</h3>
+            
+            <h4>数据变量 (逐点变化)</h4>
+            <p>以下变量来自您加载的数据文件，代表每个数据点的属性:</p>
+            <ul>{var_list_html or "<li>(无可用数据)</li>"}</ul>
+            
+            <h4>单帧聚合函数 (对当前帧计算)</h4>
             <p>这些函数对当前帧的所有数据点进行计算，返回一个标量值。聚合函数内部也支持公式:</p>
             <ul>
                 <li><code>mean(expr)</code>: 平均值, 如 <code>mean(p)</code> 或 <code>mean(u*u + v*v)</code></li>
                 <li><code>sum(expr)</code>: 总和</li>
-                <li><code>median(expr)</code>: 中位数</li>
                 <li><code>std(expr)</code>: 标准差</li>
-                <li><code>var(expr)</code>: 方差</li>
-                <li><code>min_frame(expr)</code>: 帧内最小值</li>
-                <li><code>max_frame(expr)</code>: 帧内最大值</li>
+                <li>...等等 (<code>median</code>, <code>var</code>, <code>min_frame</code>, <code>max_frame</code>)</li>
             </ul>
             <p><b>注意:</b> 为避免与 `min/max` 数学函数冲突, 帧内聚合请使用 `min_frame/max_frame`。</p>
 
-            {global_section or "<h3>全局统计变量</h3><p>(请先在“全局统计”标签页中进行计算)</p>"}
+            {global_section or "<h4>全局统计变量</h4><p>(请先在“全局统计”标签页中进行计算)</p>"}
             
-            <h3>科学常量</h3><ul>{const_list_html}</ul>
-            <h3>标准数学函数</h3><ul>
-                <li><b>三角:</b> <code>sin</code>, <code>cos</code>, <code>tan</code>, <code>asin</code>, <code>acos</code>, <code>atan</code></li>
-                <li><b>双曲:</b> <code>sinh</code>, <code>cosh</code>, <code>tanh</code></li>
-                <li><b>指数/对数:</b> <code>exp</code>, <code>log</code>, <code>log10</code></li>
-                <li><b>其他:</b> <code>sqrt</code>, <code>abs</code>, <code>floor</code>, <code>ceil</code>, <code>round</code></li>
-                <li><b>比较:</b> <code>min(a, b)</code>, <code>max(a, b)</code></li>
-            </ul>
-            <h3>示例</h3><ul>
-                <li><b>速度大小:</b> <code>sqrt(u**2 + v**2)</code></li>
-                <li><b>动压:</b> <code>0.5 * rho * (u**2 + v**2)</code></li>
-                <li><b>雷诺应力分量 (全局):</b> <code>rho * (u - u_global_mean) * (v - v_global_mean)</code></li>
+            <h4>科学常量</h4><ul>{const_list_html}</ul>
+
+            <h3>示例</h3>
+            <ul>
+                <li><b>速度大小 (用于热力图):</b> <code>sqrt(u**2 + v**2)</code></li>
+                <li><b>动压 (用于等高线):</b> <code>0.5 * rho * (u**2 + v**2)</code></li>
                 <li><b>压力波动 (帧内):</b> <code>p - mean(p)</code></li>
-                <li><b>湍动能 (帧内):</b> <code>0.5 * (std(u)**2 + std(v)**2)</code></li>
-                <li><b>马赫数归一化:</b> <code>Ma / Ma_global_max</code></li>
+                <li><b>马赫数归一化 (使用全局值):</b> <code>Ma / Ma_global_max</code></li>
+                <li><b>速度脉动 (用于矢量图):</b>
+                  <ul>
+                    <li>U分量公式: <code>u - u_global_mean</code></li>
+                    <li>V分量公式: <code>v - v_global_mean</code></li>
+                  </ul>
+                </li>
+                <li><b>质量通量 (用于流线图):</b>
+                  <ul>
+                    <li>U分量公式: <code>rho * u</code></li>
+                    <li>V分量公式: <code>rho * v</code></li>
+                  </ul>
+                </li>
             </ul>
         </body></html>"""

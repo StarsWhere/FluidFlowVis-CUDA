@@ -3,7 +3,7 @@
 [![Python Version](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![UI Framework](https://img.shields.io/badge/UI-PyQt6-brightgreen.svg)](https://www.riverbankcomputing.com/software/pyqt/)
-[![Version](https://img.shields.io/badge/Version-1.4-blue)](https://github.com/StarsWhere/InterVis)
+[![Version](https://img.shields.io/badge/Version-1.4--Final-blue)](https://github.com/StarsWhere/InterVis)
 
 **English:** An powerful, interactive tool for visualizing and analyzing time-series scientific computing data.
 <br>
@@ -192,6 +192,8 @@ InterVis 提供了将分析结果保存为高质量文件的功能。
         5.  导出您需要的结果。
 
 ## 目录结构 (Directory Structure)
+项目结构经过重构，以实现更好的模块化和可维护性。
+The project structure has been refactored for better modularity and maintainability.
 ```InterVis/
 ├── data/              # 存放您的 CSV 数据文件 (Place your CSV data files here)
 ├── logs/              # 程序运行日志 (Application logs)
@@ -199,11 +201,22 @@ InterVis 提供了将分析结果保存为高质量文件的功能。
 ├── png/               # README 文档所需的图片 (Images for this README)
 ├── settings/          # 保存的可视化配置文件 (.json) (Saved configuration files)
 ├── src/               # 源代码 (Source code)
-│   ├── core/
-│   ├── utils/
-│   └── visualization/
-│       ├── headless_renderer.py  # (新增) 后台渲染引擎
-│       └── ...
+│   ├── core/          # 核心逻辑与数据处理 (Core logic and data handling)
+│   │   ├── data_manager.py
+│   │   ├── formula_validator.py
+│   │   └── workers.py
+│   ├── ui/            # UI 相关模块 (UI-related modules)
+│   │   ├── dialogs.py
+│   │   └── ui_setup.py
+│   ├── utils/         # 辅助工具 (Utility modules)
+│   │   ├── gpu_utils.py
+│   │   ├── help_dialog.py
+│   │   └── logger.py
+│   ├── visualization/ # 可视化相关模块 (Visualization modules)
+│   │   ├── headless_renderer.py
+│   │   ├── plot_widget.py
+│   │   └── video_exporter.py
+│   └── main_window.py # 主窗口逻辑 (Main window logic)
 ├── main.py            # 主程序入口 (Main application entry point)
 ├── README.md          # 本文档 (This file)
 └── requirements.txt   # Python 依赖项 (Python dependencies)
