@@ -50,6 +50,7 @@ class MainWindow(QMainWindow):
         self.config_is_dirty: bool = False
         self._is_loading_config: bool = False
         self.current_config_file: Optional[str] = None
+        self._loaded_config: Optional[Dict[str, Any]] = None # 用于存储已加载或已保存的配置，以便比较
         
         # --- 配置路径 ---
         self.data_dir = self.settings.value("data_directory", os.path.join(os.getcwd(), "data"))
@@ -337,6 +338,11 @@ class MainWindow(QMainWindow):
         self.video_end_frame.valueChanged.connect(self._mark_config_as_dirty)
 
         # 配置管理控件
+        self.config_combo.currentIndexChanged.connect(self._on_config_selected) # 确保此信号连接在 _populate_config_combobox 之后
+        self.save_config_btn.clicked.connect(self._save_current_config)
+        self.new_config_btn.clicked.connect(self._create_new_config)
+
+        # 配置管理控件
         self.save_config_btn.clicked.connect(self._save_current_config)
         self.new_config_btn.clicked.connect(self._create_new_config)
 
@@ -545,12 +551,24 @@ class MainWindow(QMainWindow):
     # endregion
     
     # region 配置管理逻辑
-    def _mark_config_as_dirty(self, *args, **kwargs):
-        """将当前配置标记为“脏”（有未保存的更改）"""
+    def _mark_config_as_dirty(self):
+        """
+        将当前配置标记为“脏”（有未保存的更改）。
+        只有当当前UI配置与已加载/保存的配置不同时才标记为脏。
+        """
         if self._is_loading_config:
             return
-        self.config_is_dirty = True
-        self.config_status_label.setText("存在未保存的修改")
+
+        current_ui_config = self._get_current_config()
+        # 比较当前UI配置与已加载的配置
+        # 注意：对于浮点数比较，直接相等可能因精度问题失败，但这里是比较None和字符串，所以直接比较可以。
+        # 如果未来有更复杂的数值比较，需要考虑容差。
+        if self._loaded_config != current_ui_config:
+            self.config_is_dirty = True
+            self.config_status_label.setText("存在未保存的修改")
+        else:
+            self.config_is_dirty = False
+            self.config_status_label.setText("")
 
     def _populate_config_combobox(self):
         """扫描settings文件夹并填充配置下拉框"""
@@ -613,7 +631,8 @@ class MainWindow(QMainWindow):
                 self._apply_config(config)
             self.current_config_file = filepath
             self.settings.setValue("last_config_file", filepath) # 保存最后使用的配置
-            self.config_is_dirty = False
+            self._loaded_config = self._get_current_config() # 记录已加载的配置
+            self.config_is_dirty = False # 加载后标记为未修改
             self.config_status_label.setText("")
             self.status_bar.showMessage(f"已加载配置: {filename}", 3000)
         except Exception as e:
@@ -630,7 +649,9 @@ class MainWindow(QMainWindow):
         
         try:
             with open(self.current_config_file, 'w', encoding='utf-8') as f:
-                json.dump(self._get_current_config(), f, indent=4)
+                current_config = self._get_current_config()
+                json.dump(current_config, f, indent=4)
+            self._loaded_config = current_config # 更新已保存的配置
             self.config_is_dirty = False
             self.config_status_label.setText("配置已保存")
             self.status_bar.showMessage(f"配置已保存到 {os.path.basename(self.current_config_file)}", 3000)
@@ -698,8 +719,9 @@ class MainWindow(QMainWindow):
             self.heatmap_variable.setCurrentText(heatmap.get("variable") or "无")
             self.heatmap_formula.setText(heatmap.get("formula", ""))
             self.heatmap_colormap.setCurrentText(heatmap.get("colormap", "viridis"))
-            self.heatmap_vmin.setText(str(heatmap.get("vmin", "")) if heatmap.get("vmin") is not None else "")
-            self.heatmap_vmax.setText(str(heatmap.get("vmax", "")) if heatmap.get("vmax") is not None else "")
+            # 确保 vmin/vmax 为 None 时，文本框为空
+            self.heatmap_vmin.setText(str(heatmap.get("vmin")) if heatmap.get("vmin") is not None else "")
+            self.heatmap_vmax.setText(str(heatmap.get("vmax")) if heatmap.get("vmax") is not None else "")
             
             self.contour_enabled.setChecked(contour.get("enabled", False))
             self.contour_variable.setCurrentText(contour.get("variable") or "无")
@@ -789,5 +811,5 @@ class MainWindow(QMainWindow):
     def _on_visualization_setting_changed(self):
         """当可视化设置发生改变时，提示用户未应用设置"""
         self.visualization_status_label.setText("设置未应用")
-        self._mark_config_as_dirty()
+        self._mark_config_as_dirty() # 调用不带参数的脏标记方法
     # endregion
