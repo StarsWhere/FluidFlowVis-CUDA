@@ -641,7 +641,7 @@ class MainWindow(QMainWindow):
         msg_box.setWindowTitle("可视化错误")
         msg_box.setTextFormat(Qt.TextFormat.RichText)
         msg_box.setText(f"无法渲染图形，公式可能存在问题。<br><br><b>错误详情:</b><br>{message}")
-        msg_box.exec()
+        
 
         # Check which formula might be the culprit and clear it.
         # A common mistake is using a constant expression (which has no data variables) for a plot.
@@ -663,6 +663,8 @@ class MainWindow(QMainWindow):
             if not used_vars:
                 logger.warning(f"检测到无效的等高线公式 (常量表达式): '{c_formula}'. 将被清除。")
                 self.contour_formula.clear()
+                
+        msg_box.exec()
 
     def _on_error(self, message: str):
         self.status_bar.showMessage(f"错误: {message}", 5000)
@@ -1050,9 +1052,19 @@ class MainWindow(QMainWindow):
 
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(self.stats_results_text.toPlainText())
+                # Get the results text as displayed
+                results_text = self.stats_results_text.toPlainText()
+                f.write(results_text)
+                
+                # Append custom definitions if they exist
+                custom_defs_text = self.custom_stats_input.toPlainText().strip()
+                if custom_defs_text:
+                    f.write("\n\n" + "="*50)
+                    f.write("\n\n--- 自定义常量定义 ---\n\n")
+                    f.write(custom_defs_text)
+
             self.status_bar.showMessage(f"统计结果已保存到输出目录", 5000)
-            QMessageBox.information(self, "导出成功", f"统计结果已直接保存到输出目录:\n{filepath}")
+            QMessageBox.information(self, "导出成功", f"统计结果及定义已直接保存到输出目录:\n{filepath}")
         except Exception as e:
             QMessageBox.critical(self, "导出失败", f"无法保存文件: {e}")
     # endregion
