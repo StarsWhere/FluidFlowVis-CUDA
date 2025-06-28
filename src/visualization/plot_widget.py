@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import numpy as np
 import pandas as pd
+import re
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.ticker as ticker
@@ -23,9 +24,10 @@ class InterpolationWorker(QRunnable):
     def __init__(self, data, res, x_ax, y_ax, heat_cfg, contour_cfg, use_gpu, validator):
         super().__init__()
         self.data, self.res, self.x_ax, self.y_ax = data, res, x_ax, y_ax
-        self.heat_cfg, self.contour_cfg, self.use_gpu = heat_cfg, contour_cfg, use_gpu and is_gpu_available()
+        self.heat_cfg, self.contour_cfg = heat_cfg, contour_cfg
+        self.use_gpu = use_gpu and is_gpu_available()
         self.validator, self.signals = validator, WorkerSignals()
-
+        
     def run(self):
         try: self.signals.result.emit(self._perform_interpolation())
         except Exception as e:
@@ -38,27 +40,75 @@ class InterpolationWorker(QRunnable):
         gx, gy = np.meshgrid(np.linspace(self.data[self.x_ax].min(), self.data[self.x_ax].max(), self.res[0]),
                              np.linspace(self.data[self.y_ax].min(), self.data[self.y_ax].max(), self.res[1]))
         points, cache = self.data[[self.x_ax, self.y_ax]].values, {}
+        
+        eval_globals = self.validator.get_all_constants_and_globals()
+
         def _interp(var):
             if var not in cache: cache[var] = griddata(points, self.data[var].values, (gx, gy), method='linear', fill_value=np.nan)
             return cache[var]
-        def _eval_cpu(formula, req_vars):
+
+        def _preprocess_formula(formula):
+            """
+            预处理公式，计算单帧聚合函数并替换为占位符。
+            返回处理后的公式和包含聚合结果的字典。
+            """
+            local_aggregates = {}
+            processed_formula = formula
+            
+            # 正则表达式查找 func(var) 模式
+            pattern = re.compile(r'(\w+)\s*\(\s*(\w+)\s*\)')
+            
+            # 从后往前替换，避免索引问题
+            for match in reversed(list(pattern.finditer(formula))):
+                func_name, var_name = match.groups()
+                
+                if func_name in self.validator.allowed_aggregates and var_name in self.data.columns:
+                    placeholder = f"__agg_{func_name}_{var_name}__"
+                    
+                    if placeholder not in local_aggregates:
+                        series = self.data[var_name]
+                        if func_name == 'mean': val = series.mean()
+                        elif func_name == 'sum': val = series.sum()
+                        elif func_name == 'median': val = series.median()
+                        elif func_name == 'std': val = series.std()
+                        elif func_name == 'var': val = series.var()
+                        elif func_name == 'min_frame': val = series.min()
+                        elif func_name == 'max_frame': val = series.max()
+                        else: continue # 不支持的聚合函数
+                        local_aggregates[placeholder] = val
+                    
+                    # 替换公式中的部分
+                    start, end = match.span()
+                    processed_formula = processed_formula[:start] + placeholder + processed_formula[end:]
+
+            return processed_formula, local_aggregates
+
+        def _eval_cpu(formula, req_vars, local_aggregates):
             var_data = {var: _interp(var) for var in req_vars}
-            safe_dict = {'np': np, **var_data} # Use numpy directly
+            local_scope = {**eval_globals, **local_aggregates, **var_data}
             safe_globals = {"__builtins__": None, "np": np}
-            result = eval(formula, safe_globals, var_data)
+            result = eval(formula, safe_globals, local_scope)
             return result if isinstance(result, np.ndarray) else np.full_like(gx, float(result))
-        def _eval_gpu(formula, req_vars):
+            
+        def _eval_gpu(formula, req_vars, local_aggregates):
             var_data = {var: self.data[var].values for var in req_vars}
-            gpu_res = evaluate_formula_gpu(formula, var_data)
+            combined_vars = {**eval_globals, **local_aggregates, **var_data}
+            gpu_res = evaluate_formula_gpu(formula, combined_vars)
             return griddata(points, gpu_res, (gx, gy), method='linear', fill_value=np.nan)
+            
         def _get_data(cfg):
             if not cfg.get('enabled'): return None
             formula, var = cfg.get('formula'), cfg.get('variable')
             if formula:
-                req_vars = self.validator.get_used_variables(formula)
-                return _eval_gpu(formula, req_vars) if self.use_gpu else _eval_cpu(formula, req_vars)
+                processed_formula, local_aggregates = _preprocess_formula(formula)
+                req_vars = self.validator.get_used_variables(processed_formula)
+                if self.use_gpu:
+                    return _eval_gpu(processed_formula, req_vars, local_aggregates)
+                else:
+                    return _eval_cpu(processed_formula, req_vars, local_aggregates)
             elif var: return _interp(var)
             return None
+            
         return {'grid_x': gx, 'grid_y': gy, 'heatmap_data': _get_data(self.heat_cfg), 'contour_data': _get_data(self.contour_cfg)}
 
 class PlotWidget(QWidget):
@@ -77,7 +127,7 @@ class PlotWidget(QWidget):
         self.heatmap_config = {'enabled': False}; self.contour_config = {'enabled': False}
         self.heatmap_obj = self.contour_obj = self.colorbar_obj = None
         self.is_dragging = False; self.drag_start_pos = None; self.picker_mode: Optional[str] = None
-        self.last_mouse_coords: Optional[tuple[float, float]] = None # Store last mouse coordinates for probe updates
+        self.last_mouse_coords: Optional[tuple[float, float]] = None
         self.grid_resolution = (150, 150); self.thread_pool = QThreadPool(); self.is_busy_interpolating = False
         self._connect_signals(); self._setup_plot_style()
 
@@ -105,7 +155,6 @@ class PlotWidget(QWidget):
 
     def _on_interpolation_result(self, result: dict):
         self.interpolated_results = result; self.redraw(); self.plot_rendered.emit()
-        # After redrawing, if there's a last known mouse position, update probe data
         if self.last_mouse_coords:
             self.get_probe_data_at_coords(self.last_mouse_coords[0], self.last_mouse_coords[1])
 
@@ -146,7 +195,7 @@ class PlotWidget(QWidget):
     def _on_mouse_move(self, event):
         if event.inaxes != self.ax or event.xdata is None: return
         self.mouse_moved.emit(event.xdata, event.ydata)
-        self.last_mouse_coords = (event.xdata, event.ydata) # Update last mouse coordinates
+        self.last_mouse_coords = (event.xdata, event.ydata)
         if not self.is_dragging: self.get_probe_data_at_coords(event.xdata, event.ydata)
         if self.is_dragging and self.drag_start_pos:
             dx, dy = event.xdata - self.drag_start_pos[0], event.ydata - self.drag_start_pos[1]

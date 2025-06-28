@@ -46,6 +46,10 @@ class VideoExportWorker(QThread):
         from src.core.formula_validator import FormulaValidator
         from PyQt6.QtCore import QEventLoop # Import QEventLoop
         validator = FormulaValidator(); validator.update_allowed_variables(self.dm.get_variables())
+        # 确保验证器也知道全局变量
+        if 'global_scope' in self.p_conf:
+            validator.update_custom_global_variables(self.p_conf['global_scope'])
+            
         plotter = PlotWidget(validator); plotter.set_config(**self.p_conf)
         plotter.update_data(data)
         
@@ -54,19 +58,20 @@ class VideoExportWorker(QThread):
         plotter.plot_rendered.connect(loop.quit)
         
         start_time = time.time()
-        while plotter.is_busy_interpolating: # Still need to check busy status if loop.quit is not called for some reason
-            if time.time() - start_time > 20:
-                loop.quit() # Ensure loop quits on timeout
-                raise TimeoutError("渲染超时")
-            loop.processEvents() # Process events to allow signal to be caught
-            time.sleep(0.01) # Small sleep to prevent busy-waiting
+        # 等待插值和渲染完成
+        while plotter.is_busy_interpolating:
+            if time.time() - start_time > 30: # 增加超时时间
+                plotter.thread_pool.clear() # 尝试清理线程池
+                raise TimeoutError(f"渲染帧 {idx} 超时")
+            QApplication.processEvents() # 使用主应用的事件循环处理
+            time.sleep(0.01)
         
-        # If the loop hasn't quit by now (e.g., due to busy_interpolating being set to False), it means
-        # the signal was emitted and caught, or timeout occurred.
-        if loop.isRunning(): # If loop is still running, it means plot_rendered wasn't emitted or caught
-            loop.quit() # Ensure it quits
-            # This case might indicate an issue with signal emission or connection.
-            # For robustness, we might add a warning here if needed.
+        # 即使 is_busy_interpolating 变为 false, 信号可能还未发出
+        # 给一小段时间让信号处理
+        time.sleep(0.1)
+        
+        if loop.isRunning():
+            loop.quit()
 
         return plotter.get_figure_as_numpy(dpi=150)
 
@@ -85,6 +90,10 @@ class VideoExportWorker(QThread):
 class VideoExportDialog(QDialog):
     def __init__(self, parent, dm, p_conf, fname, s_f, e_f, fps):
         super().__init__(parent); self.worker = None
+        # 新增全局 QApplication 引用
+        global QApplication
+        from PyQt6.QtWidgets import QApplication
+        
         self._init_ui(fname, s_f, e_f, fps)
         self._start_export(dm, p_conf, fname, s_f, e_f, fps)
     

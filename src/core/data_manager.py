@@ -3,7 +3,7 @@
 import os
 import pandas as pd
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Generator
 from collections import OrderedDict
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -20,6 +20,8 @@ class DataManager(QObject):
         self.cache: OrderedDict[int, pd.DataFrame] = OrderedDict()
         self.cache_max_size = 100
         self.variables: List[str] = []
+        # 新增：用于存储全局统计信息
+        self.global_stats: Dict[str, float] = {}
 
     def set_data_directory(self, directory: str): self.data_directory = directory
         
@@ -49,6 +51,8 @@ class DataManager(QObject):
             self.cache.move_to_end(frame_index); return self.cache[frame_index]
         try:
             data = pd.read_csv(self.file_index[frame_index]['path'])
+            # 确保只使用识别出的数值列，避免类型错误
+            data = data[self.variables]
             self.cache[frame_index] = data; self._enforce_cache_limit(); return data
         except Exception as e:
             msg = f"加载帧 {frame_index} 数据失败: {e}"; logger.error(msg, exc_info=True)
@@ -63,4 +67,80 @@ class DataManager(QObject):
     def get_frame_info(self, i: int): return self.file_index[i] if 0 <= i < len(self.file_index) else None
     def get_cache_info(self) -> Dict: return {'size': len(self.cache), 'max_size': self.cache_max_size}
     def get_variables(self) -> List[str]: return self.variables
-    def clear_all(self): self.file_index.clear(); self.cache.clear(); self.variables.clear()
+    def clear_all(self): 
+        self.file_index.clear(); self.cache.clear(); self.variables.clear(); self.global_stats.clear()
+
+    # --- 新增全局统计功能 ---
+    def clear_global_stats(self):
+        """清空已计算的全局统计数据"""
+        self.global_stats.clear()
+        logger.info("全局统计数据已清除。")
+
+    def calculate_global_stats(self, progress_callback: Optional[callable] = None) -> Dict[str, float]:
+        """
+        计算所有数据文件中所有数值变量的全局统计量。
+        这是一个耗时操作。
+        """
+        frame_count = self.get_frame_count()
+        if frame_count == 0:
+            return {}
+
+        logger.info("开始计算全局统计数据...")
+        
+        # 使用流式方法以节省内存
+        # 初始化统计追踪器
+        sums = {var: 0.0 for var in self.variables}
+        sq_sums = {var: 0.0 for var in self.variables}
+        mins = {var: float('inf') for var in self.variables}
+        maxs = {var: float('-inf') for var in self.variables}
+        total_points = 0
+        
+        # 由于中位数无法流式计算，我们需要收集所有数据
+        # 为了避免内存爆炸，这里我们只计算均值、标准差、总和、最大最小值
+        # 中位数计算需要一次性加载所有数据，对于大数据集可能不可行。
+        # 如果需要中位数，需要采用更复杂的近似算法或分块处理。
+        # 这里为了演示，我们先实现可以流式处理的统计量。
+        
+        for i in range(frame_count):
+            try:
+                df = pd.read_csv(self.file_index[i]['path'], usecols=self.variables)
+                
+                # 更新统计量
+                current_sums = df.sum()
+                current_sq_sums = (df**2).sum()
+                current_mins = df.min()
+                current_maxs = df.max()
+                
+                for var in self.variables:
+                    sums[var] += current_sums.get(var, 0)
+                    sq_sums[var] += current_sq_sums.get(var, 0)
+                    mins[var] = min(mins[var], current_mins.get(var, float('inf')))
+                    maxs[var] = max(maxs[var], current_maxs.get(var, float('-inf')))
+
+                total_points += len(df)
+                
+                if progress_callback:
+                    progress_callback(i + 1, frame_count)
+            except Exception as e:
+                logger.error(f"处理文件 {self.file_index[i]['path']} 时出错: {e}")
+                continue # 跳过错误的文件
+
+        if total_points == 0:
+            logger.warning("未能从任何文件中读取数据点，无法计算统计信息。")
+            return {}
+
+        results = {}
+        for var in self.variables:
+            mean = sums[var] / total_points
+            # E[X^2] - (E[X])^2
+            std_dev = ((sq_sums[var] / total_points) - mean**2)**0.5
+            
+            results[f"{var}_global_mean"] = mean
+            results[f"{var}_global_sum"] = sums[var]
+            results[f"{var}_global_std"] = std_dev
+            results[f"{var}_global_min"] = mins[var]
+            results[f"{var}_global_max"] = maxs[var]
+
+        self.global_stats = results
+        logger.info(f"全局统计数据计算完成。共处理 {total_points} 个数据点。")
+        return self.global_stats
