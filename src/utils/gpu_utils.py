@@ -38,7 +38,7 @@ def evaluate_formula_gpu(formula: str, variable_data: dict):
         for var_name, value in variable_data.items():
             safe_dict[var_name] = cp.asarray(value) if isinstance(value, np.ndarray) else value
 
-        result_gpu = eval(formula, {"__builtins__": {}}, safe_dict)
+        result_gpu = eval(formula, {"__builtins__": __builtins__}, safe_dict) # Allow access to __builtins__ for CuPy's internal eval
         
         if not isinstance(result_gpu, cp.ndarray):
             ref_shape = next(v.shape for v in safe_dict.values() if isinstance(v, cp.ndarray))

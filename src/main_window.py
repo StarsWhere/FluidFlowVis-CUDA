@@ -419,6 +419,10 @@ class MainWindow(QMainWindow):
             self.current_frame_index = frame_index
             self.plot_widget.update_data(data)
             self._update_frame_info()
+            # After updating plot data, if a last mouse coordinate exists, update probe data
+            if self.plot_widget.last_mouse_coords:
+                x, y = self.plot_widget.last_mouse_coords
+                self.plot_widget.get_probe_data_at_coords(x, y)
 
     def _update_frame_info(self):
         """更新状态栏和标签中的帧信息"""
