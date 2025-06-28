@@ -432,9 +432,18 @@ class MainWindow(QMainWindow):
         custom_group = QGroupBox("自定义常量计算")
         custom_layout = QVBoxLayout(custom_group)
         
-        custom_info = QLabel("在此定义新的全局常量，每行一个。您可以使用基础统计的结果。\n格式: <code>new_name = agg_func(expression)</code>")
+        custom_header_layout = QHBoxLayout()
+        custom_info = QLabel("在此定义新的全局常量，每行一个。您可以使用基础统计的结果。<br>格式: <code>new_name = agg_func(expression)</code>")
+        custom_info.setTextFormat(Qt.TextFormat.RichText)
         custom_info.setWordWrap(True)
-        custom_layout.addWidget(custom_info)
+        custom_header_layout.addWidget(custom_info, 1)
+
+        custom_help_btn = QPushButton("?")
+        custom_help_btn.setFixedSize(25, 25)
+        custom_help_btn.setToolTip("查看自定义常量计算说明")
+        custom_help_btn.clicked.connect(self._show_custom_stats_help)
+        custom_header_layout.addWidget(custom_help_btn)
+        custom_layout.addLayout(custom_header_layout)
         
         self.custom_stats_input = QTextEdit()
         self.custom_stats_input.setFont(QFont("Courier New", 9))
@@ -765,7 +774,61 @@ class MainWindow(QMainWindow):
     # endregion
 
     # region 菜单与文件操作
-    def _show_formula_help(self): HelpDialog(self.formula_validator.get_formula_help_html(), self).exec()
+    def _show_formula_help(self):
+        base_vars = self.data_manager.get_variables()
+        HelpDialog(self.formula_validator.get_formula_help_html(base_vars), self).exec()
+
+    def _show_custom_stats_help(self):
+        help_text = """
+        <html><head><style>
+            body { font-family: sans-serif; line-height: 1.6; }
+            h3 { color: #005A9C; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
+            code { background-color: #f0f0f0; padding: 2px 5px; border: 1px solid #ddd; border-radius: 3px; font-family: monospace; }
+            ul li { margin-bottom: 5px; }
+        </style></head><body>
+            <h2>自定义常量计算指南</h2>
+            <p>此功能允许您计算新的全局常量，这些常量将在整个数据集（所有帧）上进行聚合计算。</p>
+            
+            <h3>格式</h3>
+            <p>每行输入一个定义，严格遵守以下格式：</p>
+            <p><code>常量名称 = 聚合函数(表达式)</code></p>
+
+            <ul>
+                <li><b>常量名称:</b> 必须是有效的 Python 标识符 (只能包含字母、数字和下划线，且不能以数字开头)。</li>
+                <li><b>聚合函数:</b> 当前支持以下函数：
+                    <ul>
+                        <li><code>mean(expr)</code>: 计算表达式在所有数据点上的平均值。</li>
+                        <li><code>sum(expr)</code>: 计算总和。</li>
+                        <li><code>std(expr)</code>: 计算标准差。</li>
+                        <li><code>var(expr)</code>: 计算方差。</li>
+                    </ul>
+                </li>
+                <li><b>表达式:</b> 这是一个标准的数学公式，可以包含：
+                    <ul>
+                        <li>数据中的原始变量 (如 <code>u</code>, <code>v</code>, <code>p</code>)。</li>
+                        <li>之前计算出的基础统计量 (如 <code>u_global_mean</code>)。</li>
+                        <li>科学常数 (如 <code>pi</code>)。</li>
+                        <li>基本的数学运算符 (<code>+</code>, <code>-</code>, <code>*</code>, <code>/</code>, <code>**</code>)。</li>
+                    </ul>
+                </li>
+            </ul>
+
+            <h3>示例</h3>
+            <p><b>计算雷诺应力分量:</b></p>
+            <p><code>reynolds_stress_uv = mean((u - u_global_mean) * (v - v_global_mean))</code></p>
+            
+            <p><b>计算全局湍动能 (TKE):</b></p>
+            <p><code>tke_global = mean(0.5 * ((u - u_global_mean)**2 + (v - v_global_mean)**2))</code></p>
+
+            <h3>工作流程</h3>
+            <p>1. 首先点击 "开始计算基础统计" 来获得如 <code>u_global_mean</code> 等基础量。</p>
+            <p>2. 在文本框中输入您的自定义常量定义。</p>
+            <p>3. 点击 "计算自定义常量"。计算过程可能会很长。</p>
+            <p>4. 计算成功后，新的常量将出现在下方的 "计算结果" 区域，并可在其他公式（如可视化公式或后续的自定义常量）中使用。</p>
+        </body></html>
+        """
+        HelpDialog(help_text, self).exec()
+        
     def _show_about(self): QMessageBox.about(self, "关于", "<h2>InterVis v1.3</h2><p>作者: StarsWhere</p><p>一个使用PyQt6和Matplotlib构建的数据可视化工具。</p>")
     
     def _reload_data(self):
@@ -923,7 +986,7 @@ class MainWindow(QMainWindow):
         
         if basic_stats_keys:
             lines.append("\n--- 基础统计 ---")
-            for var in self.data_manager.get_variables():
+            for var in sorted(self.data_manager.get_variables()):
                 lines.append(f"\n[ 变量: {var} ]")
                 var_keys = sorted([key for key in basic_stats_keys if key.startswith(var + "_global_")])
                 for key in var_keys:
@@ -931,7 +994,7 @@ class MainWindow(QMainWindow):
                     lines.append(f"  {stat_name:<10s}: {all_stats[key]:15.6e}")
         
         if custom_stats_keys:
-            lines.append("\n--- 自定义常量 ---")
+            lines.append("\n\n--- 自定义常量 ---")
             for key in sorted(list(custom_stats_keys)):
                 lines.append(f"{key:<25s}: {all_stats[key]:15.6e}")
                 

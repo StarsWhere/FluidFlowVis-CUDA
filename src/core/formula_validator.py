@@ -72,17 +72,40 @@ class FormulaValidator:
                 variables.add(node.id)
         return variables
 
-    def get_formula_help_html(self) -> str:
+    def get_formula_help_html(self, base_variables: List[str]) -> str:
         var_list_html = "".join([f"<li><code>{var}</code></li>" for var in sorted(list(self.allowed_variables))])
         const_list_html = "".join([f"<li><code>{key}</code>: {val:.4e}</li>" for key, val in self.science_constants.items()])
-        global_var_list_html = "".join([f"<li><code>{key}</code>: {val:.4e}</li>" for key, val in sorted(self.custom_global_variables.items())])
         
+        # Categorize global variables
+        all_globals = sorted(self.custom_global_variables.items())
+        basic_globals = []
+        custom_globals = []
+
+        if base_variables:
+            basic_prefixes = tuple(f"{var}_global_" for var in base_variables)
+            for key, val in all_globals:
+                if key.startswith(basic_prefixes):
+                    basic_globals.append((key, val))
+                else:
+                    custom_globals.append((key, val))
+        else:
+            custom_globals = all_globals
+            
+        basic_globals_html = "".join([f"<li><code>{key}</code>: {val:.4e}</li>" for key, val in basic_globals])
+        custom_globals_html = "".join([f"<li><code>{key}</code>: {val:.4e}</li>" for key, val in custom_globals])
+
         global_section = ""
-        if global_var_list_html:
-            global_section = f"""
-            <h3>全局统计变量 (跨所有帧)</h3>
-            <p>这些变量是根据所有数据文件计算得出的，可在“全局统计”标签页中重新计算:</p>
-            <ul>{global_var_list_html}</ul>
+        if basic_globals_html:
+            global_section += f"""
+            <h3>基础统计变量 (跨所有帧)</h3>
+            <p>这些是根据每个原始变量自动计算的统计量:</p>
+            <ul>{basic_globals_html}</ul>
+            """
+        if custom_globals_html:
+            global_section += f"""
+            <h3>自定义全局常量 (跨所有帧)</h3>
+            <p>这些是在“全局统计”标签页中由用户定义的常量:</p>
+            <ul>{custom_globals_html}</ul>
             """
 
         return f"""
@@ -109,7 +132,8 @@ class FormulaValidator:
             </ul>
             <p><b>注意:</b> 为避免与 `min/max` 数学函数冲突, 帧内聚合请使用 `min_frame/max_frame`。</p>
 
-            {global_section}
+            {global_section or "<h3>全局统计变量</h3><p>(请先在“全局统计”标签页中进行计算)</p>"}
+            
             <h3>科学常量</h3><ul>{const_list_html}</ul>
             <h3>标准数学函数</h3><ul>
                 <li><b>三角:</b> <code>sin</code>, <code>cos</code>, <code>tan</code>, <code>asin</code>, <code>acos</code>, <code>atan</code></li>

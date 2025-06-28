@@ -169,6 +169,17 @@ class DataManager(QObject):
             supported_aggs = {'mean', 'sum', 'std', 'var'}
             if agg_func not in supported_aggs:
                 raise ValueError(f"不支持的全局聚合函数: {agg_func}。支持的: {supported_aggs}")
+            
+            # **FIX:** Pre-process the inner expression for pandas.eval
+            # It needs '@' to distinguish environment variables from columns.
+            processed_expr = inner_expr
+            # Sort keys by length, descending, to replace longer names first (e.g., 'var_abc' before 'var')
+            for var_name in sorted(available_globals.keys(), key=len, reverse=True):
+                # Use word boundaries (\b) to ensure we replace whole words only
+                pattern = r'\b' + re.escape(var_name) + r'\b'
+                replacement = '@' + var_name
+                processed_expr = re.sub(pattern, replacement, processed_expr)
+            logger.debug(f"Original expression: '{inner_expr}', Processed for eval: '{processed_expr}'")
 
             total_sum = 0.0
             total_sum_sq = 0.0
@@ -177,7 +188,8 @@ class DataManager(QObject):
             for file_idx, file_info in enumerate(self.file_index):
                 try:
                     df = pd.read_csv(file_info['path'], usecols=self.variables)
-                    expr_vals = df.eval(inner_expr, local_dict=available_globals, global_dict={})
+                    # Use the processed expression with '@' symbols
+                    expr_vals = df.eval(processed_expr, local_dict=available_globals, global_dict={})
                     
                     total_sum += expr_vals.sum()
                     if agg_func in ['std', 'var']:
@@ -187,7 +199,8 @@ class DataManager(QObject):
                     if progress_callback:
                         progress_callback(def_idx * num_files + file_idx + 1, num_defs * num_files, f"正在计算 '{name}' ({file_idx+1}/{num_files})")
                 except Exception as e:
-                    raise RuntimeError(f"计算 '{name}' 时在文件 {file_info['path']} 中出错: {e}")
+                    logger.error(f"Error evaluating expression '{processed_expr}' in file {file_info['path']}: {e}")
+                    raise RuntimeError(f"计算 '{name}' 时在文件 {os.path.basename(file_info['path'])} 中出错: {e}")
 
             if total_count == 0:
                 raise ValueError(f"计算 '{name}' 时未能处理任何数据点。")
