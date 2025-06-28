@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QGroupBox, QLabel, QComboBox, QLineEdit, QPushButton,
     QSlider, QSpinBox, QDoubleSpinBox, QCheckBox, QTextEdit,
     QStatusBar, QMenuBar, QFileDialog, QMessageBox,
-    QScrollArea, QTabWidget
+    QScrollArea, QTabWidget, QInputDialog
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSettings
 from PyQt6.QtGui import QAction, QKeySequence, QFont, QIcon
@@ -47,12 +47,17 @@ class MainWindow(QMainWindow):
         self.is_playing: bool = False
         self.frame_skip_step: int = 1 # Changed from play_fps to frame_skip_step
         self.skipped_frames: int = 0
+        self.config_is_dirty: bool = False
+        self._is_loading_config: bool = False
+        self.current_config_file: Optional[str] = None
         
         # --- 配置路径 ---
         self.data_dir = self.settings.value("data_directory", os.path.join(os.getcwd(), "data"))
         self.output_dir = self.settings.value("output_directory", os.path.join(os.getcwd(), "output"))
+        self.settings_dir = os.path.join(os.getcwd(), "settings")
         os.makedirs(self.data_dir, exist_ok=True)
         os.makedirs(self.output_dir, exist_ok=True)
+        os.makedirs(self.settings_dir, exist_ok=True)
         
         # --- 配置定时器 ---
         self.play_timer = QTimer(self)
@@ -63,6 +68,8 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._load_settings()
         self._initialize_data()
+        self._populate_config_combobox()
+
 
     # region UI 初始化
     def _init_ui(self):
@@ -234,7 +241,7 @@ class MainWindow(QMainWindow):
         self.gpu_checkbox = QCheckBox("启用GPU加速 (需NVIDIA/CuPy)"); self.gpu_checkbox.setToolTip("使用CUDA加速公式计算和视频渲染"); self.gpu_checkbox.setEnabled(is_gpu_available()); self.gpu_checkbox.toggled.connect(lambda on: self.plot_widget.set_config(use_gpu=on))
         perf_layout.addWidget(self.gpu_checkbox)
         cache_layout = QHBoxLayout(); cache_layout.addWidget(QLabel("内存缓存:"))
-        self.cache_size_spinbox = QSpinBox(); self.cache_size_spinbox.setRange(10, 2000); self.cache_size_spinbox.setValue(100); self.cache_size_spinbox.setSingleStep(10); self.cache_size_spinbox.setSuffix(" 帧")
+        self.cache_size_spinbox = QSpinBox(); self.cache_size_spinbox.setRange(10, 2000); self.cache_size_spinbox.setValue(30); self.cache_size_spinbox.setSingleStep(10); self.cache_size_spinbox.setSuffix(" 帧")
         cache_layout.addWidget(self.cache_size_spinbox)
         apply_cache_btn = QPushButton("应用"); apply_cache_btn.clicked.connect(self._apply_cache_settings); cache_layout.addWidget(apply_cache_btn)
         perf_layout.addLayout(cache_layout)
@@ -242,10 +249,22 @@ class MainWindow(QMainWindow):
 
         # 配置管理
         cfg_group = QGroupBox("配置管理")
-        cfg_layout = QHBoxLayout(cfg_group)
-        save_btn = QPushButton("保存配置"); save_btn.clicked.connect(self._save_config)
-        load_btn = QPushButton("加载配置"); load_btn.clicked.connect(self._load_config)
-        cfg_layout.addWidget(save_btn); cfg_layout.addWidget(load_btn)
+        cfg_layout = QGridLayout(cfg_group)
+        cfg_layout.addWidget(QLabel("配置文件:"), 0, 0)
+        self.config_combo = QComboBox()
+        cfg_layout.addWidget(self.config_combo, 0, 1, 1, 2)
+        
+        btn_layout = QHBoxLayout()
+        self.save_config_btn = QPushButton("保存配置")
+        self.new_config_btn = QPushButton("新建配置")
+        btn_layout.addWidget(self.save_config_btn)
+        btn_layout.addWidget(self.new_config_btn)
+        cfg_layout.addLayout(btn_layout, 1, 1, 1, 2)
+
+        self.config_status_label = QLabel("")
+        self.config_status_label.setStyleSheet("color: orange;")
+        cfg_layout.addWidget(self.config_status_label, 2, 0, 1, 3)
+
         layout.addWidget(cfg_group)
         
         layout.addStretch()
@@ -291,7 +310,7 @@ class MainWindow(QMainWindow):
         self.plot_widget.value_picked.connect(self._on_value_picked)
         self.plot_widget.plot_rendered.connect(self._on_plot_rendered)
         
-        # Connect visualization setting changes to a slot
+        # 可视化设置改变 -> 提示未应用
         self.x_axis_combo.currentIndexChanged.connect(self._on_visualization_setting_changed)
         self.y_axis_combo.currentIndexChanged.connect(self._on_visualization_setting_changed)
         self.heatmap_enabled.toggled.connect(self._on_visualization_setting_changed)
@@ -307,6 +326,18 @@ class MainWindow(QMainWindow):
         self.contour_colors.currentIndexChanged.connect(self._on_visualization_setting_changed)
         self.contour_linewidth.valueChanged.connect(self._on_visualization_setting_changed)
         self.contour_labels.toggled.connect(self._on_visualization_setting_changed)
+        
+        # 其他会影响配置的控件 -> 标记为dirty
+        self.gpu_checkbox.toggled.connect(self._mark_config_as_dirty)
+        self.cache_size_spinbox.valueChanged.connect(self._mark_config_as_dirty)
+        self.frame_skip_spinbox.valueChanged.connect(self._mark_config_as_dirty)
+        self.export_dpi.valueChanged.connect(self._mark_config_as_dirty)
+        self.video_fps.valueChanged.connect(self._mark_config_as_dirty)
+
+        # 配置管理控件
+        self.save_config_btn.clicked.connect(self._save_current_config)
+        self.new_config_btn.clicked.connect(self._create_new_config)
+
 
     def _on_loading_finished(self, success: bool, message: str):
         """数据加载完成后的回调"""
@@ -399,9 +430,8 @@ class MainWindow(QMainWindow):
         if value != self.current_frame_index: self._load_frame(value)
     def _on_frame_skip_changed(self, value: int): # Renamed and modified
         self.frame_skip_step = value
-        # Set a fixed interval for the timer, independent of frame_skip_step
-        # This allows for consistent animation speed while skipping frames
-        self.play_timer.setInterval(50) # Example: 50ms interval (20 FPS)
+        self.play_timer.setInterval(50) 
+        self._mark_config_as_dirty()
     # endregion
     
     # region 核心逻辑
@@ -476,6 +506,7 @@ class MainWindow(QMainWindow):
         self._load_frame(self.current_frame_index)
         self.status_bar.showMessage("正在应用可视化设置...", 3000)
         self.visualization_status_label.setText("") # Clear status after applying
+        self._mark_config_as_dirty()
     # endregion
 
     # region 菜单与文件操作
@@ -492,7 +523,10 @@ class MainWindow(QMainWindow):
         new_dir = QFileDialog.getExistingDirectory(self, "选择输出目录", self.output_dir)
         if new_dir and new_dir != self.output_dir:
             self.output_dir = new_dir; self.output_dir_line_edit.setText(self.output_dir)
-    def _apply_cache_settings(self): self.data_manager.set_cache_size(self.cache_size_spinbox.value()); self._update_frame_info()
+    def _apply_cache_settings(self): 
+        self.data_manager.set_cache_size(self.cache_size_spinbox.value())
+        self._update_frame_info()
+        self._mark_config_as_dirty()
 
     def _export_image(self):
         fname = os.path.join(self.output_dir, f"frame_{self.current_frame_index:05d}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
@@ -506,6 +540,133 @@ class MainWindow(QMainWindow):
         fname = os.path.join(self.output_dir, f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
         p_conf = {'x_axis': self.x_axis_combo.currentText(), 'y_axis': self.y_axis_combo.currentText(), 'use_gpu': self.gpu_checkbox.isChecked(), 'heatmap_config': self._get_current_config()['heatmap'], 'contour_config': self._get_current_config()['contour']}
         VideoExportDialog(self, self.data_manager, p_conf, fname, s_f, e_f, self.video_fps.value()).exec()
+    # endregion
+    
+    # region 配置管理逻辑
+    def _mark_config_as_dirty(self, *args, **kwargs):
+        """将当前配置标记为“脏”（有未保存的更改）"""
+        if self._is_loading_config:
+            return
+        self.config_is_dirty = True
+        self.config_status_label.setText("存在未保存的修改")
+
+    def _populate_config_combobox(self):
+        """扫描settings文件夹并填充配置下拉框"""
+        self.config_combo.blockSignals(True)
+        self.config_combo.clear()
+
+        default_config_path = os.path.join(self.settings_dir, "default.json")
+        if not os.path.exists(default_config_path):
+            logger.info("default.json not found, creating a new one.")
+            try:
+                with open(default_config_path, 'w', encoding='utf-8') as f:
+                    json.dump(self._get_current_config(), f, indent=4)
+            except Exception as e:
+                logger.error(f"Failed to create default config file: {e}")
+
+        config_files = [f for f in os.listdir(self.settings_dir) if f.endswith('.json')]
+        self.config_combo.addItems(config_files)
+
+        # 尝试选择上次使用的配置文件或默认文件
+        last_config = os.path.basename(self.settings.value("last_config_file", default_config_path))
+        if last_config in config_files:
+            self.config_combo.setCurrentText(last_config)
+        
+        self.config_combo.blockSignals(False)
+        self.config_combo.currentIndexChanged.connect(self._on_config_selected)
+        self._load_config_by_name(self.config_combo.currentText())
+
+    def _on_config_selected(self, index: int):
+        """当用户从下拉框选择新配置时的处理程序"""
+        if self.config_is_dirty:
+            reply = QMessageBox.question(
+                self, '未保存的修改',
+                "当前配置已被修改，是否要在切换前保存？",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel
+            )
+            if reply == QMessageBox.StandardButton.Save:
+                self._save_current_config()
+            elif reply == QMessageBox.StandardButton.Cancel:
+                self.config_combo.blockSignals(True)
+                self.config_combo.setCurrentText(os.path.basename(self.current_config_file))
+                self.config_combo.blockSignals(False)
+                return
+        
+        self._load_config_by_name(self.config_combo.currentText())
+
+    def _load_config_by_name(self, filename: str):
+        """根据文件名加载配置文件"""
+        if not filename: return
+        filepath = os.path.join(self.settings_dir, filename)
+        
+        if not os.path.exists(filepath):
+            logger.error(f"Config file not found: {filepath}")
+            QMessageBox.critical(self, "加载失败", f"找不到配置文件: {filename}")
+            return
+        
+        self._is_loading_config = True # 开始加载，阻止dirty标记
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                self._apply_config(config)
+            self.current_config_file = filepath
+            self.settings.setValue("last_config_file", filepath) # 保存最后使用的配置
+            self.config_is_dirty = False
+            self.config_status_label.setText("")
+            self.status_bar.showMessage(f"已加载配置: {filename}", 3000)
+        except Exception as e:
+            logger.error(f"加载配置文件 '{filename}' 失败: {e}", exc_info=True)
+            QMessageBox.critical(self, "加载失败", f"无法加载或解析配置文件。\n\n错误: {e}")
+        finally:
+            self._is_loading_config = False # 加载结束
+
+    def _save_current_config(self):
+        """将当前UI配置保存到当前选定的文件中"""
+        if not self.current_config_file:
+            QMessageBox.warning(self, "错误", "没有选定的配置文件。")
+            return
+        
+        try:
+            with open(self.current_config_file, 'w', encoding='utf-8') as f:
+                json.dump(self._get_current_config(), f, indent=4)
+            self.config_is_dirty = False
+            self.config_status_label.setText("配置已保存")
+            self.status_bar.showMessage(f"配置已保存到 {os.path.basename(self.current_config_file)}", 3000)
+        except Exception as e:
+            logger.error(f"保存配置文件 '{self.current_config_file}' 失败: {e}", exc_info=True)
+            QMessageBox.critical(self, "保存失败", f"无法写入配置文件。\n\n错误: {e}")
+
+    def _create_new_config(self):
+        """提示用户输入新名称并创建新的配置文件"""
+        text, ok = QInputDialog.getText(self, "新建配置", "请输入新配置文件的名称:")
+        if ok and text:
+            # 基本的文件名验证
+            if any(c in r'/\:*?"<>|' for c in text):
+                QMessageBox.warning(self, "名称无效", "文件名不能包含以下字符: /\\:*?\"<>|")
+                return
+
+            new_filename = f"{text}.json"
+            new_filepath = os.path.join(self.settings_dir, new_filename)
+            
+            if os.path.exists(new_filepath):
+                reply = QMessageBox.question(self, "文件已存在", f"文件 '{new_filename}' 已存在。是否要覆盖它？")
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+
+            # 保存当前设置到新文件
+            self.current_config_file = new_filepath
+            self._save_current_config()
+            
+            # 刷新下拉框并选中新文件
+            self.config_combo.blockSignals(True)
+            if self.config_combo.findText(new_filename) == -1:
+                self.config_combo.addItem(new_filename)
+            self.config_combo.setCurrentText(new_filename)
+            self.config_combo.blockSignals(False)
+
+            self.settings.setValue("last_config_file", new_filepath)
+            self.config_is_dirty = False
+            self.config_status_label.setText("")
 
     def _get_current_config(self) -> Dict[str, Any]:
         """获取当前所有UI配置，用于保存"""
@@ -520,14 +681,12 @@ class MainWindow(QMainWindow):
     def _apply_config(self, config: Dict[str, Any]):
         """从字典加载配置到UI"""
         try:
-            # 安全地获取各个配置节
             perf = config.get("performance", {}); axes = config.get("axes", {}); heatmap = config.get("heatmap", {}); contour = config.get("contour", {}); playback = config.get("playback", {}); export = config.get("export", {})
             
-            # 应用配置
             if self.gpu_checkbox.isEnabled():
                 self.gpu_checkbox.setChecked(perf.get("gpu", False))
-                self._update_gpu_status_label() # Update GPU status after applying config
-            self.cache_size_spinbox.setValue(perf.get("cache", 100)); self._apply_cache_settings()
+                self._update_gpu_status_label()
+            self.cache_size_spinbox.setValue(perf.get("cache", 100)); self.data_manager.set_cache_size(self.cache_size_spinbox.value())
             
             if axes.get("x"): self.x_axis_combo.setCurrentText(axes["x"])
             if axes.get("y"): self.y_axis_combo.setCurrentText(axes["y"])
@@ -547,32 +706,15 @@ class MainWindow(QMainWindow):
             self.contour_linewidth.setValue(contour.get("linewidths", 1.0))
             self.contour_labels.setChecked(contour.get("show_labels", True))
             
-            self.frame_skip_spinbox.setValue(playback.get("frame_skip_step", 1)) # Changed key and default value
+            self.frame_skip_spinbox.setValue(playback.get("frame_skip_step", 1))
             self.export_dpi.setValue(export.get("dpi", 300))
             self.video_fps.setValue(export.get("video_fps", 15))
             
-            # 应用设置以刷新视图
             self._apply_visualization_settings()
-            self.status_bar.showMessage("配置已成功应用", 3000)
-            self.visualization_status_label.setText("") # Clear status after applying config
+            self.visualization_status_label.setText("")
         except Exception as e:
             logger.error(f"应用配置失败: {e}", exc_info=True)
             QMessageBox.critical(self, "错误", f"应用配置失败，文件可能已损坏或版本不兼容。\n\n错误: {e}")
-
-    def _save_config(self):
-        fname, _ = QFileDialog.getSaveFileName(self, "保存配置", self.output_dir, "JSON files (*.json)")
-        if fname:
-            with open(fname, 'w', encoding='utf-8') as f: json.dump(self._get_current_config(), f, indent=4)
-            self.status_bar.showMessage(f"配置已保存到 {os.path.basename(fname)}", 3000)
-
-    def _load_config(self):
-        fname, _ = QFileDialog.getOpenFileName(self, "加载配置", self.output_dir, "JSON files (*.json)")
-        if fname:
-            try:
-                with open(fname, 'r', encoding='utf-8') as f: self._apply_config(json.load(f))
-            except Exception as e:
-                logger.error(f"加载配置文件 '{fname}' 失败: {e}", exc_info=True)
-                QMessageBox.critical(self, "加载失败", f"无法加载或解析配置文件。\n\n错误: {e}")
     # endregion
     
     # region 程序设置与关闭
@@ -580,14 +722,14 @@ class MainWindow(QMainWindow):
         """加载持久化程序设置"""
         self.restoreGeometry(self.settings.value("geometry", self.saveGeometry()))
         self.restoreState(self.settings.value("windowState", self.saveState()))
-        self.frame_skip_spinbox.setValue(self.settings.value("frame_skip_step", 1, type=int)) # Changed key and default value
+        self.frame_skip_spinbox.setValue(self.settings.value("frame_skip_step", 1, type=int))
         self.export_dpi.setValue(self.settings.value("export_dpi", 300, type=int))
         self.video_fps.setValue(self.settings.value("video_fps", 15, type=int))
         self.cache_size_spinbox.setValue(self.settings.value("cache_size", 100, type=int))
         if self.gpu_checkbox.isEnabled():
             self.gpu_checkbox.setChecked(self.settings.value("use_gpu", False, type=bool))
-        self._update_gpu_status_label() # Update GPU status after loading settings
-        self.visualization_status_label.setText("") # Clear status after loading settings
+        self._update_gpu_status_label()
+        self.visualization_status_label.setText("")
 
     def _save_settings(self):
         """保存持久化程序设置"""
@@ -595,14 +737,28 @@ class MainWindow(QMainWindow):
         self.settings.setValue("windowState", self.saveState())
         self.settings.setValue("data_directory", self.data_dir)
         self.settings.setValue("output_directory", self.output_dir)
-        self.settings.setValue("frame_skip_step", self.frame_skip_spinbox.value()) # Changed key
+        self.settings.setValue("frame_skip_step", self.frame_skip_spinbox.value())
         self.settings.setValue("export_dpi", self.export_dpi.value())
         self.settings.setValue("video_fps", self.video_fps.value())
         self.settings.setValue("cache_size", self.cache_size_spinbox.value())
         self.settings.setValue("use_gpu", self.gpu_checkbox.isChecked())
+        if self.current_config_file:
+            self.settings.setValue("last_config_file", self.current_config_file)
 
     def closeEvent(self, event):
         """处理窗口关闭事件"""
+        if self.config_is_dirty:
+            reply = QMessageBox.question(
+                self, '未保存的修改',
+                "当前配置已被修改，是否要在退出前保存？",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel
+            )
+            if reply == QMessageBox.StandardButton.Save:
+                self._save_current_config()
+            elif reply == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+
         self._save_settings()
         self.play_timer.stop()
         self.plot_widget.thread_pool.clear()
@@ -624,10 +780,9 @@ class MainWindow(QMainWindow):
         else:
             self.gpu_status_label.setText("GPU: 不可用")
             self.gpu_status_label.setStyleSheet("color: red;")
-    # endregion
-
-    # region 新增辅助方法
+    
     def _on_visualization_setting_changed(self):
         """当可视化设置发生改变时，提示用户未应用设置"""
         self.visualization_status_label.setText("设置未应用")
+        self._mark_config_as_dirty()
     # endregion
