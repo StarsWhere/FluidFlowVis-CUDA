@@ -113,14 +113,21 @@ class BatchExportWorker(QThread):
                 with open(filepath, 'r', encoding='utf-8') as f:
                     config = json.load(f)
                 
+                # 从配置文件中提取所有需要的参数
+                axes_cfg = config.get('axes', {})
                 export_cfg = config.get("export", {})
+                
                 p_conf = {
-                    'x_axis': config.get('axes', {}).get('x', 'x'),
-                    'y_axis': config.get('axes', {}).get('y', 'y'),
+                    'x_axis': axes_cfg.get('x', 'x'),
+                    'y_axis': axes_cfg.get('y', 'y'),
+                    'x_axis_formula': axes_cfg.get('x_formula', ''),
+                    'y_axis_formula': axes_cfg.get('y_formula', ''),
                     'use_gpu': config.get('performance', {}).get('gpu', False),
                     'heatmap_config': config.get('heatmap', {}),
-                    'contour_config': config.get('contour', {})
+                    'contour_config': config.get('contour', {}),
+                    'global_scope': self.data_manager.global_stats
                 }
+                
                 s_f = export_cfg.get("video_start_frame", 0)
                 e_f = export_cfg.get("video_end_frame", self.data_manager.get_frame_count() - 1)
                 fps = export_cfg.get("video_fps", 15)
@@ -304,7 +311,7 @@ class MainWindow(QMainWindow):
     
     def _create_control_panel(self) -> QWidget:
         panel = QWidget()
-        panel.setMaximumWidth(400)
+        panel.setMaximumWidth(450) # Increased width for new fields
         
         main_layout = QVBoxLayout(panel)
         self.tab_widget = QTabWidget()
@@ -327,14 +334,24 @@ class MainWindow(QMainWindow):
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout(scroll_widget)
 
+        # --- NEW: Axis Group with Formulas ---
         axis_group = QGroupBox("坐标轴设置")
         axis_layout = QGridLayout(axis_group)
         axis_layout.addWidget(QLabel("X轴变量:"), 0, 0)
         self.x_axis_combo = QComboBox()
         axis_layout.addWidget(self.x_axis_combo, 0, 1)
+        axis_layout.addWidget(QLabel("X轴公式:"), 0, 2)
+        self.x_axis_formula = QLineEdit(); self.x_axis_formula.setPlaceholderText("可选, 例: x / 1000")
+        axis_layout.addWidget(self.x_axis_formula, 0, 3)
+        
         axis_layout.addWidget(QLabel("Y轴变量:"), 1, 0)
         self.y_axis_combo = QComboBox()
         axis_layout.addWidget(self.y_axis_combo, 1, 1)
+        axis_layout.addWidget(QLabel("Y轴公式:"), 1, 2)
+        self.y_axis_formula = QLineEdit(); self.y_axis_formula.setPlaceholderText("可选, 例: y * rho_global_mean")
+        axis_layout.addWidget(self.y_axis_formula, 1, 3)
+        axis_layout.setColumnStretch(1, 1)
+        axis_layout.setColumnStretch(3, 2)
         scroll_layout.addWidget(axis_group)
 
         heatmap_group = QGroupBox("背景热力图")
@@ -575,14 +592,19 @@ class MainWindow(QMainWindow):
         self.plot_widget.plot_rendered.connect(self._on_plot_rendered)
         self.plot_widget.interpolation_error.connect(self._on_interpolation_error)
         
+        # Connect visualization widgets
         self.x_axis_combo.currentIndexChanged.connect(self._trigger_auto_apply)
         self.y_axis_combo.currentIndexChanged.connect(self._trigger_auto_apply)
+        self.x_axis_formula.editingFinished.connect(self._trigger_auto_apply)
+        self.y_axis_formula.editingFinished.connect(self._trigger_auto_apply)
+        
         self.heatmap_enabled.toggled.connect(self._trigger_auto_apply)
         self.heatmap_variable.currentIndexChanged.connect(self._trigger_auto_apply)
         self.heatmap_formula.editingFinished.connect(self._trigger_auto_apply)
         self.heatmap_colormap.currentIndexChanged.connect(self._trigger_auto_apply)
         self.heatmap_vmin.editingFinished.connect(self._trigger_auto_apply)
         self.heatmap_vmax.editingFinished.connect(self._trigger_auto_apply)
+        
         self.contour_enabled.toggled.connect(self._trigger_auto_apply)
         self.contour_variable.currentIndexChanged.connect(self._trigger_auto_apply)
         self.contour_formula.editingFinished.connect(self._trigger_auto_apply)
@@ -591,6 +613,7 @@ class MainWindow(QMainWindow):
         self.contour_linewidth.valueChanged.connect(self._trigger_auto_apply)
         self.contour_labels.toggled.connect(self._trigger_auto_apply)
 
+        # Connect settings that mark config as dirty
         self.gpu_checkbox.toggled.connect(self._mark_config_as_dirty)
         self.cache_size_spinbox.valueChanged.connect(self._mark_config_as_dirty)
         self.frame_skip_spinbox.valueChanged.connect(self._mark_config_as_dirty)
@@ -599,13 +622,16 @@ class MainWindow(QMainWindow):
         self.video_start_frame.valueChanged.connect(self._mark_config_as_dirty)
         self.video_end_frame.valueChanged.connect(self._mark_config_as_dirty)
 
+        # Config management
         self.config_combo.currentIndexChanged.connect(self._on_config_selected)
         self.save_config_btn.clicked.connect(self._save_current_config)
         self.new_config_btn.clicked.connect(self._create_new_config)
 
     def _trigger_auto_apply(self, *args):
+        if self._is_loading_config: return
         if self.data_manager.get_frame_count() > 0:
             self._apply_visualization_settings()
+        self._mark_config_as_dirty()
 
     def _on_gpu_toggle(self, is_on):
         self.plot_widget.set_config(use_gpu=is_on)
@@ -635,34 +661,25 @@ class MainWindow(QMainWindow):
 
     def _on_interpolation_error(self, message: str):
         """Handles errors from the plot widget's interpolation worker."""
-        # **FIX**: Instantiate QMessageBox to enable RichText formatting.
         msg_box = QMessageBox(self)
         msg_box.setIcon(QMessageBox.Icon.Critical)
         msg_box.setWindowTitle("可视化错误")
         msg_box.setTextFormat(Qt.TextFormat.RichText)
         msg_box.setText(f"无法渲染图形，公式可能存在问题。<br><br><b>错误详情:</b><br>{message}")
         
-
-        # Check which formula might be the culprit and clear it.
-        # A common mistake is using a constant expression (which has no data variables) for a plot.
+        # Check which formula might be the culprit.
+        if "X轴" in message: self.x_axis_formula.clear()
+        if "Y轴" in message: self.y_axis_formula.clear()
         
-        # Check heatmap formula
         h_formula = self.heatmap_formula.text().strip()
-        if h_formula:
-            used_vars = self.formula_validator.get_used_variables(h_formula)
-            # A valid plot formula must contain at least one per-point data variable.
-            # If used_vars is empty, it's a constant expression.
-            if not used_vars:
-                logger.warning(f"检测到无效的热力图公式 (常量表达式): '{h_formula}'. 将被清除。")
-                self.heatmap_formula.clear()
+        if h_formula and not self.formula_validator.validate(h_formula):
+            logger.warning(f"检测到无效的热力图公式: '{h_formula}'. 将被清除。")
+            self.heatmap_formula.clear()
 
-        # Check contour formula
         c_formula = self.contour_formula.text().strip()
-        if c_formula:
-            used_vars = self.formula_validator.get_used_variables(c_formula)
-            if not used_vars:
-                logger.warning(f"检测到无效的等高线公式 (常量表达式): '{c_formula}'. 将被清除。")
-                self.contour_formula.clear()
+        if c_formula and not self.formula_validator.validate(c_formula):
+            logger.warning(f"检测到无效的等高线公式: '{c_formula}'. 将被清除。")
+            self.contour_formula.clear()
                 
         msg_box.exec()
 
@@ -782,6 +799,19 @@ class MainWindow(QMainWindow):
     def _apply_visualization_settings(self):
         if self.data_manager.get_frame_count() == 0: return
 
+        # --- Validate Axis formulas ---
+        x_formula = self.x_axis_formula.text().strip()
+        if x_formula and not self.formula_validator.validate(x_formula):
+            self.x_axis_formula.clear()
+            QMessageBox.warning(self, "公式错误", f"X轴公式无效，内容已清除:\n\n'{x_formula}'")
+            return
+        y_formula = self.y_axis_formula.text().strip()
+        if y_formula and not self.formula_validator.validate(y_formula):
+            self.y_axis_formula.clear()
+            QMessageBox.warning(self, "公式错误", f"Y轴公式无效，内容已清除:\n\n'{y_formula}'")
+            return
+
+        # --- Validate Heatmap/Contour ---
         try:
             vmin = float(self.heatmap_vmin.text()) if self.heatmap_vmin.text().strip() else None
             vmax = float(self.heatmap_vmax.text()) if self.heatmap_vmax.text().strip() else None
@@ -791,7 +821,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "输入错误", "最小值/最大值必须是有效的数字。输入已被清除。")
 
         heat_cfg = {'enabled': self.heatmap_enabled.isChecked(), 'variable': self.heatmap_variable.currentData(), 'formula': self.heatmap_formula.text().strip(), 'colormap': self.heatmap_colormap.currentText(), 'vmin': vmin, 'vmax': vmax}
-        # **FIX**: Clear field FIRST, then show message box.
         if heat_cfg['formula'] and not self.formula_validator.validate(heat_cfg['formula']):
             invalid_formula = heat_cfg['formula']
             self.heatmap_formula.clear()
@@ -799,7 +828,6 @@ class MainWindow(QMainWindow):
             return
             
         contour_cfg = {'enabled': self.contour_enabled.isChecked(), 'variable': self.contour_variable.currentData(), 'formula': self.contour_formula.text().strip(), 'levels': self.contour_levels.value(), 'colors': self.contour_colors.currentText(), 'linewidths': self.contour_linewidth.value(), 'show_labels': self.contour_labels.isChecked()}
-        # **FIX**: Clear field FIRST, then show message box.
         if contour_cfg['formula'] and not self.formula_validator.validate(contour_cfg['formula']):
             invalid_formula = contour_cfg['formula']
             self.contour_formula.clear()
@@ -810,7 +838,9 @@ class MainWindow(QMainWindow):
             heatmap_config=heat_cfg, 
             contour_config=contour_cfg, 
             x_axis=self.x_axis_combo.currentText(), 
-            y_axis=self.y_axis_combo.currentText()
+            y_axis=self.y_axis_combo.currentText(),
+            x_axis_formula=x_formula,
+            y_axis_formula=y_formula
         )
         self._load_frame(self.current_frame_index)
         self.status_bar.showMessage("可视化设置已更新", 2000)
@@ -903,10 +933,17 @@ class MainWindow(QMainWindow):
         s_f, e_f = self.video_start_frame.value(), self.video_end_frame.value()
         if s_f >= e_f: QMessageBox.warning(self, "参数错误", "起始帧必须小于结束帧"); return
         fname = os.path.join(self.output_dir, f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+        
+        current_config = self._get_current_config()
+        axes_cfg = current_config['axes']
+        
         p_conf = {
-            'x_axis': self.x_axis_combo.currentText(), 'y_axis': self.y_axis_combo.currentText(), 
-            'use_gpu': self.gpu_checkbox.isChecked(), 'heatmap_config': self._get_current_config()['heatmap'], 
-            'contour_config': self._get_current_config()['contour']
+            'x_axis': axes_cfg['x'], 'y_axis': axes_cfg['y'], 
+            'x_axis_formula': axes_cfg['x_formula'], 'y_axis_formula': axes_cfg['y_formula'],
+            'use_gpu': self.gpu_checkbox.isChecked(), 
+            'heatmap_config': current_config['heatmap'], 
+            'contour_config': current_config['contour'],
+            'global_scope': self.global_stats
         }
         VideoExportDialog(self, self.data_manager, p_conf, fname, s_f, e_f, self.video_fps.value()).exec()
     # endregion
@@ -1072,6 +1109,10 @@ class MainWindow(QMainWindow):
     # region 设置管理逻辑
     def _mark_config_as_dirty(self, *args):
         if self._is_loading_config: return
+        # A small delay to allow widgets to update their values
+        QTimer.singleShot(50, self._check_config_dirty_status)
+    
+    def _check_config_dirty_status(self):
         current_ui_config = self._get_current_config()
         if self._loaded_config != current_ui_config:
             self.config_is_dirty = True
@@ -1126,15 +1167,23 @@ class MainWindow(QMainWindow):
                 self._apply_config(config)
             self.current_config_file = filepath
             self.settings.setValue("last_config_file", filepath)
-            self._loaded_config = self._get_current_config()
-            self.config_is_dirty = False
-            self.config_status_label.setText("")
-            self.status_bar.showMessage(f"已加载设置: {filename}", 3000)
+            
+            # Use a timer to ensure all UI updates are processed before comparing configs
+            QTimer.singleShot(100, self._finalize_config_load)
+
         except Exception as e:
             logger.error(f"加载配置文件 '{filename}' 失败: {e}", exc_info=True)
             QMessageBox.critical(self, "加载失败", f"无法加载或解析配置文件。\n\n错误: {e}")
-        finally:
-            self._is_loading_config = False
+            self._is_loading_config = False # Ensure flag is reset on error
+    
+    def _finalize_config_load(self):
+        self._loaded_config = self._get_current_config()
+        self.config_is_dirty = False
+        self.config_status_label.setText("")
+        self.status_bar.showMessage(f"已加载设置: {os.path.basename(self.current_config_file)}", 3000)
+        self._is_loading_config = False
+        self._trigger_auto_apply()
+
 
     def _save_current_config(self):
         if not self.current_config_file:
@@ -1177,11 +1226,27 @@ class MainWindow(QMainWindow):
 
     def _get_current_config(self) -> Dict[str, Any]:
         return {
-            "version": "1.3", "axes": {"x": self.x_axis_combo.currentText(), "y": self.y_axis_combo.currentText()},
-            "heatmap": {'enabled': self.heatmap_enabled.isChecked(), 'variable': self.heatmap_variable.currentData(), 'formula': self.heatmap_formula.text(), 'colormap': self.heatmap_colormap.currentText(), 'vmin': self.heatmap_vmin.text().strip() or None, 'vmax': self.heatmap_vmax.text().strip() or None},
-            "contour": {'enabled': self.contour_enabled.isChecked(), 'variable': self.contour_variable.currentData(), 'formula': self.contour_formula.text(), 'levels': self.contour_levels.value(), 'colors': self.contour_colors.currentText(), 'linewidths': self.contour_linewidth.value(), 'show_labels': self.contour_labels.isChecked()},
+            "version": "1.4", # Version bump for new feature
+            "axes": {
+                "x": self.x_axis_combo.currentText(), "x_formula": self.x_axis_formula.text(),
+                "y": self.y_axis_combo.currentText(), "y_formula": self.y_axis_formula.text()
+            },
+            "heatmap": {
+                'enabled': self.heatmap_enabled.isChecked(), 'variable': self.heatmap_variable.currentData(), 
+                'formula': self.heatmap_formula.text(), 'colormap': self.heatmap_colormap.currentText(), 
+                'vmin': self.heatmap_vmin.text().strip() or None, 'vmax': self.heatmap_vmax.text().strip() or None
+            },
+            "contour": {
+                'enabled': self.contour_enabled.isChecked(), 'variable': self.contour_variable.currentData(), 
+                'formula': self.contour_formula.text(), 'levels': self.contour_levels.value(), 
+                'colors': self.contour_colors.currentText(), 'linewidths': self.contour_linewidth.value(), 
+                'show_labels': self.contour_labels.isChecked()
+            },
             "playback": {"frame_skip_step": self.frame_skip_spinbox.value()},
-            "export": {"dpi": self.export_dpi.value(), "video_fps": self.video_fps.value(), "video_start_frame": self.video_start_frame.value(), "video_end_frame": self.video_end_frame.value()},
+            "export": {
+                "dpi": self.export_dpi.value(), "video_fps": self.video_fps.value(), 
+                "video_start_frame": self.video_start_frame.value(), "video_end_frame": self.video_end_frame.value()
+            },
             "performance": {"gpu": self.gpu_checkbox.isChecked(), "cache": self.cache_size_spinbox.value()}
         }
     
@@ -1191,8 +1256,12 @@ class MainWindow(QMainWindow):
             perf = config.get("performance", {}); axes = config.get("axes", {}); heatmap = config.get("heatmap", {}); contour = config.get("contour", {}); playback = config.get("playback", {}); export = config.get("export", {})
             if self.gpu_checkbox.isEnabled(): self.gpu_checkbox.setChecked(perf.get("gpu", False))
             self.cache_size_spinbox.setValue(perf.get("cache", 100)); self.data_manager.set_cache_size(self.cache_size_spinbox.value())
+            
             if axes.get("x"): self.x_axis_combo.setCurrentText(axes["x"])
+            self.x_axis_formula.setText(axes.get("x_formula", ""))
             if axes.get("y"): self.y_axis_combo.setCurrentText(axes["y"])
+            self.y_axis_formula.setText(axes.get("y_formula", ""))
+
             self.heatmap_enabled.setChecked(heatmap.get("enabled", True))
             self.heatmap_variable.setCurrentText(heatmap.get("variable") or "无")
             self.heatmap_formula.setText(heatmap.get("formula", ""))
@@ -1216,9 +1285,19 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"应用设置失败，文件可能已损坏或版本不兼容。\n\n错误: {e}")
         finally:
             for widget in self.findChildren(QWidget): widget.blockSignals(False)
-            self._connect_signals() # Reconnect after blocking all
-            self._apply_visualization_settings()
+            self._connect_signals_for_config()
             self._update_gpu_status_label()
+
+    def _connect_signals_for_config(self):
+        """A subset of signal connections needed after reapplying a config."""
+        self.x_axis_combo.currentIndexChanged.connect(self._trigger_auto_apply)
+        self.y_axis_combo.currentIndexChanged.connect(self._trigger_auto_apply)
+        self.x_axis_formula.editingFinished.connect(self._trigger_auto_apply)
+        self.y_axis_formula.editingFinished.connect(self._trigger_auto_apply)
+        self.heatmap_variable.currentIndexChanged.connect(self._trigger_auto_apply)
+        self.contour_variable.currentIndexChanged.connect(self._trigger_auto_apply)
+        self.config_combo.currentIndexChanged.connect(self._on_config_selected)
+
 
     # endregion
     
@@ -1226,12 +1305,13 @@ class MainWindow(QMainWindow):
     def _load_settings(self):
         self.restoreGeometry(self.settings.value("geometry", self.saveGeometry()))
         self.restoreState(self.settings.value("windowState", self.saveState()))
-        self.frame_skip_spinbox.setValue(self.settings.value("frame_skip_step", 1, type=int))
-        self.export_dpi.setValue(self.settings.value("export_dpi", 300, type=int))
-        self.video_fps.setValue(self.settings.value("video_fps", 15, type=int))
-        self.cache_size_spinbox.setValue(self.settings.value("cache_size", 100, type=int))
-        if self.gpu_checkbox.isEnabled():
-            self.gpu_checkbox.setChecked(self.settings.value("use_gpu", False, type=bool))
+        # Config-related settings are now loaded from JSON files.
+        # self.frame_skip_spinbox.setValue(self.settings.value("frame_skip_step", 1, type=int))
+        # self.export_dpi.setValue(self.settings.value("export_dpi", 300, type=int))
+        # self.video_fps.setValue(self.settings.value("video_fps", 15, type=int))
+        # self.cache_size_spinbox.setValue(self.settings.value("cache_size", 100, type=int))
+        # if self.gpu_checkbox.isEnabled():
+        #     self.gpu_checkbox.setChecked(self.settings.value("use_gpu", False, type=bool))
         self._update_gpu_status_label()
 
     def _save_settings(self):
@@ -1239,11 +1319,11 @@ class MainWindow(QMainWindow):
         self.settings.setValue("windowState", self.saveState())
         self.settings.setValue("data_directory", self.data_dir)
         self.settings.setValue("output_directory", self.output_dir)
-        self.settings.setValue("frame_skip_step", self.frame_skip_spinbox.value())
-        self.settings.setValue("export_dpi", self.export_dpi.value())
-        self.settings.setValue("video_fps", self.video_fps.value())
-        self.settings.setValue("cache_size", self.cache_size_spinbox.value())
-        self.settings.setValue("use_gpu", self.gpu_checkbox.isChecked())
+        # self.settings.setValue("frame_skip_step", self.frame_skip_spinbox.value())
+        # self.settings.setValue("export_dpi", self.export_dpi.value())
+        # self.settings.setValue("video_fps", self.video_fps.value())
+        # self.settings.setValue("cache_size", self.cache_size_spinbox.value())
+        # self.settings.setValue("use_gpu", self.gpu_checkbox.isChecked())
         if self.current_config_file:
             self.settings.setValue("last_config_file", self.current_config_file)
 
