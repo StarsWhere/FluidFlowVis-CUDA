@@ -1,10 +1,9 @@
-
 # InterVis (交互可视分析器)
 
 [![Python Version](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![UI Framework](https://img.shields.io/badge/UI-PyQt6-brightgreen.svg)](https://www.riverbankcomputing.com/software/pyqt/)
-[![Version](https://img.shields.io/badge/Version-1.3--Final-blue)](https://github.com/StarsWhere/InterVis)
+[![Version](https://img.shields.io/badge/Version-1.4-blue)](https://github.com/StarsWhere/InterVis)
 
 **English:** An powerful, interactive tool for visualizing and analyzing time-series scientific computing data.
 <br>
@@ -14,7 +13,7 @@
 
 InterVis is designed for researchers, engineers, and students who need to analyze and understand complex data generated from numerical simulations (e.g., CFD, fluid dynamics, physics). It specializes in handling datasets composed of numerous CSV files, where each file represents a single time step. Instead of static plots, InterVis provides a dynamic, interactive environment to explore data, create derived quantities using a powerful formula engine, and export high-quality results.
 
-**English:** InterVis 专为需要分析和理解数值模拟（如计算流体力学、流体动力学、物理学）所产生的复杂数据的研究人员、工程师和学生而设计。它专注于处理由大量CSV文件组成的数据集，其中每个文件代表一个时间步。InterVis 提供了一个动态、交互式的环境来探索数据，使用强大的公式引擎创建派生量，并导出高质量的可视化结果，而非传统的静态绘图。
+**中文:** InterVis 专为需要分析和理解数值模拟（如计算流体力学、流体动力学、物理学）所产生的复杂数据的研究人员、工程师和学生而设计。它专注于处理由大量CSV文件组成的数据集，其中每个文件代表一个时间步。InterVis 提供了一个动态、交互式的环境来探索数据，使用强大的公式引擎创建派生量，并导出高质量的可视化结果，而非传统的静态绘图。
 
 ![Main Application Interface](png/main_interface.png)
 > *The main interface of InterVis, showing the visualization area and the control panel.*
@@ -23,11 +22,12 @@ InterVis is designed for researchers, engineers, and students who need to analyz
 ## 核心功能 (Key Features)
 
 *   📊 **实时交互可视化 (Real-time Interactive Visualization):** 使用 Matplotlib 引擎，通过交互式缩放、平移和数据探针，流畅地探索热力图和等高线图。
-*   🚀 **高级公式引擎 (Advanced Formula Engine):** 无需修改原始数据，即可在运行时动态创建和可视化复杂的派生物理量。支持单帧聚合（如 `p - mean(p)`）和全局常量。
+*   🚀 **统一公式引擎 (Unified Formula Engine):** 无需修改原始数据，即可在运行时为**坐标轴、热力图和等高线**动态创建和可视化复杂的派生物理量。支持单帧聚合（如 `p - mean(p)`）和全局常量。
+*   🌐 **坐标轴公式 (Axis Formulas):** 将公式直接应用于坐标轴，创建自定义的、非线性的或派生的坐标系 (例如 `log(x)`, `y / u_global_mean`)，以全新的视角观察数据。
 *   📈 **全局统计分析 (Global Statistics Analysis):**
     *   **基础统计 (Basic Stats):** 一键计算所有数据文件中每个变量的全局统计量（均值、标准差、方差等）。
     *   **自定义常量 (Custom Constants):** 基于基础统计量，定义并计算新的、用户指定的全局常量（如雷诺应力）。
-*   🖱️ **数据探针 (Data Probing):** 将鼠标悬停在绘图区域的任意位置，即可实时查看该点最近邻数据的所有物理量值。
+*   🖱️ **数据探针 (Data Probing):** 将鼠标悬停在绘图区域的任意位置，即可实时查看该点（在变换后坐标系中）最近邻数据的所有原始物理量值。
 *   🖼️ **高质量导出 (High-Quality Export):**
     *   支持将当前帧导出为高分辨率（可自定义 DPI）的 PNG 图像。
     *   支持将帧序列导出为 MP4 视频文件。
@@ -39,20 +39,21 @@ InterVis is designed for researchers, engineers, and students who need to analyz
 ## 功能详解 (Features in Detail)
 
 ### 1. 实时交互可视化 (Interactive Visualization)
-InterVis 的核心是一个强大的可视化窗口。您可以将任意两个变量作为 X 轴和 Y 轴，并使用其他变量或公式来渲染背景热力图和前景等高线。
+InterVis 的核心是一个强大的可视化窗口。您可以将任意变量作为坐标轴的基础，并可选择性地使用公式对其进行变换。同时，您可以使用其他变量或公式来渲染背景热力图和前景等高线。
 
-*   **热力图 (Heatmap):** 清晰地展示一个标量场的空间分布。
-*   **等高线 (Contour):** 勾勒出关键的数值分界线，并可选择显示数值标签。
+*   **坐标轴变换 (Axis Transformation):** 直接在坐标轴设置中输入公式（例如 `x/1000` 将单位从米转换为千米），以非线性的、或与其它物理量耦合的方式重新定义您的坐标空间。
+*   **热力图与等高线 (Heatmap & Contour):** 在您自定义的坐标系上，清晰地展示一个标量场的空间分布。
 *   **交互操作 (Interaction):** 使用鼠标滚轮进行缩放，使用鼠标左键拖动平移，实现对数据细节的无缝探索。
 
-![Visualization Feature](png/feature_visualization.png)
-> *一个同时显示压力场（热力图）和密度等值线（等高线）的可视化示例。*
-> *An example visualization showing a pressure field (heatmap) and density contours.*
+![Axis Formula Feature](png/feature_axis_formulas.png)
+> *使用公式动态变换X轴和Y轴，同时用另一个公式渲染热力图。*
+> *Using formulas to dynamically transform the X and Y axes, while rendering the heatmap with another formula.*
 
-### 2. 高级公式引擎 (Advanced Formula Engine)
-这是 InterVis 最强大的功能之一。您无需预处理数据，就可以在“公式”输入框中实时计算新的物理量。
+### 2. 统一公式引擎 (Unified Formula Engine)
+这是 InterVis 最强大的功能之一。您无需预处理数据，就可以在任何“公式”输入框中实时计算新的物理量。
 
-*   **简单公式:** `sqrt(u**2 + v**2)` (计算速度大小)
+*   **坐标轴变换:** `x * cos(y / y_global_max * pi)` (创建一个扭曲的坐标系)
+*   **热力图/等高线公式:** `sqrt(u**2 + v**2)` (计算速度大小)
 *   **单帧聚合:** `p - mean(p)` (计算当前帧的压力波动)
 *   **全局变量:** `(u - u_global_mean) * (v - v_global_mean)` (使用全局平均值计算速度分量的乘积)
 
@@ -117,7 +118,7 @@ InterVis 提供了将分析结果保存为高质量文件的功能。
 *   **缓存大小:** 调整加载到内存中的数据帧数量。增加缓存可以使播放和来回切换帧更流畅，但会消耗更多内存。
 *   **设置管理:** 所有的可视化和性能设置都可以保存到一个 `.json` 文件中，方便后续加载和分享。
 
-![Performance and Settings Management](png/feature_batch_export.png)
+![Performance and Settings Management](png/feature_settings.png)
 > *GPU 加速、缓存大小和配置文件管理。*
 > *GPU acceleration, cache size, and configuration file management.*
 
@@ -160,6 +161,7 @@ InterVis 提供了将分析结果保存为高质量文件的功能。
     scipy
     moviepy
     imageio
+    imageio-ffmpeg
     ```
 
 4.  **(可选) 安装 GPU 支持 (Optional: Install GPU support):**
@@ -190,8 +192,7 @@ InterVis 提供了将分析结果保存为高质量文件的功能。
         5.  导出您需要的结果。
 
 ## 目录结构 (Directory Structure)
-```
-InterVis/
+```InterVis/
 ├── data/              # 存放您的 CSV 数据文件 (Place your CSV data files here)
 ├── logs/              # 程序运行日志 (Application logs)
 ├── output/            # 导出的图片、视频和统计结果 (Exported images, videos, stats)
@@ -201,6 +202,8 @@ InterVis/
 │   ├── core/
 │   ├── utils/
 │   └── visualization/
+│       ├── headless_renderer.py  # (新增) 后台渲染引擎
+│       └── ...
 ├── main.py            # 主程序入口 (Main application entry point)
 ├── README.md          # 本文档 (This file)
 └── requirements.txt   # Python 依赖项 (Python dependencies)
