@@ -333,6 +333,8 @@ class MainWindow(QMainWindow):
         self.frame_skip_spinbox.valueChanged.connect(self._mark_config_as_dirty)
         self.export_dpi.valueChanged.connect(self._mark_config_as_dirty)
         self.video_fps.valueChanged.connect(self._mark_config_as_dirty)
+        self.video_start_frame.valueChanged.connect(self._mark_config_as_dirty)
+        self.video_end_frame.valueChanged.connect(self._mark_config_as_dirty)
 
         # 配置管理控件
         self.save_config_btn.clicked.connect(self._save_current_config)
@@ -674,7 +676,8 @@ class MainWindow(QMainWindow):
             "version": "1.3", "axes": {"x": self.x_axis_combo.currentText(), "y": self.y_axis_combo.currentText()},
             "heatmap": {'enabled': self.heatmap_enabled.isChecked(), 'variable': self.heatmap_variable.currentData(), 'formula': self.heatmap_formula.text(), 'colormap': self.heatmap_colormap.currentText(), 'vmin': self.heatmap_vmin.text().strip() if self.heatmap_vmin.text().strip() else None, 'vmax': self.heatmap_vmax.text().strip() if self.heatmap_vmax.text().strip() else None},
             "contour": {'enabled': self.contour_enabled.isChecked(), 'variable': self.contour_variable.currentData(), 'formula': self.contour_formula.text(), 'levels': self.contour_levels.value(), 'colors': self.contour_colors.currentText(), 'linewidths': self.contour_linewidth.value(), 'show_labels': self.contour_labels.isChecked()},
-            "playback": {"frame_skip_step": self.frame_skip_spinbox.value()}, "export": {"dpi": self.export_dpi.value(), "video_fps": self.video_fps.value()}, # Changed key
+            "playback": {"frame_skip_step": self.frame_skip_spinbox.value()},
+            "export": {"dpi": self.export_dpi.value(), "video_fps": self.video_fps.value(), "video_start_frame": self.video_start_frame.value(), "video_end_frame": self.video_end_frame.value()},
             "performance": {"gpu": self.gpu_checkbox.isChecked(), "cache": self.cache_size_spinbox.value()}
         }
     
@@ -709,6 +712,8 @@ class MainWindow(QMainWindow):
             self.frame_skip_spinbox.setValue(playback.get("frame_skip_step", 1))
             self.export_dpi.setValue(export.get("dpi", 300))
             self.video_fps.setValue(export.get("video_fps", 15))
+            self.video_start_frame.setValue(export.get("video_start_frame", 0))
+            self.video_end_frame.setValue(export.get("video_end_frame", 0))
             
             self._apply_visualization_settings()
             self.visualization_status_label.setText("")
