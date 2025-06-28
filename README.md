@@ -117,7 +117,7 @@ InterVis 提供了将分析结果保存为高质量文件的功能。
 *   **缓存大小:** 调整加载到内存中的数据帧数量。增加缓存可以使播放和来回切换帧更流畅，但会消耗更多内存。
 *   **设置管理:** 所有的可视化和性能设置都可以保存到一个 `.json` 文件中，方便后续加载和分享。
 
-![Performance and Settings Management](png/feature_performance.png)
+![Performance and Settings Management](png/feature_batch_export.png)
 > *GPU 加速、缓存大小和配置文件管理。*
 > *GPU acceleration, cache size, and configuration file management.*
 
