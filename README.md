@@ -45,7 +45,7 @@
 
 ### 2. 克隆仓库
 ```bash
-git clone https://github.com/your-username/InterVis.git
+git clone https://github.com/StarsWhere/InterVis.git
 cd InterVis
 ```
 
