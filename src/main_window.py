@@ -168,6 +168,10 @@ class MainWindow(QMainWindow):
         btn_layout = QHBoxLayout()
         apply_btn = QPushButton("应用可视化设置"); apply_btn.clicked.connect(self._apply_visualization_settings)
         reset_btn = QPushButton("重置视图"); reset_btn.clicked.connect(self.plot_widget.reset_view)
+        self.visualization_status_label = QLabel("")
+        self.visualization_status_label.setStyleSheet("color: red;")
+        scroll_layout.addWidget(self.visualization_status_label) # Add status label
+        
         btn_layout.addWidget(apply_btn); btn_layout.addWidget(reset_btn)
         scroll_layout.addLayout(btn_layout)
         
@@ -286,6 +290,23 @@ class MainWindow(QMainWindow):
         self.plot_widget.probe_data_ready.connect(self._on_probe_data)
         self.plot_widget.value_picked.connect(self._on_value_picked)
         self.plot_widget.plot_rendered.connect(self._on_plot_rendered)
+        
+        # Connect visualization setting changes to a slot
+        self.x_axis_combo.currentIndexChanged.connect(self._on_visualization_setting_changed)
+        self.y_axis_combo.currentIndexChanged.connect(self._on_visualization_setting_changed)
+        self.heatmap_enabled.toggled.connect(self._on_visualization_setting_changed)
+        self.heatmap_variable.currentIndexChanged.connect(self._on_visualization_setting_changed)
+        self.heatmap_formula.textChanged.connect(self._on_visualization_setting_changed)
+        self.heatmap_colormap.currentIndexChanged.connect(self._on_visualization_setting_changed)
+        self.heatmap_vmin.textChanged.connect(self._on_visualization_setting_changed)
+        self.heatmap_vmax.textChanged.connect(self._on_visualization_setting_changed)
+        self.contour_enabled.toggled.connect(self._on_visualization_setting_changed)
+        self.contour_variable.currentIndexChanged.connect(self._on_visualization_setting_changed)
+        self.contour_formula.textChanged.connect(self._on_visualization_setting_changed)
+        self.contour_levels.valueChanged.connect(self._on_visualization_setting_changed)
+        self.contour_colors.currentIndexChanged.connect(self._on_visualization_setting_changed)
+        self.contour_linewidth.valueChanged.connect(self._on_visualization_setting_changed)
+        self.contour_labels.toggled.connect(self._on_visualization_setting_changed)
 
     def _on_loading_finished(self, success: bool, message: str):
         """数据加载完成后的回调"""
@@ -454,6 +475,7 @@ class MainWindow(QMainWindow):
         self.plot_widget.set_config(heatmap_config=heat_cfg, contour_config=contour_cfg, x_axis=self.x_axis_combo.currentText(), y_axis=self.y_axis_combo.currentText())
         self._load_frame(self.current_frame_index)
         self.status_bar.showMessage("正在应用可视化设置...", 3000)
+        self.visualization_status_label.setText("") # Clear status after applying
     # endregion
 
     # region 菜单与文件操作
@@ -532,6 +554,7 @@ class MainWindow(QMainWindow):
             # 应用设置以刷新视图
             self._apply_visualization_settings()
             self.status_bar.showMessage("配置已成功应用", 3000)
+            self.visualization_status_label.setText("") # Clear status after applying config
         except Exception as e:
             logger.error(f"应用配置失败: {e}", exc_info=True)
             QMessageBox.critical(self, "错误", f"应用配置失败，文件可能已损坏或版本不兼容。\n\n错误: {e}")
@@ -564,6 +587,7 @@ class MainWindow(QMainWindow):
         if self.gpu_checkbox.isEnabled():
             self.gpu_checkbox.setChecked(self.settings.value("use_gpu", False, type=bool))
         self._update_gpu_status_label() # Update GPU status after loading settings
+        self.visualization_status_label.setText("") # Clear status after loading settings
 
     def _save_settings(self):
         """保存持久化程序设置"""
@@ -600,4 +624,10 @@ class MainWindow(QMainWindow):
         else:
             self.gpu_status_label.setText("GPU: 不可用")
             self.gpu_status_label.setStyleSheet("color: red;")
+    # endregion
+
+    # region 新增辅助方法
+    def _on_visualization_setting_changed(self):
+        """当可视化设置发生改变时，提示用户未应用设置"""
+        self.visualization_status_label.setText("设置未应用")
     # endregion
