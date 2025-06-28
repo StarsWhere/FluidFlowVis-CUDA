@@ -8,6 +8,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.ticker as ticker
 from scipy.interpolate import griddata
+from scipy.spatial.qhull import QhullError # 导入Qhull错误类型
 from typing import Optional, Dict, Any
 import logging
 import traceback
@@ -32,113 +33,82 @@ class InterpolationWorker(QRunnable):
         self.validator, self.signals = validator, WorkerSignals()
         
     def run(self):
-        try: self.signals.result.emit(self._perform_interpolation())
+        try:
+            self.signals.result.emit(self._perform_interpolation())
         except Exception as e:
             error_msg = f"插值或公式计算失败: {e}\n{traceback.format_exc()}"
-            logger.error(error_msg); self.signals.error.emit(str(e))
-        finally: self.signals.finished.emit()
+            logger.error(error_msg)
+            self.signals.error.emit(str(e))
+        finally:
+            self.signals.finished.emit()
 
     def _perform_interpolation(self):
         if self.data is None: return {}
         
-        # --- NEW: Axis Formula Evaluation ---
-        data = self.data.copy() # Work on a copy
+        # --- 坐标轴公式求值 ---
+        processed_data = self.data.copy()
         x_axis_to_use = self.x_ax
         y_axis_to_use = self.y_ax
-        eval_globals = self.validator.get_all_constants_and_globals()
 
         if self.x_formula:
             try:
-                x_values = data.eval(self.x_formula, global_dict=eval_globals, local_dict={})
+                x_values = self.validator.evaluate_formula(processed_data, self.x_formula)
                 x_axis_to_use = '__x_calculated__'
-                data[x_axis_to_use] = x_values
+                processed_data[x_axis_to_use] = x_values
             except Exception as e:
                 raise ValueError(f"X轴公式求值失败: {e}")
 
         if self.y_formula:
             try:
-                y_values = data.eval(self.y_formula, global_dict=eval_globals, local_dict={})
+                y_values = self.validator.evaluate_formula(processed_data, self.y_formula)
                 y_axis_to_use = '__y_calculated__'
-                data[y_axis_to_use] = y_values
+                processed_data[y_axis_to_use] = y_values
             except Exception as e:
                 raise ValueError(f"Y轴公式求值失败: {e}")
 
-        if x_axis_to_use not in data.columns or y_axis_to_use not in data.columns:
-            raise ValueError("一个或多个坐标轴变量在数据中不存在。")
+        # --- 网格与插值点定义 ---
+        gx, gy = np.meshgrid(
+            np.linspace(processed_data[x_axis_to_use].min(), processed_data[x_axis_to_use].max(), self.res[0]),
+            np.linspace(processed_data[y_axis_to_use].min(), processed_data[y_axis_to_use].max(), self.res[1])
+        )
+        points = processed_data[[x_axis_to_use, y_axis_to_use]].values
 
-        # --- Grid and Point Definition ---
-        gx, gy = np.meshgrid(np.linspace(data[x_axis_to_use].min(), data[x_axis_to_use].max(), self.res[0]),
-                             np.linspace(data[y_axis_to_use].min(), data[y_axis_to_use].max(), self.res[1]))
-        
-        # Points for interpolation are based on the (potentially calculated) axes
-        points = data[[x_axis_to_use, y_axis_to_use]].values
-        cache = {}
-        
-        # Heatmap/Contour evaluation
-        def _interp(var):
-            if var not in cache: 
-                # Values for Z-data come from the original dataframe columns
-                cache[var] = griddata(points, self.data[var].values, (gx, gy), method='linear', fill_value=np.nan)
-            return cache[var]
-
-        def _eval_cpu(formula, req_vars):
-            def frame_mean(expr_str: str): return self.data.eval(expr_str, global_dict={}, local_dict=eval_globals).mean()
-            def frame_sum(expr_str: str): return self.data.eval(expr_str, global_dict={}, local_dict=eval_globals).sum()
-            def frame_median(expr_str: str): return self.data.eval(expr_str, global_dict={}, local_dict=eval_globals).median()
-            def frame_std(expr_str: str): return self.data.eval(expr_str, global_dict={}, local_dict=eval_globals).std()
-            def frame_var(expr_str: str): return self.data.eval(expr_str, global_dict={}, local_dict=eval_globals).var()
-            def frame_min(expr_str: str): return self.data.eval(expr_str, global_dict={}, local_dict=eval_globals).min()
-            def frame_max(expr_str: str): return self.data.eval(expr_str, global_dict={}, local_dict=eval_globals).max()
-
-            var_data = {var: _interp(var) for var in req_vars}
-            local_scope = {
-                **eval_globals, **var_data, 'mean': frame_mean, 'sum': frame_sum, 'median': frame_median, 
-                'std': frame_std, 'var': frame_var, 'min_frame': frame_min, 'max_frame': frame_max
-            }
+        # --- 热力图与等高线Z值求值 ---
+        def get_z_values(cfg):
+            formula = cfg.get('formula', '').strip()
+            variable = cfg.get('variable')
             
-            processed_formula = formula
-            pattern = re.compile(r'(\b(?:' + '|'.join(self.validator.allowed_aggregates) + r'))\s*\((.*?)\)')
-            for match in reversed(list(pattern.finditer(formula))):
-                func_name, inner_expr = match.groups()
-                start, end = match.span()
-                if inner_expr.count('(') != inner_expr.count(')'): continue
-                quoted_inner_expr = f'"{inner_expr}"'
-                new_call = f'{func_name}({quoted_inner_expr})'
-                processed_formula = processed_formula[:start] + new_call + processed_formula[end:]
-            
-            logger.debug(f"Original formula: '{formula}', Processed for eval: '{processed_formula}'")
-            
-            safe_globals = {"__builtins__": None, "np": np}
-            result = eval(processed_formula, safe_globals, local_scope)
-            
-            if not isinstance(result, np.ndarray):
-                if gx is not None:
-                    return np.full_like(gx, float(result))
-                else:
-                    raise ValueError("公式必须至少包含一个逐点数据变量 (如 u, v, x 等) 才能进行空间可视化。")
-            return result
-            
-        def _eval_gpu(formula, req_vars):
-            var_data = {var: self.data[var].values for var in req_vars}
-            combined_vars = {**eval_globals, **var_data}
-            gpu_res = evaluate_formula_gpu(formula, combined_vars)
-            return griddata(points, gpu_res, (gx, gy), method='linear', fill_value=np.nan)
-            
-        def _get_data(cfg):
             if not cfg.get('enabled'): return None
-            formula, var = cfg.get('formula'), cfg.get('variable')
-            if formula:
-                req_vars = self.validator.get_used_variables(formula)
-                uses_aggregates = any(agg_func in formula for agg_func in self.validator.allowed_aggregates)
-                
-                if self.use_gpu and not uses_aggregates:
-                    return _eval_gpu(formula, req_vars)
-                else:
-                    return _eval_cpu(formula, req_vars)
-            elif var: return _interp(var)
-            return None
             
-        return {'grid_x': gx, 'grid_y': gy, 'heatmap_data': _get_data(self.heat_cfg), 'contour_data': _get_data(self.contour_cfg)}
+            if formula:
+                uses_aggregates = any(agg_func in formula for agg_func in self.validator.allowed_aggregates)
+                if self.use_gpu and not uses_aggregates:
+                    req_vars = self.validator.get_used_variables(formula)
+                    var_data = {var: self.data[var].values for var in req_vars}
+                    combined_vars = {**self.validator.get_all_constants_and_globals(), **var_data}
+                    return evaluate_formula_gpu(formula, combined_vars)
+                else:
+                    return self.validator.evaluate_formula(self.data, formula)
+            elif variable and variable in self.data.columns:
+                return self.data[variable].values
+            return None
+
+        heatmap_z = get_z_values(self.heat_cfg)
+        contour_z = get_z_values(self.contour_cfg)
+        
+        # --- 插值 (添加错误处理) ---
+        try:
+            heatmap_data = griddata(points, heatmap_z, (gx, gy), method='linear') if heatmap_z is not None else None
+            contour_data = griddata(points, contour_z, (gx, gy), method='linear') if contour_z is not None else None
+        except QhullError:
+            # 捕获Qhull错误并抛出一个更友好的异常
+            raise ValueError(
+                "输入点共线或退化，无法生成2D插值网格。\n\n"
+                "这通常是因为X轴和Y轴的公式相同，或公式导致所有点都落在一条直线上。"
+                "请为X轴和Y轴使用不同的公式。"
+            )
+            
+        return {'grid_x': gx, 'grid_y': gy, 'heatmap_data': heatmap_data, 'contour_data': contour_data}
 
 
 class PlotWidget(QWidget):
@@ -234,9 +204,16 @@ class PlotWidget(QWidget):
     def _draw_heatmap(self):
         data, gx, gy = self.interpolated_results.get('heatmap_data'), self.interpolated_results.get('grid_x'), self.interpolated_results.get('grid_y')
         if data is None or gx is None: return
-        vmin, vmax = self.heatmap_config.get('vmin'), self.heatmap_config.get('vmax')
-        valid = data[~np.isnan(data)]; vmin = np.min(valid) if vmin is None and valid.size > 0 else vmin
-        vmax = np.max(valid) if vmax is None and valid.size > 0 else vmax
+        vmin_str = self.heatmap_config.get('vmin')
+        vmax_str = self.heatmap_config.get('vmax')
+        vmin = float(vmin_str) if vmin_str is not None and str(vmin_str).strip() != '' else None
+        vmax = float(vmax_str) if vmax_str is not None and str(vmax_str).strip() != '' else None
+            
+        valid = data[~np.isnan(data)]; 
+        if valid.size > 0:
+            if vmin is None: vmin = np.min(valid)
+            if vmax is None: vmax = np.max(valid)
+
         self.heatmap_obj = self.ax.pcolormesh(gx, gy, data, cmap=self.heatmap_config.get('colormap', 'viridis'), vmin=vmin, vmax=vmax, shading='gouraud')
         self.colorbar_obj = self.figure.colorbar(self.heatmap_obj, ax=self.ax, format=ticker.ScalarFormatter(useMathText=True))
         self.colorbar_obj.set_label(self.heatmap_config.get('formula') or self.heatmap_config.get('variable', ''))
@@ -259,13 +236,26 @@ class PlotWidget(QWidget):
             self.canvas.draw_idle()
     
     def get_probe_data_at_coords(self, x: float, y: float):
-        # Probing should work on the original coordinate system, as the calculated
-        # coordinates may not exist as columns for the user to see.
         if self.current_data is None: return
         
-        # We find the nearest point in the *original* data space
-        # as the calculated space may be non-monotonic or complex.
-        dist_sq = (self.current_data[self.x_axis] - x)**2 + (self.current_data[self.y_axis] - y)**2
+        processed_data = self.current_data.copy()
+        x_axis_to_use = self.x_axis
+        y_axis_to_use = self.y_axis
+
+        try:
+            if self.x_axis_formula:
+                processed_data['__x_probe__'] = self.formula_validator.evaluate_formula(processed_data, self.x_axis_formula)
+                x_axis_to_use = '__x_probe__'
+            if self.y_axis_formula:
+                processed_data['__y_probe__'] = self.formula_validator.evaluate_formula(processed_data, self.y_axis_formula)
+                y_axis_to_use = '__y_probe__'
+        except Exception: 
+            return # If formula fails for probe, just stop.
+
+        if x_axis_to_use not in processed_data or y_axis_to_use not in processed_data:
+            return
+
+        dist_sq = (processed_data[x_axis_to_use] - x)**2 + (processed_data[y_axis_to_use] - y)**2
         idx = dist_sq.idxmin()
         self.probe_data_ready.emit({'x': x, 'y': y, 'nearest_point': {'x': self.current_data.loc[idx, self.x_axis], 'y': self.current_data.loc[idx, self.y_axis]}, 'variables': self.current_data.loc[idx].to_dict()})
 
@@ -297,7 +287,7 @@ class PlotWidget(QWidget):
     def _on_button_release(self, event):
         if event.button == 1 and self.is_dragging: 
             self.is_dragging = False; self.drag_start_pos = None
-            self.canvas.setCursor(Qt.CursorShape.ArrowCursor)
+            self.canvas.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
 
     def set_picker_mode(self, mode: Optional[str]):
         self.picker_mode = mode
@@ -318,13 +308,6 @@ class PlotWidget(QWidget):
             gx, gy = self.interpolated_results['grid_x'], self.interpolated_results['grid_y']
             x_min, x_max = np.nanmin(gx), np.nanmax(gx)
             y_min, y_max = np.nanmin(gy), np.nanmax(gy)
-            xr = x_max - x_min or 1; yr = y_max - y_min or 1; m = 0.05
-            self.ax.set_xlim(x_min - m * xr, x_max + m * xr); self.ax.set_ylim(y_min - m * yr, y_max + m * yr)
-            self.canvas.draw_idle()
-        elif self.current_data is not None and not self.current_data.empty:
-            # Fallback to original data if no interpolation results available
-            x_min, x_max = self.current_data[self.x_axis].min(), self.current_data[self.x_axis].max()
-            y_min, y_max = self.current_data[self.y_axis].min(), self.current_data[self.y_axis].max()
             xr = x_max - x_min or 1; yr = y_max - y_min or 1; m = 0.05
             self.ax.set_xlim(x_min - m * xr, x_max + m * xr); self.ax.set_ylim(y_min - m * yr, y_max + m * yr)
             self.canvas.draw_idle()

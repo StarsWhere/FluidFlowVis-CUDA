@@ -6,13 +6,13 @@
 import numpy as np
 import pandas as pd
 import logging
-import re
 from typing import Dict, Any, List
 
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 import matplotlib.ticker as ticker
 from scipy.interpolate import griddata
+from scipy.spatial.qhull import QhullError # 导入Qhull错误类型
 
 logger = logging.getLogger(__name__)
 
@@ -26,56 +26,6 @@ class HeadlessPlotter:
         self.validator = validator
         self.grid_resolution = (150, 150)  # 与交互式窗口保持一致
 
-    def _evaluate_complex_formula(self, data: pd.DataFrame, formula: str, eval_globals: dict) -> np.ndarray:
-        """
-        正确评估包含单帧聚合函数的复杂公式。
-        例如 'p - mean(p)'。
-        """
-        # 正则表达式，用于查找聚合函数调用，例如: mean(p), std(u*u)
-        agg_pattern = re.compile(r'(\b(?:' + '|'.join(self.validator.allowed_aggregates) + r'))\s*\((.*?)\)')
-        
-        local_scope = eval_globals.copy()
-        processed_formula = formula
-        
-        # 按从后往前的顺序查找所有聚合函数调用，以避免替换时破坏字符串索引
-        matches = list(agg_pattern.finditer(formula))
-        for i, match in enumerate(reversed(matches)):
-            agg_func_name, inner_expr = match.groups()
-            
-            # 检查括号是否平衡，以初步处理嵌套情况
-            if inner_expr.count('(') != inner_expr.count(')'):
-                continue
-            
-            # 评估聚合函数内部的表达式，例如 'p' 或 'u*u'
-            try:
-                inner_values = data.eval(inner_expr, global_dict=eval_globals, local_dict={})
-            except Exception as e:
-                raise ValueError(f"评估聚合函数内部表达式 '{inner_expr}' (在 {agg_func_name} 中) 时出错: {e}")
-
-            # 应用相应的聚合操作
-            scalar_result = 0.0
-            if agg_func_name == 'mean': scalar_result = inner_values.mean()
-            elif agg_func_name == 'sum': scalar_result = inner_values.sum()
-            elif agg_func_name == 'median': scalar_result = inner_values.median()
-            elif agg_func_name == 'std': scalar_result = inner_values.std()
-            elif agg_func_name == 'var': scalar_result = inner_values.var()
-            elif agg_func_name == 'min_frame': scalar_result = inner_values.min()
-            elif agg_func_name == 'max_frame': scalar_result = inner_values.max()
-
-            # 创建一个唯一的临时变量名，并将计算出的标量结果存入局部作用域
-            temp_var_name = f"__agg_result_{len(matches) - 1 - i}__"
-            local_scope[temp_var_name] = scalar_result
-            
-            # 用 @temp_var_name 替换原始公式中的聚合函数调用
-            start, end = match.span()
-            processed_formula = processed_formula[:start] + f"@{temp_var_name}" + processed_formula[end:]
-
-        # 现在，使用预先计算好的聚合结果来评估最终的处理后公式
-        try:
-            return data.eval(processed_formula, global_dict={}, local_dict=local_scope)
-        except Exception as e:
-            raise ValueError(f"评估最终公式 '{processed_formula}' 时失败: {e}")
-
     def render_frame(self, data: pd.DataFrame, all_vars: List[str]) -> np.ndarray:
         """
         接收单帧数据和配置，返回一个代表渲染图像的NumPy数组。
@@ -84,8 +34,6 @@ class HeadlessPlotter:
         self.validator.update_custom_global_variables(self.config.get('global_scope', {}))
         self.validator.update_allowed_variables(all_vars)
 
-        eval_globals = self.validator.get_all_constants_and_globals()
-        
         processed_data = data.copy()
 
         # 计算坐标轴公式
@@ -97,16 +45,18 @@ class HeadlessPlotter:
         x_axis_final = x_axis_base
         if x_formula:
             try:
-                processed_data['__x_calculated__'] = self._evaluate_complex_formula(processed_data, x_formula, eval_globals)
+                x_values = self.validator.evaluate_formula(processed_data, x_formula)
                 x_axis_final = '__x_calculated__'
+                processed_data[x_axis_final] = x_values
             except Exception as e:
                 raise ValueError(f"X轴公式求值失败: {e}")
         
         y_axis_final = y_axis_base
         if y_formula:
             try:
-                processed_data['__y_calculated__'] = self._evaluate_complex_formula(processed_data, y_formula, eval_globals)
+                y_values = self.validator.evaluate_formula(processed_data, y_formula)
                 y_axis_final = '__y_calculated__'
+                processed_data[y_axis_final] = y_values
             except Exception as e:
                 raise ValueError(f"Y轴公式求值失败: {e}")
 
@@ -118,32 +68,37 @@ class HeadlessPlotter:
         points = processed_data[[x_axis_final, y_axis_final]].values
 
         # 辅助函数，用于获取热力图/等高线所需的Z轴数据
-        def get_interpolated_z(cfg):
+        def get_z_values(cfg):
             if not cfg.get('enabled'): return None
             
             formula = cfg.get('formula', '').strip()
             variable = cfg.get('variable')
 
-            z_values = None
+            z_values_series = None
             if formula:
-                # 使用新的、功能更全的公式评估函数
-                z_values = self._evaluate_complex_formula(data, formula, eval_globals)
+                z_values_series = self.validator.evaluate_formula(data, formula)
             elif variable and variable in data.columns:
-                z_values = data[variable].values
-            else:
-                return None
+                z_values_series = data[variable]
             
-            # 将Z值插值到网格上
-            return griddata(points, z_values, (gx, gy), method='linear', fill_value=np.nan)
-
+            return z_values_series.values if z_values_series is not None else None
+        
         heatmap_cfg = self.config.get('heatmap_config', {})
         contour_cfg = self.config.get('contour_config', {})
         
-        heatmap_data = get_interpolated_z(heatmap_cfg)
-        contour_data = get_interpolated_z(contour_cfg)
+        heatmap_z_values = get_z_values(heatmap_cfg)
+        contour_z_values = get_z_values(contour_cfg)
+
+        try:
+            heatmap_data = griddata(points, heatmap_z_values, (gx, gy), method='linear') if heatmap_z_values is not None else None
+            contour_data = griddata(points, contour_z_values, (gx, gy), method='linear') if contour_z_values is not None else None
+        except QhullError:
+            raise ValueError(
+                "输入点共线或退化，无法生成2D插值网格。"
+                "这通常是因为X轴和Y轴的公式相同或导致所有点都落在一条直线上。"
+            )
 
         # --- 3. Matplotlib绘图 ---
-        dpi = self.config.get('export_dpi', 150) # Use a more specific config key
+        dpi = self.config.get('export_dpi', 150)
         fig = Figure(figsize=(12, 8), dpi=dpi, tight_layout=True)
         ax = fig.add_subplot(111)
 
@@ -186,11 +141,12 @@ class HeadlessPlotter:
         ax.xaxis.set_major_formatter(formatter)
         ax.yaxis.set_major_formatter(formatter)
 
-        x_min, x_max = np.nanmin(gx), np.nanmax(gx)
-        y_min, y_max = np.nanmin(gy), np.nanmax(gy)
-        xr = x_max - x_min or 1; yr = y_max - y_min or 1; m = 0.05
-        ax.set_xlim(x_min - m * xr, x_max + m * xr)
-        ax.set_ylim(y_min - m * yr, y_max + m * yr)
+        if gx is not None and gy is not None:
+            x_min, x_max = np.nanmin(gx), np.nanmax(gx)
+            y_min, y_max = np.nanmin(gy), np.nanmax(gy)
+            xr = x_max - x_min or 1; yr = y_max - y_min or 1; m = 0.05
+            ax.set_xlim(x_min - m * xr, x_max + m * xr)
+            ax.set_ylim(y_min - m * yr, y_max + m * yr)
 
         canvas = FigureCanvasAgg(fig)
         canvas.draw()

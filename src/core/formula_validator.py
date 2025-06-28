@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import ast
-from typing import Set, List, Dict
+import re
 import logging
+import pandas as pd
+from typing import Set, List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +13,7 @@ class FormulaValidator:
         self.allowed_op_types = {ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.USub, ast.UAdd}
         self.allowed_functions = {'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'sinh', 'cosh', 'tanh', 'exp', 'log', 'log10', 'sqrt', 'abs', 'floor', 'ceil', 'round', 'min', 'max'}
         
-        # 新增：单帧聚合函数
+        # 单帧聚合函数
         self.allowed_aggregates = {'mean', 'sum', 'median', 'std', 'var', 'min_frame', 'max_frame'}
 
         self.science_constants = {
@@ -40,7 +42,11 @@ class FormulaValidator:
             tree = ast.parse(formula, mode='eval')
             return self._validate_node(tree.body)
         except Exception as e:
-            logger.warning(f"公式验证失败: '{formula}' - {e}")
+            # 捕获因换行符等问题导致的语法错误
+            if isinstance(e, SyntaxError):
+                logger.warning(f"公式语法错误: '{formula}' - {e}")
+            else:
+                logger.warning(f"公式验证失败: '{formula}' - {e}")
             return False
     
     def _validate_node(self, node) -> bool:
@@ -72,11 +78,72 @@ class FormulaValidator:
                 variables.add(node.id)
         return variables
 
+    def evaluate_formula(self, data: pd.DataFrame, formula: str) -> pd.Series:
+        """
+        统一的公式求值引擎。
+        - 支持全局变量 (T_global_mean 等)。
+        - 支持单帧聚合函数 (mean(p) 等)。
+        - 返回计算结果的Pandas Series。
+        """
+        if not formula:
+            raise ValueError("传入了空公式")
+
+        # 准备求值环境
+        eval_globals = self.get_all_constants_and_globals()
+        local_scope = eval_globals.copy()
+        processed_formula = formula
+        
+        # 1. 处理聚合函数
+        agg_pattern = re.compile(r'(\b(?:' + '|'.join(self.allowed_aggregates) + r'))\s*\((.*?)\)')
+        matches = list(agg_pattern.finditer(formula))
+        for i, match in enumerate(reversed(matches)):
+            agg_func_name, inner_expr = match.groups()
+            
+            if inner_expr.count('(') != inner_expr.count(')'): continue
+            
+            try:
+                inner_values = data.eval(inner_expr, global_dict=eval_globals, local_dict={})
+            except Exception as e:
+                raise ValueError(f"评估聚合函数内部表达式 '{inner_expr}' (在 {agg_func_name} 中) 时出错: {e}")
+
+            scalar_result = 0.0
+            if agg_func_name == 'mean': scalar_result = inner_values.mean()
+            elif agg_func_name == 'sum': scalar_result = inner_values.sum()
+            elif agg_func_name == 'median': scalar_result = inner_values.median()
+            elif agg_func_name == 'std': scalar_result = inner_values.std()
+            elif agg_func_name == 'var': scalar_result = inner_values.var()
+            elif agg_func_name == 'min_frame': scalar_result = inner_values.min()
+            elif agg_func_name == 'max_frame': scalar_result = inner_values.max()
+
+            temp_var_name = f"__agg_result_{len(matches) - 1 - i}__"
+            local_scope[temp_var_name] = scalar_result
+            
+            start, end = match.span()
+            # **重要**：替换时直接带上@符号
+            processed_formula = processed_formula[:start] + f"@{temp_var_name}" + processed_formula[end:]
+
+        # 2. **FIX**: 为所有已知的全局变量和科学常数添加@前缀
+        # 按名称长度降序排序，以避免替换子字符串 (例如, 'var' 不会错误地替换 'var_abc' 的一部分)
+        all_external_vars = sorted(eval_globals.keys(), key=len, reverse=True)
+        
+        for var_name in all_external_vars:
+            # 使用\b来确保只匹配整个单词
+            pattern = r'\b' + re.escape(var_name) + r'\b'
+            replacement = '@' + var_name
+            processed_formula = re.sub(pattern, replacement, processed_formula)
+
+        # 3. 最终求值
+        try:
+            logger.debug(f"原始公式: '{formula}', 处理后公式: '{processed_formula}', 作用域: {list(local_scope.keys())}")
+            return data.eval(processed_formula, global_dict={}, local_dict=local_scope)
+        except Exception as e:
+            raise ValueError(f"评估最终公式 '{processed_formula}' 时失败: {e}")
+
+
     def get_formula_help_html(self, base_variables: List[str]) -> str:
         var_list_html = "".join([f"<li><code>{var}</code></li>" for var in sorted(list(self.allowed_variables))])
         const_list_html = "".join([f"<li><code>{key}</code>: {val:.4e}</li>" for key, val in self.science_constants.items()])
         
-        # Categorize global variables
         all_globals = sorted(self.custom_global_variables.items())
         basic_globals = []
         custom_globals = []
@@ -148,5 +215,6 @@ class FormulaValidator:
                 <li><b>雷诺应力分量 (全局):</b> <code>rho * (u - u_global_mean) * (v - v_global_mean)</code></li>
                 <li><b>压力波动 (帧内):</b> <code>p - mean(p)</code></li>
                 <li><b>湍动能 (帧内):</b> <code>0.5 * (std(u)**2 + std(v)**2)</code></li>
+                <li><b>马赫数归一化:</b> <code>Ma / Ma_global_max</code></li>
             </ul>
         </body></html>"""
