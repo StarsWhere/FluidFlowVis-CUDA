@@ -48,81 +48,67 @@ class InterpolationWorker(QRunnable):
             if var not in cache: cache[var] = griddata(points, self.data[var].values, (gx, gy), method='linear', fill_value=np.nan)
             return cache[var]
 
-        def _preprocess_formula(formula):
+        def _eval_cpu(formula, req_vars):
             """
-            Pre-processes a formula string. It finds all single-frame aggregate
-            function calls (e.g., mean(u*v)), evaluates them against the current
-            frame's data, and replaces the call in the formula with a placeholder
-            for the calculated scalar value.
+            Evaluates a formula string in a controlled environment.
+            This new implementation passes aggregation functions directly into the scope of eval,
+            making it much more robust than the previous string replacement method.
             """
-            local_aggregates = {}
-            processed_formula = formula
-            
-            try:
-                tree = ast.parse(formula, mode='eval').body
-            except SyntaxError:
-                return formula, {}
+            # Define "safe" aggregation functions that operate on the original DataFrame.
+            # They take the inner part of the formula as a string.
+            def frame_mean(expr_str: str): return self.data.eval(expr_str, global_dict={}, local_dict=eval_globals).mean()
+            def frame_sum(expr_str: str): return self.data.eval(expr_str, global_dict={}, local_dict=eval_globals).sum()
+            def frame_median(expr_str: str): return self.data.eval(expr_str, global_dict={}, local_dict=eval_globals).median()
+            def frame_std(expr_str: str): return self.data.eval(expr_str, global_dict={}, local_dict=eval_globals).std()
+            def frame_var(expr_str: str): return self.data.eval(expr_str, global_dict={}, local_dict=eval_globals).var()
+            def frame_min(expr_str: str): return self.data.eval(expr_str, global_dict={}, local_dict=eval_globals).min()
+            def frame_max(expr_str: str): return self.data.eval(expr_str, global_dict={}, local_dict=eval_globals).max()
 
-            replacements = []
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in self.validator.allowed_aggregates:
-                    func_name = node.func.id
-                    if len(node.args) == 1:
-                        try:
-                            # Python 3.8+ required for ast.get_source_segment
-                            inner_expr_str = ast.get_source_segment(formula, node.args[0])
-                            call_expr_str = ast.get_source_segment(formula, node)
-                        except (TypeError, IndexError):
-                             logger.error("Could not get source segment. Python 3.8+ is required for complex aggregate formulas.")
-                             continue
-                        
-                        placeholder = f"__agg_{len(replacements)}__"
-                        
-                        try:
-                            # Use pandas.eval for safe, fast evaluation of the inner expression
-                            inner_values = self.data.eval(inner_expr_str, global_dict={}, local_dict=eval_globals)
-                            
-                            if func_name == 'mean': val = inner_values.mean()
-                            elif func_name == 'sum': val = inner_values.sum()
-                            elif func_name == 'median': val = inner_values.median()
-                            elif func_name == 'std': val = inner_values.std()
-                            elif func_name == 'var': val = inner_values.var()
-                            elif func_name == 'min_frame': val = inner_values.min()
-                            elif func_name == 'max_frame': val = inner_values.max()
-                            else: continue
-
-                            local_aggregates[placeholder] = val
-                            replacements.append((call_expr_str, placeholder))
-                        except Exception as e:
-                            logger.warning(f"Could not evaluate aggregate expression '{call_expr_str}': {e}")
-                            # Do not replace, let the main eval fail to show a proper error to the user
-                            pass
-            
-            # Replace from longest to shortest to avoid replacing substrings
-            replacements.sort(key=lambda x: len(x[0]), reverse=True)
-            for old, new in replacements:
-                processed_formula = processed_formula.replace(old, new)
-
-            return processed_formula, local_aggregates
-
-        def _eval_cpu(formula, req_vars, local_aggregates):
+            # The scope for the final eval() call.
             var_data = {var: _interp(var) for var in req_vars}
-            local_scope = {**eval_globals, **local_aggregates, **var_data}
+            local_scope = {
+                **eval_globals,
+                **var_data,
+                'mean': frame_mean, 'sum': frame_sum, 'median': frame_median, 'std': frame_std,
+                'var': frame_var, 'min_frame': frame_min, 'max_frame': frame_max
+            }
+
+            # Process the formula string to quote the arguments of our aggregate functions.
+            # E.g., 'mean(p*2)+p' becomes 'mean("p*2")+p'
+            # This is so `frame_mean` receives the string "p*2" to pass to pandas.eval.
+            processed_formula = formula
+            # This regex finds function calls and captures the function name and the inner expression.
+            pattern = re.compile(r'(\b(?:' + '|'.join(self.validator.allowed_aggregates) + r'))\s*\((.*?)\)')
+            
+            # Iterate backwards over matches to handle nested calls without messing up string indices.
+            for match in reversed(list(pattern.finditer(formula))):
+                func_name, inner_expr = match.groups()
+                start, end = match.span()
+                
+                # Check for parenthesis balance to handle nested calls like mean(sqrt(p))
+                if inner_expr.count('(') != inner_expr.count(')'):
+                    continue
+
+                # Quote the inner expression so it's passed as a string literal to our frame_* functions
+                quoted_inner_expr = f'"{inner_expr}"'
+                new_call = f'{func_name}({quoted_inner_expr})'
+                processed_formula = processed_formula[:start] + new_call + processed_formula[end:]
+            
+            logger.debug(f"Original formula: '{formula}', Processed for eval: '{processed_formula}'")
+            
             safe_globals = {"__builtins__": None, "np": np}
-            result = eval(formula, safe_globals, local_scope)
+            result = eval(processed_formula, safe_globals, local_scope)
+            
             if not isinstance(result, np.ndarray):
-                # This handles constant-only expressions for CPU mode
                 if gx is not None:
                     return np.full_like(gx, float(result))
                 else:
                     raise ValueError("公式必须至少包含一个逐点数据变量 (如 u, v, x 等) 才能进行空间可视化。")
             return result
             
-        def _eval_gpu(formula, req_vars, local_aggregates):
+        def _eval_gpu(formula, req_vars):
             var_data = {var: self.data[var].values for var in req_vars}
-            # Note: GPU eval doesn't support pre-processed aggregate functions easily.
-            # For simplicity, we assume formulas passed to GPU are point-wise
-            combined_vars = {**eval_globals, **local_aggregates, **var_data}
+            combined_vars = {**eval_globals, **var_data}
             gpu_res = evaluate_formula_gpu(formula, combined_vars)
             return griddata(points, gpu_res, (gx, gy), method='linear', fill_value=np.nan)
             
@@ -130,20 +116,21 @@ class InterpolationWorker(QRunnable):
             if not cfg.get('enabled'): return None
             formula, var = cfg.get('formula'), cfg.get('variable')
             if formula:
-                processed_formula, local_aggregates = _preprocess_formula(formula)
-                req_vars = self.validator.get_used_variables(processed_formula)
+                req_vars = self.validator.get_used_variables(formula)
                 
-                # GPU path currently does not support the pre-processed aggregates easily.
-                # Fallback to CPU if aggregates are used.
-                if self.use_gpu and not local_aggregates:
-                    # We pass the original formula to GPU as it handles its own parsing
-                    return _eval_gpu(formula, self.validator.get_used_variables(formula), {})
+                # GPU path does not support our custom aggregation function injection.
+                # Fallback to CPU if an aggregation function is present.
+                uses_aggregates = any(agg_func in formula for agg_func in self.validator.allowed_aggregates)
+                
+                if self.use_gpu and not uses_aggregates:
+                    return _eval_gpu(formula, req_vars)
                 else:
-                    return _eval_cpu(processed_formula, req_vars, local_aggregates)
+                    return _eval_cpu(formula, req_vars)
             elif var: return _interp(var)
             return None
             
         return {'grid_x': gx, 'grid_y': gy, 'heatmap_data': _get_data(self.heat_cfg), 'contour_data': _get_data(self.contour_cfg)}
+
 
 class PlotWidget(QWidget):
     mouse_moved = pyqtSignal(float, float)
