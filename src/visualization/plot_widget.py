@@ -69,11 +69,11 @@ class InterpolationWorker(QRunnable):
                     func_name = node.func.id
                     if len(node.args) == 1:
                         try:
-                            # Python 3.8+ required
+                            # Python 3.8+ required for ast.get_source_segment
                             inner_expr_str = ast.get_source_segment(formula, node.args[0])
                             call_expr_str = ast.get_source_segment(formula, node)
-                        except TypeError:
-                             logger.error("Could not get source segment. Python 3.8+ is required.")
+                        except (TypeError, IndexError):
+                             logger.error("Could not get source segment. Python 3.8+ is required for complex aggregate formulas.")
                              continue
                         
                         placeholder = f"__agg_{len(replacements)}__"
@@ -110,11 +110,17 @@ class InterpolationWorker(QRunnable):
             local_scope = {**eval_globals, **local_aggregates, **var_data}
             safe_globals = {"__builtins__": None, "np": np}
             result = eval(formula, safe_globals, local_scope)
-            return result if isinstance(result, np.ndarray) else np.full_like(gx, float(result))
+            if not isinstance(result, np.ndarray):
+                # This handles constant-only expressions for CPU mode
+                if gx is not None:
+                    return np.full_like(gx, float(result))
+                else:
+                    raise ValueError("公式必须至少包含一个逐点数据变量 (如 u, v, x 等) 才能进行空间可视化。")
+            return result
             
         def _eval_gpu(formula, req_vars, local_aggregates):
             var_data = {var: self.data[var].values for var in req_vars}
-            # Note: GPU eval doesn't support pre-processed aggregate functions yet
+            # Note: GPU eval doesn't support pre-processed aggregate functions easily.
             # For simplicity, we assume formulas passed to GPU are point-wise
             combined_vars = {**eval_globals, **local_aggregates, **var_data}
             gpu_res = evaluate_formula_gpu(formula, combined_vars)
@@ -140,8 +146,11 @@ class InterpolationWorker(QRunnable):
         return {'grid_x': gx, 'grid_y': gy, 'heatmap_data': _get_data(self.heat_cfg), 'contour_data': _get_data(self.contour_cfg)}
 
 class PlotWidget(QWidget):
-    mouse_moved = pyqtSignal(float, float); probe_data_ready = pyqtSignal(dict)
-    plot_rendered = pyqtSignal(); value_picked = pyqtSignal(str, float)
+    mouse_moved = pyqtSignal(float, float)
+    probe_data_ready = pyqtSignal(dict)
+    plot_rendered = pyqtSignal()
+    value_picked = pyqtSignal(str, float)
+    interpolation_error = pyqtSignal(str)
 
     def __init__(self, formula_validator, parent=None):
         super().__init__(parent)
@@ -177,9 +186,14 @@ class PlotWidget(QWidget):
         worker = InterpolationWorker(self.current_data, self.grid_resolution, self.x_axis, self.y_axis,
             self.heatmap_config, self.contour_config, self.use_gpu, self.formula_validator)
         worker.signals.result.connect(self._on_interpolation_result)
-        worker.signals.error.connect(lambda e: logger.error(f"插值线程错误: {e}"))
+        worker.signals.error.connect(self._on_worker_error)
         worker.signals.finished.connect(lambda: setattr(self, 'is_busy_interpolating', False))
         self.thread_pool.start(worker)
+
+    def _on_worker_error(self, error_message: str):
+        """Handles errors from the interpolation worker thread."""
+        logger.error(f"插值线程错误: {error_message}")
+        self.interpolation_error.emit(error_message)
 
     def _on_interpolation_result(self, result: dict):
         self.interpolated_results = result; self.redraw(); self.plot_rendered.emit()

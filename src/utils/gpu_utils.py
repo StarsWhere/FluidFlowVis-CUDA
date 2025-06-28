@@ -41,8 +41,16 @@ def evaluate_formula_gpu(formula: str, variable_data: dict):
         result_gpu = eval(formula, {"__builtins__": __builtins__}, safe_dict) # Allow access to __builtins__ for CuPy's internal eval
         
         if not isinstance(result_gpu, cp.ndarray):
-            ref_shape = next(v.shape for v in safe_dict.values() if isinstance(v, cp.ndarray))
-            result_gpu = cp.full(ref_shape, float(result_gpu), dtype=cp.float32)
+            # The result is a scalar. We need to broadcast it to an array.
+            # To do that, we need a reference array shape from the input variables.
+            try:
+                ref_shape = next(v.shape for v in safe_dict.values() if isinstance(v, cp.ndarray))
+                result_gpu = cp.full(ref_shape, float(result_gpu), dtype=cp.float32)
+            except StopIteration:
+                # This error occurs if the formula is a constant expression (e.g., "p_global_mean" or "2*pi")
+                # and contains NO per-point variables (like 'u', 'v', 'x'). Such a formula cannot be plotted
+                # as a heatmap/contour.
+                raise ValueError("公式必须至少包含一个逐点数据变量 (如 u, v, x 等) 才能进行空间可视化。")
 
         result_cpu = cp.asnumpy(result_gpu)
         mempool = cp.get_default_memory_pool()
@@ -50,4 +58,5 @@ def evaluate_formula_gpu(formula: str, variable_data: dict):
         return result_cpu
     except Exception as e:
         logger.error(f"GPU 公式计算失败: {formula} - {e}")
+        # Re-raise with a more generic message but include original error
         raise ValueError(f"GPU 公式计算错误: {e}")

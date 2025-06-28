@@ -573,6 +573,7 @@ class MainWindow(QMainWindow):
         self.plot_widget.probe_data_ready.connect(self._on_probe_data)
         self.plot_widget.value_picked.connect(self._on_value_picked)
         self.plot_widget.plot_rendered.connect(self._on_plot_rendered)
+        self.plot_widget.interpolation_error.connect(self._on_interpolation_error)
         
         self.x_axis_combo.currentIndexChanged.connect(self._trigger_auto_apply)
         self.y_axis_combo.currentIndexChanged.connect(self._trigger_auto_apply)
@@ -631,6 +632,37 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.critical(self, "错误", f"无法初始化数据管理器: {message}")
             self.calc_basic_stats_btn.setEnabled(False)
+
+    def _on_interpolation_error(self, message: str):
+        """Handles errors from the plot widget's interpolation worker."""
+        # **FIX**: Instantiate QMessageBox to enable RichText formatting.
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Icon.Critical)
+        msg_box.setWindowTitle("可视化错误")
+        msg_box.setTextFormat(Qt.TextFormat.RichText)
+        msg_box.setText(f"无法渲染图形，公式可能存在问题。<br><br><b>错误详情:</b><br>{message}")
+        msg_box.exec()
+
+        # Check which formula might be the culprit and clear it.
+        # A common mistake is using a constant expression (which has no data variables) for a plot.
+        
+        # Check heatmap formula
+        h_formula = self.heatmap_formula.text().strip()
+        if h_formula:
+            used_vars = self.formula_validator.get_used_variables(h_formula)
+            # A valid plot formula must contain at least one per-point data variable.
+            # If used_vars is empty, it's a constant expression.
+            if not used_vars:
+                logger.warning(f"检测到无效的热力图公式 (常量表达式): '{h_formula}'. 将被清除。")
+                self.heatmap_formula.clear()
+
+        # Check contour formula
+        c_formula = self.contour_formula.text().strip()
+        if c_formula:
+            used_vars = self.formula_validator.get_used_variables(c_formula)
+            if not used_vars:
+                logger.warning(f"检测到无效的等高线公式 (常量表达式): '{c_formula}'. 将被清除。")
+                self.contour_formula.clear()
 
     def _on_error(self, message: str):
         self.status_bar.showMessage(f"错误: {message}", 5000)
@@ -752,15 +784,25 @@ class MainWindow(QMainWindow):
             vmin = float(self.heatmap_vmin.text()) if self.heatmap_vmin.text().strip() else None
             vmax = float(self.heatmap_vmax.text()) if self.heatmap_vmax.text().strip() else None
         except ValueError:
-            QMessageBox.warning(self, "输入错误", "最小值/最大值必须是有效的数字。"); return
+            vmin, vmax = None, None # In case of bad input, just ignore it
+            self.heatmap_vmin.clear(); self.heatmap_vmax.clear()
+            QMessageBox.warning(self, "输入错误", "最小值/最大值必须是有效的数字。输入已被清除。")
 
         heat_cfg = {'enabled': self.heatmap_enabled.isChecked(), 'variable': self.heatmap_variable.currentData(), 'formula': self.heatmap_formula.text().strip(), 'colormap': self.heatmap_colormap.currentText(), 'vmin': vmin, 'vmax': vmax}
+        # **FIX**: Clear field FIRST, then show message box.
         if heat_cfg['formula'] and not self.formula_validator.validate(heat_cfg['formula']):
-            QMessageBox.warning(self, "公式错误", f"热力图公式无效: {heat_cfg['formula']}"); return
+            invalid_formula = heat_cfg['formula']
+            self.heatmap_formula.clear()
+            QMessageBox.warning(self, "公式错误", f"热力图公式无效，内容已清除:\n\n'{invalid_formula}'")
+            return
             
         contour_cfg = {'enabled': self.contour_enabled.isChecked(), 'variable': self.contour_variable.currentData(), 'formula': self.contour_formula.text().strip(), 'levels': self.contour_levels.value(), 'colors': self.contour_colors.currentText(), 'linewidths': self.contour_linewidth.value(), 'show_labels': self.contour_labels.isChecked()}
+        # **FIX**: Clear field FIRST, then show message box.
         if contour_cfg['formula'] and not self.formula_validator.validate(contour_cfg['formula']):
-            QMessageBox.warning(self, "公式错误", f"等高线公式无效: {contour_cfg['formula']}"); return
+            invalid_formula = contour_cfg['formula']
+            self.contour_formula.clear()
+            QMessageBox.warning(self, "公式错误", f"等高线公式无效，内容已清除:\n\n'{invalid_formula}'")
+            return
 
         self.plot_widget.set_config(
             heatmap_config=heat_cfg, 
