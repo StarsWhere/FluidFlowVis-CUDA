@@ -45,7 +45,7 @@ class MainWindow(QMainWindow):
         # --- 初始化状态变量 ---
         self.current_frame_index: int = 0
         self.is_playing: bool = False
-        self.play_fps: int = 10
+        self.frame_skip_step: int = 1 # Changed from play_fps to frame_skip_step
         self.skipped_frames: int = 0
         
         # --- 配置路径 ---
@@ -252,8 +252,8 @@ class MainWindow(QMainWindow):
         group = QGroupBox("播放控制"); layout = QVBoxLayout(group)
         info_layout = QHBoxLayout(); self.frame_info_label = QLabel("帧: 0/0"); info_layout.addWidget(self.frame_info_label); info_layout.addStretch(); self.timestamp_label = QLabel("时间戳: 0.0"); info_layout.addWidget(self.timestamp_label); layout.addLayout(info_layout)
         self.time_slider = QSlider(Qt.Orientation.Horizontal); self.time_slider.setMinimum(0); layout.addWidget(self.time_slider)
-        btns_layout = QHBoxLayout(); self.play_button = QPushButton("播放"); btns_layout.addWidget(self.play_button); prev_btn = QPushButton("<<"); btns_layout.addWidget(prev_btn); next_btn = QPushButton(">>"); btns_layout.addWidget(next_btn); btns_layout.addSpacing(20); btns_layout.addWidget(QLabel("速度:")); self.fps_spinbox = QSpinBox(); self.fps_spinbox.setRange(1, 60); self.fps_spinbox.setValue(10); self.fps_spinbox.setSuffix(" fps"); btns_layout.addWidget(self.fps_spinbox); layout.addLayout(btns_layout)
-        self.play_button.clicked.connect(self._toggle_play); prev_btn.clicked.connect(self._prev_frame); next_btn.clicked.connect(self._next_frame); self.time_slider.valueChanged.connect(self._on_slider_changed); self.fps_spinbox.valueChanged.connect(self._on_fps_changed)
+        btns_layout = QHBoxLayout(); self.play_button = QPushButton("播放"); btns_layout.addWidget(self.play_button); prev_btn = QPushButton("<<"); btns_layout.addWidget(prev_btn); next_btn = QPushButton(">>"); btns_layout.addWidget(next_btn); btns_layout.addSpacing(20); btns_layout.addWidget(QLabel("跳帧:")); self.frame_skip_spinbox = QSpinBox(); self.frame_skip_spinbox.setRange(1, 100); self.frame_skip_spinbox.setValue(1); self.frame_skip_spinbox.setSuffix(" 帧"); btns_layout.addWidget(self.frame_skip_spinbox); layout.addLayout(btns_layout) # Changed label and suffix
+        self.play_button.clicked.connect(self._toggle_play); prev_btn.clicked.connect(self._prev_frame); next_btn.clicked.connect(self._next_frame); self.time_slider.valueChanged.connect(self._on_slider_changed); self.frame_skip_spinbox.valueChanged.connect(self._on_frame_skip_changed) # Changed signal connection
         return group
 
     def _create_path_group(self) -> QGroupBox:
@@ -367,7 +367,7 @@ class MainWindow(QMainWindow):
             return
         
         self.skipped_frames = 0
-        next_frame = (self.current_frame_index + 1) % self.data_manager.get_frame_count()
+        next_frame = (self.current_frame_index + self.frame_skip_step) % self.data_manager.get_frame_count() # Use frame_skip_step
         self.time_slider.setValue(next_frame)
 
     def _prev_frame(self):
@@ -376,9 +376,11 @@ class MainWindow(QMainWindow):
         if self.current_frame_index < self.data_manager.get_frame_count() - 1: self.time_slider.setValue(self.current_frame_index + 1)
     def _on_slider_changed(self, value: int):
         if value != self.current_frame_index: self._load_frame(value)
-    def _on_fps_changed(self, value: int):
-        self.play_fps = value
-        self.play_timer.setInterval(max(1, 1000 // self.play_fps))
+    def _on_frame_skip_changed(self, value: int): # Renamed and modified
+        self.frame_skip_step = value
+        # Set a fixed interval for the timer, independent of frame_skip_step
+        # This allows for consistent animation speed while skipping frames
+        self.play_timer.setInterval(50) # Example: 50ms interval (20 FPS)
     # endregion
     
     # region 核心逻辑
@@ -489,7 +491,7 @@ class MainWindow(QMainWindow):
             "version": "1.3", "axes": {"x": self.x_axis_combo.currentText(), "y": self.y_axis_combo.currentText()},
             "heatmap": {'enabled': self.heatmap_enabled.isChecked(), 'variable': self.heatmap_variable.currentData(), 'formula': self.heatmap_formula.text(), 'colormap': self.heatmap_colormap.currentText(), 'vmin': self.heatmap_vmin.text().strip() if self.heatmap_vmin.text().strip() else None, 'vmax': self.heatmap_vmax.text().strip() if self.heatmap_vmax.text().strip() else None},
             "contour": {'enabled': self.contour_enabled.isChecked(), 'variable': self.contour_variable.currentData(), 'formula': self.contour_formula.text(), 'levels': self.contour_levels.value(), 'colors': self.contour_colors.currentText(), 'linewidths': self.contour_linewidth.value(), 'show_labels': self.contour_labels.isChecked()},
-            "playback": {"fps": self.fps_spinbox.value()}, "export": {"dpi": self.export_dpi.value(), "video_fps": self.video_fps.value()},
+            "playback": {"frame_skip_step": self.frame_skip_spinbox.value()}, "export": {"dpi": self.export_dpi.value(), "video_fps": self.video_fps.value()}, # Changed key
             "performance": {"gpu": self.gpu_checkbox.isChecked(), "cache": self.cache_size_spinbox.value()}
         }
     
@@ -523,7 +525,7 @@ class MainWindow(QMainWindow):
             self.contour_linewidth.setValue(contour.get("linewidths", 1.0))
             self.contour_labels.setChecked(contour.get("show_labels", True))
             
-            self.fps_spinbox.setValue(playback.get("fps", 10))
+            self.frame_skip_spinbox.setValue(playback.get("frame_skip_step", 1)) # Changed key and default value
             self.export_dpi.setValue(export.get("dpi", 300))
             self.video_fps.setValue(export.get("video_fps", 15))
             
@@ -555,7 +557,7 @@ class MainWindow(QMainWindow):
         """加载持久化程序设置"""
         self.restoreGeometry(self.settings.value("geometry", self.saveGeometry()))
         self.restoreState(self.settings.value("windowState", self.saveState()))
-        self.fps_spinbox.setValue(self.settings.value("play_fps", 10, type=int))
+        self.frame_skip_spinbox.setValue(self.settings.value("frame_skip_step", 1, type=int)) # Changed key and default value
         self.export_dpi.setValue(self.settings.value("export_dpi", 300, type=int))
         self.video_fps.setValue(self.settings.value("video_fps", 15, type=int))
         self.cache_size_spinbox.setValue(self.settings.value("cache_size", 100, type=int))
@@ -569,7 +571,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("windowState", self.saveState())
         self.settings.setValue("data_directory", self.data_dir)
         self.settings.setValue("output_directory", self.output_dir)
-        self.settings.setValue("play_fps", self.fps_spinbox.value())
+        self.settings.setValue("frame_skip_step", self.frame_skip_spinbox.value()) # Changed key
         self.settings.setValue("export_dpi", self.export_dpi.value())
         self.settings.setValue("video_fps", self.video_fps.value())
         self.settings.setValue("cache_size", self.cache_size_spinbox.value())
