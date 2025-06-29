@@ -4,7 +4,7 @@ import os
 import logging
 from typing import Optional
 import numpy as np
-from PyQt6.QtWidgets import QMainWindow, QMessageBox, QFileDialog, QLineEdit, QMenu
+from PyQt6.QtWidgets import QMainWindow, QMessageBox, QFileDialog, QLineEdit, QMenu, QInputDialog
 from PyQt6.QtCore import Qt, QSettings, QPoint, QTimer
 
 from src.core.data_manager import DataManager
@@ -14,9 +14,9 @@ from src.utils.help_dialog import HelpDialog
 from src.utils.gpu_utils import is_gpu_available
 from src.utils.help_content import get_formula_help_html, get_axis_title_help_html, get_custom_stats_help_html, get_analysis_help_html
 from src.ui.ui_setup import UiMainWindow
-from src.ui.dialogs import ImportDialog
+from src.ui.dialogs import ImportDialog, StatsProgressDialog
 from src.ui.timeseries_dialog import TimeSeriesDialog
-from src.ui.profile_plot_dialog import ProfilePlotDialog # 新增
+from src.ui.profile_plot_dialog import ProfilePlotDialog
 from src.core.workers import DatabaseImportWorker
 
 from src.handlers.config_handler import ConfigHandler
@@ -60,6 +60,8 @@ class MainWindow(QMainWindow):
         os.makedirs(self.output_dir, exist_ok=True)
         
         self.redraw_debounce_timer = QTimer(self); self.redraw_debounce_timer.setSingleShot(True); self.redraw_debounce_timer.setInterval(150)
+        self.validation_timer = QTimer(self); self.validation_timer.setSingleShot(True); self.validation_timer.setInterval(500)
+
         self.import_worker: Optional[DatabaseImportWorker] = None
         self.import_progress_dialog: Optional[ImportDialog] = None
         self.timeseries_dialog: Optional[TimeSeriesDialog] = None
@@ -94,6 +96,7 @@ class MainWindow(QMainWindow):
     def _connect_signals(self):
         self.data_manager.error_occurred.connect(self._on_error)
         self.redraw_debounce_timer.timeout.connect(self._apply_visualization_settings)
+        self.validation_timer.timeout.connect(self._validate_all_formulas)
         
         # Plot Widget
         self.ui.plot_widget.mouse_moved.connect(self._on_mouse_moved)
@@ -117,17 +120,18 @@ class MainWindow(QMainWindow):
 
         # General Controls
         self.ui.change_data_dir_btn.clicked.connect(self._change_project_directory)
-        self.ui.refresh_button.clicked.connect(lambda: self._force_refresh_plot(reset_view=True)) # 修复1
+        self.ui.refresh_button.clicked.connect(lambda: self._force_refresh_plot(reset_view=True))
         self.ui.apply_cache_btn.clicked.connect(self._apply_cache_settings)
         self.ui.gpu_checkbox.toggled.connect(self._on_gpu_toggle)
         self.ui.vector_plot_type.currentIndexChanged.connect(self._on_vector_plot_type_changed)
         
-        # Analysis Controls
+        # Analysis/Data Management Controls
         self.ui.apply_filter_btn.clicked.connect(self._apply_global_filter)
         self.ui.time_analysis_mode_combo.currentIndexChanged.connect(self._on_time_analysis_mode_changed)
         self.ui.pick_timeseries_btn.toggled.connect(self._on_pick_timeseries_toggled)
+        self.ui.pick_by_coords_btn.clicked.connect(self._pick_timeseries_by_coords)
         self.ui.draw_profile_btn.toggled.connect(self._on_draw_profile_toggled)
-        self.ui.analysis_help_btn.clicked.connect(lambda: self._show_help("analysis"))
+        self.ui.analysis_help_btn.clicked.connect(lambda: self._show_help("analysis")) # FIX
         self.ui.time_avg_start_slider.valueChanged.connect(self.ui.time_avg_start_spinbox.setValue)
         self.ui.time_avg_start_spinbox.valueChanged.connect(self.ui.time_avg_start_slider.setValue)
         self.ui.time_avg_end_slider.valueChanged.connect(self.ui.time_avg_end_spinbox.setValue)
@@ -144,11 +148,33 @@ class MainWindow(QMainWindow):
         
         self._connect_auto_apply_widgets()
 
+    def _get_all_formula_editors(self) -> list[QLineEdit]:
+        """Returns a list of all QLineEdit widgets used for formulas."""
+        return [
+            self.ui.x_axis_formula, self.ui.y_axis_formula, self.ui.chart_title_edit,
+            self.ui.heatmap_formula, self.ui.contour_formula,
+            self.ui.vector_u_formula, self.ui.vector_v_formula,
+            self.ui.new_variable_formula_edit, self.ui.filter_text_edit
+        ]
+
     def _connect_auto_apply_widgets(self):
-        widgets = [ self.ui.chart_title_edit, self.ui.x_axis_formula, self.ui.y_axis_formula, self.ui.heatmap_formula, self.ui.heatmap_vmin, self.ui.heatmap_vmax, self.ui.contour_formula, self.ui.vector_u_formula, self.ui.vector_v_formula, self.ui.heatmap_enabled, self.ui.heatmap_colormap, self.ui.contour_enabled, self.ui.contour_labels, self.ui.contour_levels, self.ui.contour_linewidth, self.ui.contour_colors, self.ui.vector_enabled, self.ui.vector_plot_type, self.ui.quiver_density_spinbox, self.ui.quiver_scale_spinbox, self.ui.stream_density_spinbox, self.ui.stream_linewidth_spinbox, self.ui.stream_color_combo, self.ui.filter_enabled_checkbox]
+        """Connects widgets that should trigger an automatic plot refresh."""
+        widgets = [
+            self.ui.heatmap_enabled, self.ui.heatmap_colormap, 
+            self.ui.contour_enabled, self.ui.contour_labels, self.ui.contour_levels, 
+            self.ui.contour_linewidth, self.ui.contour_colors, self.ui.vector_enabled, 
+            self.ui.vector_plot_type, self.ui.quiver_density_spinbox, self.ui.quiver_scale_spinbox, 
+            self.ui.stream_density_spinbox, self.ui.stream_linewidth_spinbox, self.ui.stream_color_combo, 
+            self.ui.filter_enabled_checkbox
+        ]
+        
+        # Connect formula editors to trigger validation timer
+        for editor in self._get_all_formula_editors():
+            editor.textChanged.connect(self.validation_timer.start)
+            editor.editingFinished.connect(self._trigger_auto_apply)
+
         for w in widgets:
-            if isinstance(w, QLineEdit): w.editingFinished.connect(self._trigger_auto_apply)
-            elif hasattr(w, 'toggled'): w.toggled.connect(self._trigger_auto_apply)
+            if hasattr(w, 'toggled'): w.toggled.connect(self._trigger_auto_apply)
             elif hasattr(w, 'currentIndexChanged'): w.currentIndexChanged.connect(self._trigger_auto_apply)
             elif hasattr(w, 'valueChanged'): w.valueChanged.connect(self._trigger_auto_apply)
     
@@ -158,6 +184,17 @@ class MainWindow(QMainWindow):
         if self.data_manager.get_frame_count() > 0:
             self._should_reset_view_after_refresh = False
             self.redraw_debounce_timer.start()
+
+    def _validate_all_formulas(self):
+        """Validate syntax of all formula input fields and update their styles."""
+        for editor in self._get_all_formula_editors():
+            is_valid, error_msg = self.formula_engine.validate_syntax(editor.text())
+            if is_valid:
+                editor.setStyleSheet("")
+                editor.setToolTip("")
+            else:
+                editor.setStyleSheet("background-color: #ffe0e0;") # Light red
+                editor.setToolTip(error_msg)
 
     def _initialize_project(self):
         if not self.data_manager.setup_project_directory(self.project_dir): return
@@ -186,6 +223,7 @@ class MainWindow(QMainWindow):
 
     def _load_project_data(self):
         self.data_manager.post_import_setup()
+        self._update_db_info()
         frame_count = self.data_manager.get_frame_count()
         if frame_count > 0:
             self.stats_handler.load_definitions_and_stats()
@@ -201,6 +239,23 @@ class MainWindow(QMainWindow):
         else:
             self.ui.status_bar.showMessage("项目加载失败：数据库为空或无法读取。", 5000); QMessageBox.warning(self, "数据为空", "项目加载失败：数据库为空或无法读取。")
             self.ui.compute_and_add_btn.setEnabled(False)
+    
+    def _update_db_info(self):
+        """Updates the database info label in the UI."""
+        info = self.data_manager.get_database_info()
+        db_path = info.get("db_path", "N/A")
+        is_ready = info.get("is_ready", False)
+        frame_count = info.get("frame_count", 0)
+        variables = info.get("variables", [])
+
+        # 计算数据库文件大小
+        db_size_mb = 0
+        if db_path != "N/A" and os.path.exists(db_path):
+            db_size_mb = os.path.getsize(db_path) / (1024 * 1024)
+
+        db_info_text = f"数据库: {os.path.basename(db_path)} | 状态: {'就绪' if is_ready else '未就绪'} | 帧数: {frame_count} | 变量: {len(variables)} | 大小: {db_size_mb:.2f} MB"
+        self.ui.db_info_label.setText(db_info_text)
+        self.ui.db_info_label.setToolTip(db_path)
 
     def _apply_global_filter(self):
         try:
@@ -220,21 +275,31 @@ class MainWindow(QMainWindow):
         
     def _on_pick_timeseries_toggled(self, checked):
         if checked:
-            self.ui.draw_profile_btn.setChecked(False) # 确保另一个按钮被取消
+            self.ui.draw_profile_btn.setChecked(False)
             self.ui.plot_widget.set_picker_mode(PickerMode.TIMESERIES)
-            self.ui.status_bar.showMessage("时间序列模式: 在图表上单击一点以拾取。", 0)
+            self.ui.status_bar.showMessage("时间序列模式: 在图表上单击一点以拾取 (右键取消)。", 0)
         elif self.ui.plot_widget.picker_mode == PickerMode.TIMESERIES:
             self.ui.plot_widget.set_picker_mode(None)
             self.ui.status_bar.clearMessage()
 
     def _on_draw_profile_toggled(self, checked):
         if checked:
-            self.ui.pick_timeseries_btn.setChecked(False) # 确保另一个按钮被取消
+            self.ui.pick_timeseries_btn.setChecked(False)
             self.ui.plot_widget.set_picker_mode(PickerMode.PROFILE_START)
-            self.ui.status_bar.showMessage("剖面图模式: 点击定义剖面线起点。", 0)
+            self.ui.status_bar.showMessage("剖面图模式: 点击定义剖面线起点 (右键取消)。", 0)
         elif self.ui.plot_widget.picker_mode in [PickerMode.PROFILE_START, PickerMode.PROFILE_END]:
             self.ui.plot_widget.set_picker_mode(None)
             self.ui.status_bar.clearMessage()
+
+    def _pick_timeseries_by_coords(self):
+        text, ok = QInputDialog.getText(self, "按坐标拾取", "请输入坐标 (x, y):", QLineEdit.EchoMode.Normal, "0.0, 0.0")
+        if ok and text:
+            try:
+                x_str, y_str = text.split(',')
+                coords = (float(x_str.strip()), float(y_str.strip()))
+                self._on_timeseries_point_picked(coords)
+            except (ValueError, IndexError):
+                QMessageBox.warning(self, "输入无效", "请输入格式为 'x, y' 的两个数值。")
 
     def _on_timeseries_point_picked(self, coords):
         self.ui.pick_timeseries_btn.setChecked(False)
@@ -247,15 +312,19 @@ class MainWindow(QMainWindow):
     def _on_profile_line_defined(self, start_point, end_point):
         self.ui.draw_profile_btn.setChecked(False)
         if not self.ui.plot_widget.interpolated_results:
-            QMessageBox.warning(self, "无数据", "无可用于剖面的插值数据。")
-            return
+            QMessageBox.warning(self, "无数据", "无可用于剖面的插值数据。"); return
+        if self.profile_dialog and self.profile_dialog.isVisible(): self.profile_dialog.close()
         
-        if self.profile_dialog and self.profile_dialog.isVisible():
-            self.profile_dialog.close()
-        
+        # Pass a dictionary of available interpolated data to the dialog
+        available_data = {
+            key.replace('_data', ''): self.config_handler.get_current_config().get(key.replace('_data',''),{}).get('formula', key.replace('_data',''))
+            for key, data in self.ui.plot_widget.interpolated_results.items() 
+            if 'data' in key and isinstance(data, np.ndarray)
+        }
+
         self.profile_dialog = ProfilePlotDialog(
             start_point, end_point, self.ui.plot_widget.interpolated_results,
-            self.ui.heatmap_formula.text(), self
+            available_data, self
         )
         self.profile_dialog.show()
 
@@ -275,11 +344,8 @@ class MainWindow(QMainWindow):
         
         is_time_avg = config['analysis']['time_average']['enabled']
         if is_time_avg:
-            start = config['analysis']['time_average']['start_frame']
-            end = config['analysis']['time_average']['end_frame']
-            if start >= end:
-                self.ui.status_bar.showMessage("时间平均范围无效：起始帧必须小于结束帧。", 3000)
-                return
+            start, end = config['analysis']['time_average']['start_frame'], config['analysis']['time_average']['end_frame']
+            if start >= end: self.ui.status_bar.showMessage("时间平均范围无效：起始帧必须小于结束帧。", 3000); return
             data = self.data_manager.get_time_averaged_data(start, end)
             self.ui.plot_widget.update_data(data)
             self._update_frame_info(is_time_avg=True, start=start, end=end)
@@ -330,7 +396,7 @@ class MainWindow(QMainWindow):
         if self._should_reset_view_after_refresh: self.ui.plot_widget.reset_view(); self._should_reset_view_after_refresh = False
         
         if self.ui.plot_widget.picker_mode == PickerMode.PROFILE_END:
-            self.ui.status_bar.showMessage("剖面图模式: 点击定义剖面线终点。", 0)
+            self.ui.status_bar.showMessage("剖面图模式: 点击定义剖面线终点 (右键取消)。", 0)
 
     def _on_interpolation_error(self, message: str):
         QMessageBox.critical(self, "可视化错误", f"无法渲染图形，公式可能存在问题。\n\n错误详情:\n{message}")
@@ -351,7 +417,7 @@ class MainWindow(QMainWindow):
         elif help_type == "analysis": content = get_analysis_help_html()
         if content: HelpDialog(content, self).exec()
 
-    def _show_about(self): QMessageBox.about(self, "关于 InterVis", "<h2>InterVis v3.1-ProAnalysis</h2><p>作者: StarsWhere</p><p>一个使用PyQt6和Matplotlib构建的交互式数据可视化工具。</p><p><b>v3.1 更新:</b></p><ul><li><b>并行计算:</b> 显著提升复杂全局统计的计算速度。</li><li><b>一维剖面图:</b> 新增沿任意直线查看变量分布的专业工具。</li><li><b>FFT分析:</b> 增强时间序列分析，支持快速傅里叶变换。</li><li><b>数据导出:</b> 可将过滤后的数据导出为CSV。</li><li>修复了视频导出标题和UI刷新等问题。</li></ul>")
+    def _show_about(self): QMessageBox.about(self, "关于 InterVis", "<h2>InterVis v3.3-ProFinal</h2><p>作者: StarsWhere</p><p>一个使用PyQt6和Matplotlib构建的交互式数据可视化工具。</p><p><b>v3.3 更新:</b></p><ul><li><b>实时公式验证:</b> 输入框在语法错误时会变色并提示。</li><li><b>数据库维护:</b> 新增数据库信息显示和一键压缩优化功能。</li><li><b>多变量剖面图:</b> 剖面图窗口支持切换不同变量进行分析。</li><li><b>并行批量导出:</b> 多个视频导出任务可并行处理，加快速度。</li></ul>")
     def _force_reload_data(self):
         reply = QMessageBox.question(self, "确认重新导入", "这将删除现有数据库并从CSV文件重新导入所有数据。此操作不可撤销。\n\n是否继续？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
         if reply == QMessageBox.StandardButton.Yes:

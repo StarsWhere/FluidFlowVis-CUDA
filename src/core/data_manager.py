@@ -228,6 +228,16 @@ class DataManager(QObject):
 
     def get_cache_info(self) -> Dict: return {'size': len(self.cache), 'max_size': self.cache_max_size}
 
+    def get_database_info(self) -> Dict[str, Any]:
+        """返回数据库的概览信息。"""
+        return {
+            "db_path": self.db_path,
+            "is_ready": self.is_database_ready(),
+            "frame_count": self.get_frame_count(),
+            "variables": self.get_variables(),
+            "global_filter": self.global_filter_clause
+        }
+
     def get_variables(self) -> List[str]:
         if self._variables is None:
             if not self.is_database_ready(): return []

@@ -61,8 +61,10 @@ class ExportHandler:
         if s_f >= e_f:
             QMessageBox.warning(self.main_window, "参数错误", "起始帧必须小于结束帧"); return
         
-        fname, _ = QFileDialog.getSaveFileName(self.main_window, "保存视频文件", os.path.join(self.output_dir, f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"), "Video Files (*.mp4 *.gif)")
-        if not fname: return
+        # --- FIX: Directly create filename, do not ask user ---
+        config_name = os.path.splitext(os.path.basename(self.config_handler.current_config_file or "default"))[0]
+        fname = os.path.join(self.output_dir, f"video_{config_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+        # --- END OF FIX ---
         
         current_config = self.config_handler.get_current_config()
         
@@ -112,6 +114,7 @@ class ExportHandler:
         filepath, _ = QFileDialog.getSaveFileName(self.main_window, "导出数据到CSV", os.path.join(self.output_dir, default_name), "CSV 文件 (*.csv)")
         if not filepath: return
         
+        # --- NEW: Use progress dialog for data export ---
         progress = ProgressDialog(self.main_window, "正在导出数据...")
         filter_clause = self.dm.global_filter_clause if self.ui.filter_enabled_checkbox.isChecked() else ""
         

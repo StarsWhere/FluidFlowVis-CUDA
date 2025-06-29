@@ -312,7 +312,6 @@ class DataExportWorker(QThread):
         try:
             conn = self.dm.get_db_connection()
             
-            # Get total rows for progress bar
             count_query = f"SELECT COUNT(*) FROM timeseries_data"
             if self.filter_clause: count_query += f" WHERE {self.filter_clause}"
             total_rows = conn.execute(count_query).fetchone()[0]
@@ -323,7 +322,6 @@ class DataExportWorker(QThread):
             
             logger.info(f"开始导出数据，查询: {query}")
             
-            # Read and write in chunks to handle large data
             chunksize = 50000
             chunks = pd.read_sql_query(query, conn, chunksize=chunksize)
             

@@ -31,7 +31,7 @@ def get_formula_help_html(base_variables: List[str], custom_global_variables: Di
         .note {{ border-left: 3px solid #17a2b8; padding-left: 15px; background-color: #e2f3f5; margin-top:10px; }}
         .new {{ color: red; font-weight: bold; }}
     </style></head><body>
-        <h2>公式语法说明</h2><p>您可以使用标准的Python数学表达式来创建新的派生变量。</p>
+        <h2>公式语法说明</h2><p>您可以使用标准的Python数学表达式来创建新的派生变量或进行可视化。</p>
         
         <h3>可用变量与常量</h3>
         <h4>数据变量 (逐点变化)</h4>
@@ -180,10 +180,10 @@ def get_analysis_help_html() -> str:
         .note { border-left: 3px solid #ffc107; padding-left: 15px; background-color: #fff9e2; margin-top:10px; }
         .new { color: #007bff; font-weight: bold; }
     </style></head><body>
-        <h2>分析功能指南</h2>
-        <p>本页包含“分析”和“数据过滤”选项卡中高级功能的说明。</p>
+        <h2>分析与数据管理指南</h2>
+        <p>本页包含“分析”、“数据管理”和“可视化”中高级功能的说明。</p>
 
-        <h3>全局数据过滤器</h3>
+        <h3><span class="new">全局数据过滤器</span> (位于“数据管理”选项卡)</h3>
         <p>此功能允许您对<b>整个数据集</b>应用一个筛选条件，所有后续的可视化、统计计算和导出都将只考虑满足条件的数据点。</p>
         <ul>
             <li><b>语法:</b> 使用标准的 <b>SQL `WHERE` 子句</b> 语法 (不需要写 "WHERE" 关键字)。</li>
@@ -200,6 +200,15 @@ def get_analysis_help_html() -> str:
             <p><b>重要:</b> 应用或更改过滤器后，建议点击主工具栏的“重置视图”按钮，以确保您看到的是过滤后数据的完整视图。</p>
         </div>
 
+        <h3><span class="new">时间分析</span> (位于“可视化”选项卡)</h3>
+        <p>此功能允许您在两种模式间切换：</p>
+        <ul>
+            <li><b>瞬时场:</b> 默认模式，显示单个时间步（帧）的数据。</li>
+            <li><b>时间平均场:</b> 计算并显示一个指定时间范围（从起始帧到结束帧）内所有数据点的<b>平均值</b>。这对于观察稳态特征、消除瞬时波动非常有用。</li>
+        </ul>
+
+        <h2 style="margin-top:20px;">交互式分析工具</h2>
+
         <h3>数据探针</h3>
         <p>当您在图表上移动鼠标时，“数据探针”窗口会实时显示两种信息：</p>
         <ul>
@@ -207,7 +216,7 @@ def get_analysis_help_html() -> str:
             <li><b>鼠标位置插值数据:</b> 根据周围数据点插值计算出的、您鼠标精确位置上的值。这对于查看平滑的热力图和等高线图的精确数值非常有用。</li>
         </ul>
 
-        <h3><span class="new">一维剖面图</span></h3>
+        <h3>一维剖面图</h3>
         <p>此功能允许您在2D图上画一条线，并查看变量如何沿着这条线变化。</p>
         <ol>
             <li>点击“<b>绘制剖面图</b>”按钮，鼠标将变为十字形。</li>
@@ -219,10 +228,9 @@ def get_analysis_help_html() -> str:
         <h3>时间序列分析</h3>
         <p>此功能用于查看图上某一个固定点，其物理量随时间的变化情况。</p>
         <ol>
-            <li>点击“<b>拾取时间序列点</b>”按钮，鼠标变为十字形。</li>
-            <li>在图表上单击您感兴趣的一点。</li>
+            <li>点击“<b>拾取时间序列点</b>”按钮，或点击“<b>按坐标拾取...</b>”按钮并输入精确坐标。</li>
             <li>一个新窗口会弹出。您可以在此窗口的下拉菜单中选择不同的变量，查看它们在该点的时间序列图。</li>
-            <li><span class="new">新增功能:</span> 点击“<b>计算FFT</b>”按钮，可以对当前的时间序列进行快速傅里叶变换，分析其频域特性。</li>
+            <li>点击“<b>计算FFT</b>”按钮，可以对当前的时间序列进行快速傅里叶变换，分析其频域特性。</li>
         </ol>
     </body></html>
     """

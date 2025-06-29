@@ -19,7 +19,7 @@ from src.core.constants import VectorPlotType, StreamlineColor, PickerMode
 class UiMainWindow:
     """此类负责创建和布局主窗口的所有UI组件。"""
     def setup_ui(self, main_window: QMainWindow, formula_engine):
-        main_window.setWindowTitle("InterVis v3.1-ProAnalysis")
+        main_window.setWindowTitle("InterVis v3.3-ProFinal")
         main_window.setGeometry(100, 100, 1600, 950)
         
         central_widget = QWidget()
@@ -50,7 +50,7 @@ class UiMainWindow:
         self.tab_widget.addTab(self._create_analysis_tab(parent_window), "分析")
         self.tab_widget.addTab(self._create_compute_tab(parent_window), "逐帧计算")
         self.tab_widget.addTab(self._create_statistics_tab(parent_window), "全局统计")
-        self.tab_widget.addTab(self._create_datamanagement_tab(), "数据管理")
+        self.tab_widget.addTab(self._create_datamanagement_tab(parent_window), "数据管理")
         self.tab_widget.addTab(self._create_export_tab(parent_window), "导出与性能")
         main_layout.addWidget(self.tab_widget)
         main_layout.addWidget(self._create_playback_group())
@@ -61,27 +61,15 @@ class UiMainWindow:
         layout = QHBoxLayout(); line_edit = QLineEdit(); line_edit.setPlaceholderText(placeholder)
         vars_btn = QPushButton("变量"); vars_btn.setToolTip("插入可用变量或常量")
         vars_btn.clicked.connect(lambda: parent_window._show_variable_menu(line_edit, vars_btn.mapToGlobal(vars_btn.rect().bottomLeft())))
-        help_btn = QPushButton("?"); help_btn.setFixedSize(25, 25); help_btn.setToolTip("打开公式使用指南 (F1)"); help_btn.clicked.connect(help_method)
+        help_btn = QPushButton("?"); help_btn.setFixedSize(25, 25); help_btn.setToolTip("打开相关帮助 (F1/F2)"); help_btn.clicked.connect(help_method)
         layout.addWidget(line_edit); layout.addWidget(vars_btn); layout.addWidget(help_btn)
         return QLabel(label_text), layout, line_edit
     
     def _create_visualization_tab(self, parent_window) -> QWidget:
         tab = QWidget(); layout = QVBoxLayout(tab); scroll_area = QScrollArea(); scroll_widget = QWidget(); scroll_layout = QVBoxLayout(scroll_widget)
-        
-        # --- 数据过滤 ---
-        filter_group = QGroupBox("全局数据过滤器"); filter_layout = QVBoxLayout(filter_group)
-        self.filter_enabled_checkbox = QCheckBox("启用全局数据过滤器")
-        filter_layout.addWidget(self.filter_enabled_checkbox)
-        filter_hbox = QHBoxLayout()
-        self.filter_text_edit = QLineEdit(); self.filter_text_edit.setPlaceholderText("SQL WHERE 子句, e.g., p > 1000")
-        self.apply_filter_btn = QPushButton("应用")
-        filter_hbox.addWidget(self.filter_text_edit)
-        filter_hbox.addWidget(self.apply_filter_btn)
-        filter_layout.addLayout(filter_hbox)
-        scroll_layout.addWidget(filter_group)
 
-        # --- 时间分析 ---
-        time_group = QGroupBox("时间分析"); time_layout = QGridLayout(time_group)
+        time_group = QGroupBox("时间分析")
+        time_layout = QGridLayout(time_group)
         time_layout.addWidget(QLabel("分析模式:"), 0, 0)
         self.time_analysis_mode_combo = QComboBox(); self.time_analysis_mode_combo.addItems(["瞬时场", "时间平均场"])
         time_layout.addWidget(self.time_analysis_mode_combo, 0, 1)
@@ -97,7 +85,6 @@ class UiMainWindow:
         time_layout.addWidget(self.time_average_range_widget, 1, 0, 1, 2)
         scroll_layout.addWidget(time_group)
 
-        # --- 修复: 调用 _show_help ---
         axis_group = QGroupBox("坐标轴与标题"); axis_layout = QGridLayout(axis_group)
         title_label, title_layout, self.chart_title_edit = self._create_formula_input("图表标题:", "例: Frame {frame_index}", parent_window, lambda: parent_window._show_help("axis_title"))
         axis_layout.addWidget(title_label, 0, 0); axis_layout.addLayout(title_layout, 0, 1)
@@ -132,7 +119,6 @@ class UiMainWindow:
         u_label, u_layout, self.vector_u_formula = self._create_formula_input("U分量公式:", "例: u - u_global_mean", parent_window, lambda: parent_window._show_help("formula"))
         v_label, v_layout_input, self.vector_v_formula = self._create_formula_input("V分量公式:", "例: v - v_global_mean", parent_window, lambda: parent_window._show_help("formula"))
         v_layout.addWidget(u_label, 1, 0); v_layout.addLayout(u_layout, 1, 1); v_layout.addWidget(v_label, 2, 0); v_layout.addLayout(v_layout_input, 2, 1)
-        # --- 修复结束 ---
         
         self.quiver_options_group = QGroupBox("矢量图选项"); quiver_layout = QGridLayout(self.quiver_options_group)
         quiver_layout.addWidget(QLabel("矢量密度:"), 0, 0); self.quiver_density_spinbox = QSpinBox(); self.quiver_density_spinbox.setRange(1, 50); self.quiver_density_spinbox.setValue(10); quiver_layout.addWidget(self.quiver_density_spinbox, 0, 1)
@@ -155,13 +141,8 @@ class UiMainWindow:
         tab = QWidget()
         layout = QVBoxLayout(tab)
         
-        header_layout = QHBoxLayout()
-        header_layout.addWidget(QLabel("<b>交互式分析工具</b>"), 1)
-        self.analysis_help_btn = QPushButton("?"); self.analysis_help_btn.setFixedSize(25, 25)
-        self.analysis_help_btn.setToolTip("打开分析功能使用指南")
-        header_layout.addWidget(self.analysis_help_btn)
-        layout.addLayout(header_layout)
-
+        analysis_splitter = QSplitter(Qt.Orientation.Vertical)
+        
         probe_group = QGroupBox("数据探针")
         probe_layout = QVBoxLayout(probe_group)
         coord_layout = QHBoxLayout()
@@ -176,17 +157,34 @@ class UiMainWindow:
         self.probe_text.setFont(QFont("Courier New", 9))
         self.probe_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         probe_layout.addWidget(self.probe_text)
-        layout.addWidget(probe_group)
+        analysis_splitter.addWidget(probe_group)
 
+        tools_container = QWidget()
+        tools_main_layout = QVBoxLayout(tools_container)
+        tools_main_layout.setContentsMargins(0, 0, 0, 0)
+        
         tools_group = QGroupBox("分析工具")
         tools_layout = QGridLayout(tools_group)
         self.pick_timeseries_btn = QPushButton("拾取时间序列点"); self.pick_timeseries_btn.setCheckable(True)
         tools_layout.addWidget(self.pick_timeseries_btn, 0, 0)
         self.draw_profile_btn = QPushButton("绘制剖面图"); self.draw_profile_btn.setCheckable(True)
         tools_layout.addWidget(self.draw_profile_btn, 0, 1)
-        layout.addWidget(tools_group)
+        self.pick_by_coords_btn = QPushButton("按坐标拾取...")
+        tools_layout.addWidget(self.pick_by_coords_btn, 1, 0)
         
-        layout.addStretch()
+        # --- FIX: Correctly create and assign the help button ---
+        self.analysis_help_btn = QPushButton("帮助 (?)")
+        self.analysis_help_btn.setToolTip("打开分析功能使用指南")
+        tools_layout.addWidget(self.analysis_help_btn, 1, 1)
+        # --- END OF FIX ---
+        
+        tools_main_layout.addWidget(tools_group)
+        tools_main_layout.addStretch()
+        analysis_splitter.addWidget(tools_container)
+
+        analysis_splitter.setSizes([300, 100])
+        layout.addWidget(analysis_splitter)
+        
         return tab
 
     def _create_compute_tab(self, parent_window) -> QWidget:
@@ -243,9 +241,27 @@ class UiMainWindow:
         self.stats_results_text = QTextEdit(); self.stats_results_text.setReadOnly(True); self.stats_results_text.setFont(QFont("Courier New", 9)); self.stats_results_text.setText("尚未计算。")
         results_layout.addWidget(self.stats_results_text); main_layout.addWidget(results_group); main_layout.addStretch(); return tab
 
-    def _create_datamanagement_tab(self) -> QWidget:
+    def _create_datamanagement_tab(self, parent_window) -> QWidget:
         tab = QWidget()
         layout = QVBoxLayout(tab)
+        
+        filter_group = QGroupBox("全局数据过滤器"); filter_layout = QVBoxLayout(filter_group)
+        filter_help_layout = QHBoxLayout()
+        filter_help_layout.addWidget(QLabel("对此数据集应用SQL筛选条件。"), 1)
+        dm_help_btn = QPushButton("?"); dm_help_btn.setFixedSize(25,25); dm_help_btn.setToolTip("打开数据管理与过滤帮助")
+        dm_help_btn.clicked.connect(lambda: parent_window._show_help("analysis"))
+        filter_help_layout.addWidget(dm_help_btn)
+        filter_layout.addLayout(filter_help_layout)
+        
+        self.filter_enabled_checkbox = QCheckBox("启用全局数据过滤器")
+        filter_layout.addWidget(self.filter_enabled_checkbox)
+        filter_hbox = QHBoxLayout()
+        self.filter_text_edit = QLineEdit(); self.filter_text_edit.setPlaceholderText("SQL WHERE 子句, e.g., p > 1000")
+        self.apply_filter_btn = QPushButton("应用")
+        filter_hbox.addWidget(self.filter_text_edit)
+        filter_hbox.addWidget(self.apply_filter_btn)
+        filter_layout.addLayout(filter_hbox)
+        layout.addWidget(filter_group)
         
         export_group = QGroupBox("数据导出")
         export_layout = QVBoxLayout(export_group)
@@ -258,8 +274,11 @@ class UiMainWindow:
         
         db_group = QGroupBox("数据库维护")
         db_layout = QVBoxLayout(db_group)
-        db_info_label = QLabel("此功能正在开发中。")
-        db_layout.addWidget(db_info_label)
+        self.db_info_label = QLabel("路径: N/A\n大小: 0.00 MB")
+        db_layout.addWidget(self.db_info_label)
+        self.compact_db_btn = QPushButton("压缩优化数据库")
+        self.compact_db_btn.setToolTip("执行VACUUM命令，可减小文件体积并提升性能。")
+        db_layout.addWidget(self.compact_db_btn)
         layout.addWidget(db_group)
 
         layout.addStretch()
@@ -293,7 +312,7 @@ class UiMainWindow:
         group = QGroupBox("播放控制"); layout = QVBoxLayout(group); info_layout = QHBoxLayout(); self.frame_info_label = QLabel("帧: 0/0")
         info_layout.addWidget(self.frame_info_label); info_layout.addStretch(); self.timestamp_label = QLabel("时间戳: 0.0"); info_layout.addWidget(self.timestamp_label); layout.addLayout(info_layout)
         
-        self.playback_widget = QWidget() # To toggle visibility
+        self.playback_widget = QWidget()
         playback_layout = QVBoxLayout(self.playback_widget)
         playback_layout.setContentsMargins(0,0,0,0)
         self.time_slider = QSlider(Qt.Orientation.Horizontal); self.time_slider.setMinimum(0); playback_layout.addWidget(self.time_slider)

@@ -7,7 +7,7 @@ import ast
 import re
 import logging
 import pandas as pd
-from typing import Set, List, Dict, Any
+from typing import Set, List, Dict, Any, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -45,18 +45,22 @@ class FormulaEngine:
     def get_all_constants_and_globals(self) -> Dict:
         return {**self.science_constants, **self.custom_global_variables}
 
-    def validate(self, formula: str) -> bool:
-        if not formula.strip(): return True
+    def validate_syntax(self, formula: str) -> Tuple[bool, str]:
+        if not formula.strip(): return True, ""
         try:
             # 对于包含空间操作的公式，我们只做基本的语法检查，因为它们的验证更复杂
             if any(func in formula for func in self.spatial_functions):
                 ast.parse(formula, mode='eval')
-                return True
+                return True, ""
             tree = ast.parse(formula, mode='eval')
-            return self._validate_node(tree.body)
+            if self._validate_node(tree.body):
+                return True, ""
+            return False, "公式包含不允许的结构或函数。"
+        except SyntaxError as e:
+            return False, f"语法错误: {e}"
         except Exception as e:
             logger.warning(f"公式验证失败: '{formula}' - {e}")
-            return False
+            return False, f"验证失败: {e}"
     
     def _validate_node(self, node) -> bool:
         if isinstance(node, ast.Constant): return isinstance(node.value, (int, float, complex))
