@@ -1,0 +1,17 @@
+{
+    "figure.facecolor": "#1e1e1e",
+    "axes.facecolor": "#2c2c2c",
+    "axes.edgecolor": "#bbbbbb",
+    "axes.labelcolor": "#cccccc",
+    "xtick.color": "#cccccc",
+    "ytick.color": "#cccccc",
+    "grid.color": "#555555",
+    "text.color": "#dddddd",
+    "font.family": "sans-serif",
+    "font.size": 10.0,
+    "lines.linewidth": 1.5,
+    "lines.markersize": 6.0,
+    "grid.linestyle": "--",
+    "grid.linewidth": 0.8,
+    "axes.grid": true
+}

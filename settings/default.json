@@ -1,0 +1,68 @@
+{
+    "version": "2.2.0",
+    "axes": {
+        "title": "",
+        "x_formula": "x",
+        "y_formula": "y",
+        "aspect_config": {
+            "mode": "auto",
+            "value": 1.0
+        }
+    },
+    "heatmap": {
+        "enabled": true,
+        "formula": "p",
+        "colormap": "coolwarm",
+        "vmin": null,
+        "vmax": null
+    },
+    "contour": {
+        "enabled": false,
+        "formula": "p",
+        "levels": 10,
+        "colors": "black",
+        "linewidths": 0.8,
+        "show_labels": true
+    },
+    "vector": {
+        "enabled": false,
+        "type": "STREAMLINE",
+        "u_formula": "",
+        "v_formula": "",
+        "quiver_options": {
+            "density": 10,
+            "scale": 1.0
+        },
+        "streamline_options": {
+            "density": 1.5,
+            "linewidth": 1.0,
+            "color_by": "\u901f\u5ea6\u5927\u5c0f"
+        }
+    },
+    "analysis": {
+        "filter": {
+            "enabled": false,
+            "text": ""
+        },
+        "time_average": {
+            "enabled": false,
+            "start_frame": 0,
+            "end_frame": 0
+        }
+    },
+    "playback": {
+        "frame_skip_step": 1
+    },
+    "export": {
+        "dpi": 300,
+        "video_fps": 15,
+        "video_start_frame": 0,
+        "video_end_frame": 9,
+        "video_grid_w": 300,
+        "video_grid_h": 300
+    },
+    "performance": {
+        "gpu": true,
+        "cache": 100
+    }
+}

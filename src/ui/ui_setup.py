@@ -68,6 +68,34 @@ class UiMainWindow:
     def _create_visualization_tab(self, parent_window) -> QWidget:
         tab = QWidget(); layout = QVBoxLayout(tab); scroll_area = QScrollArea(); scroll_widget = QWidget(); scroll_layout = QVBoxLayout(scroll_widget)
         
+        # --- Templates and Themes Group ---
+        template_theme_group = QGroupBox("预设与风格")
+        tt_layout = QGridLayout(template_theme_group)
+        
+        # Templates
+        tt_layout.addWidget(QLabel("可视化模板:"), 0, 0)
+        self.template_combo = QComboBox(); tt_layout.addWidget(self.template_combo, 0, 1)
+        template_btn_layout = QHBoxLayout()
+        self.load_template_btn = QPushButton("加载"); template_btn_layout.addWidget(self.load_template_btn)
+        self.save_template_btn = QPushButton("另存为..."); template_btn_layout.addWidget(self.save_template_btn)
+        tt_layout.addLayout(template_btn_layout, 0, 2)
+        self.template_help_btn = QPushButton("?"); self.template_help_btn.setFixedSize(25, 25); self.template_help_btn.setToolTip("打开可视化模板帮助")
+        self.template_help_btn.clicked.connect(lambda: parent_window._show_help("template"))
+        tt_layout.addWidget(self.template_help_btn, 0, 3)
+
+        # Themes
+        tt_layout.addWidget(QLabel("绘图主题:"), 1, 0)
+        self.theme_combo = QComboBox(); tt_layout.addWidget(self.theme_combo, 1, 1)
+        theme_btn_layout = QHBoxLayout()
+        self.load_theme_btn = QPushButton("应用"); theme_btn_layout.addWidget(self.load_theme_btn)
+        self.save_theme_btn = QPushButton("另存为..."); theme_btn_layout.addWidget(self.save_theme_btn)
+        tt_layout.addLayout(theme_btn_layout, 1, 2)
+        self.theme_help_btn = QPushButton("?"); self.theme_help_btn.setFixedSize(25, 25); self.theme_help_btn.setToolTip("打开绘图主题帮助")
+        self.theme_help_btn.clicked.connect(lambda: parent_window._show_help("theme"))
+        tt_layout.addWidget(self.theme_help_btn, 1, 3)
+        scroll_layout.addWidget(template_theme_group)
+
+        # --- Time Analysis Group ---
         time_group = QGroupBox("时间分析")
         time_layout = QGridLayout(time_group)
         time_layout.addWidget(QLabel("分析模式:"), 0, 0)
@@ -88,6 +116,7 @@ class UiMainWindow:
         time_layout.addWidget(self.time_average_range_widget, 1, 0, 1, 3)
         scroll_layout.addWidget(time_group)
 
+        # --- Axes and Title Group ---
         axis_group = QGroupBox("坐标轴与标题"); axis_layout = QGridLayout(axis_group)
         title_label, title_layout, self.chart_title_edit = self._create_formula_input("图表标题:", "例: Frame {frame_index}", parent_window, lambda: parent_window._show_help("axis_title"))
         axis_layout.addWidget(title_label, 0, 0); axis_layout.addLayout(title_layout, 0, 1)
@@ -114,6 +143,7 @@ class UiMainWindow:
 
         scroll_layout.addWidget(axis_group)
 
+        # --- Heatmap Group ---
         heatmap_group = QGroupBox("背景热力图"); heatmap_group.setCheckable(True); self.heatmap_enabled = heatmap_group; h_layout = QGridLayout(heatmap_group)
         heat_label, heat_layout, self.heatmap_formula = self._create_formula_input("可视化公式:", "例: sqrt(u**2 + v**2)", parent_window, lambda: parent_window._show_help("formula"))
         h_layout.addWidget(heat_label, 0, 0); h_layout.addLayout(heat_layout, 0, 1)
@@ -123,6 +153,7 @@ class UiMainWindow:
         h_layout.addWidget(QLabel("最小值:"), 2, 0); h_layout.addLayout(min_layout, 2, 1); h_layout.addWidget(QLabel("最大值:"), 3, 0); h_layout.addLayout(max_layout, 3, 1)
         scroll_layout.addWidget(heatmap_group)
         
+        # --- Contour Group ---
         contour_group = QGroupBox("前景等高线"); contour_group.setCheckable(True); self.contour_enabled = contour_group; c_layout = QGridLayout(contour_group)
         contour_label, contour_layout, self.contour_formula = self._create_formula_input("可视化公式:", "例: p - mean(p)", parent_window, lambda: parent_window._show_help("formula"))
         c_layout.addWidget(contour_label, 0, 0); c_layout.addLayout(contour_layout, 0, 1)
@@ -132,6 +163,7 @@ class UiMainWindow:
         self.contour_labels = QCheckBox("显示数值标签"); self.contour_labels.setChecked(True); c_layout.addWidget(self.contour_labels, 4, 0, 1, 2)
         scroll_layout.addWidget(contour_group)
 
+        # --- Vector Group ---
         vector_group = QGroupBox("矢量/流线图"); vector_group.setCheckable(True); self.vector_enabled = vector_group; v_layout = QGridLayout(vector_group)
         v_layout.addWidget(QLabel("绘图类型:"), 0, 0); self.vector_plot_type = QComboBox()
         for item in VectorPlotType: self.vector_plot_type.addItem(item.value, item)
@@ -252,9 +284,8 @@ class UiMainWindow:
         custom_group = QGroupBox("自定义常量计算"); custom_layout = QVBoxLayout(custom_group)
         custom_header_layout = QHBoxLayout(); custom_info = QLabel("在此定义新的全局常量，每行一个。定义将被永久保存。"); custom_info.setTextFormat(Qt.TextFormat.RichText); custom_info.setWordWrap(True)
         custom_header_layout.addWidget(custom_info, 1); 
-        self.custom_stats_help_action = QAction() # Action for menu/toolbar
-        custom_help_btn = QPushButton("?"); custom_help_btn.setFixedSize(25, 25); custom_help_btn.clicked.connect(lambda: parent_window._show_help("custom_stats"))
-        custom_header_layout.addWidget(custom_help_btn); custom_layout.addLayout(custom_header_layout)
+        self.custom_help_btn = QPushButton("?"); self.custom_help_btn.setFixedSize(25, 25); self.custom_help_btn.clicked.connect(lambda: parent_window._show_help("custom_stats"))
+        custom_header_layout.addWidget(self.custom_help_btn); custom_layout.addLayout(custom_header_layout)
         
         self.custom_stats_input = QTextEdit(); self.custom_stats_input.setFont(QFont("Courier New", 9)); self.custom_stats_input.setPlaceholderText("tke_global = mean(0.5 * (u**2 + v**2))\navg_vorticity = mean(curl(u, v))")
         self.custom_stats_input.setFixedHeight(120); custom_layout.addWidget(self.custom_stats_input)
@@ -396,10 +427,17 @@ class UiMainWindow:
         self.full_screen_action = QAction('全屏', main_window); self.full_screen_action.setShortcut('F11'); self.full_screen_action.setCheckable(True)
         view_menu.addAction(self.reset_view_action); view_menu.addSeparator(); view_menu.addAction(self.toggle_panel_action); view_menu.addAction(self.full_screen_action)
         
-        help_menu = menubar.addMenu('帮助(&H)'); self.formula_help_action = QAction('公式指南', main_window); self.formula_help_action.setShortcut('F1')
+        help_menu = menubar.addMenu('帮助(&H)')
+        self.formula_help_action = QAction('公式指南', main_window); self.formula_help_action.setShortcut('F1')
         self.analysis_help_action = QAction("分析功能指南", main_window); self.analysis_help_action.setShortcut('F2')
+        self.template_help_action = QAction("可视化模板指南", main_window)
+        self.theme_help_action = QAction("绘图主题指南", main_window)
         self.about_action = QAction('关于 InterVis', main_window)
-        help_menu.addAction(self.formula_help_action); help_menu.addAction(self.analysis_help_action); help_menu.addSeparator(); help_menu.addAction(self.about_action)
+        help_menu.addAction(self.formula_help_action); help_menu.addAction(self.analysis_help_action)
+        help_menu.addSeparator()
+        help_menu.addAction(self.template_help_action)
+        help_menu.addAction(self.theme_help_action)
+        help_menu.addSeparator(); help_menu.addAction(self.about_action)
 
     def _create_tool_bar(self, main_window: QMainWindow):
         self.toolbar = QToolBar("MainToolBar"); self.toolbar.setObjectName("MainToolBar"); main_window.addToolBar(self.toolbar)

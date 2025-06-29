@@ -144,13 +144,17 @@ class HeadlessPlotter:
         frame_index_col = data.get('frame_index')
         timestamp_col = data.get('timestamp')
         
-        if not title and frame_index_col is not None and not frame_index_col.empty:
-            frame_index = frame_index_col.iloc[0]
-            timestamp = timestamp_col.iloc[0] if timestamp_col is not None and not timestamp_col.empty else 'N/A'
-            try:
-                title = f"Frame: {frame_index}, Time: {timestamp:.3f}s"
-            except (TypeError, ValueError):
-                title = f"Frame: {frame_index}, Time: {timestamp}"
+        if not title:
+            is_avg = self.config.get('analysis', {}).get('time_average', {}).get('enabled', False)
+            if is_avg:
+                start = self.config['analysis']['time_average']['start_frame']
+                end = self.config['analysis']['time_average']['end_frame']
+                title = f"Time-Averaged Field (Frames {start}-{end})"
+            else:
+                parts = []
+                if heatmap_cfg.get('enabled'): parts.append(f"Heatmap: {heatmap_cfg['formula']}")
+                if contour_cfg.get('enabled'): parts.append(f"Contour: {contour_cfg['formula']}")
+                title = " | ".join(parts) if parts else "InterVis Plot"
         ax.set_title(title)
 
         formatter = ticker.ScalarFormatter(useMathText=True); formatter.set_scientific(True); formatter.set_powerlimits((-3, 3))

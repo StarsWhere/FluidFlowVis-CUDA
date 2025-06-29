@@ -12,7 +12,7 @@ from src.core.formula_engine import FormulaEngine
 from src.core.constants import PickerMode
 from src.utils.help_dialog import HelpDialog
 from src.utils.gpu_utils import is_gpu_available
-from src.utils.help_content import get_formula_help_html, get_axis_title_help_html, get_custom_stats_help_html, get_analysis_help_html
+from src.utils.help_content import get_formula_help_html, get_axis_title_help_html, get_custom_stats_help_html, get_analysis_help_html, get_template_help_html, get_theme_help_html
 from src.ui.ui_setup import UiMainWindow
 from src.ui.dialogs import ImportDialog, StatsProgressDialog
 from src.ui.timeseries_dialog import TimeSeriesDialog
@@ -24,6 +24,9 @@ from src.handlers.stats_handler import StatsHandler
 from src.handlers.export_handler import ExportHandler
 from src.handlers.playback_handler import PlaybackHandler
 from src.handlers.compute_handler import ComputeHandler
+from src.handlers.template_handler import TemplateHandler
+from src.handlers.theme_handler import ThemeHandler
+
 
 try:
     import moviepy.editor
@@ -72,6 +75,8 @@ class MainWindow(QMainWindow):
         self.export_handler = ExportHandler(self, self.ui, self.data_manager, self.config_handler)
         self.playback_handler = PlaybackHandler(self, self.ui, self.data_manager)
         self.compute_handler = ComputeHandler(self, self.ui, self.data_manager, self.formula_engine)
+        self.template_handler = TemplateHandler(self, self.ui, self.config_handler)
+        self.theme_handler = ThemeHandler(self, self.ui)
         
         self._init_ui()
         self._connect_signals()
@@ -116,6 +121,8 @@ class MainWindow(QMainWindow):
         self.ui.full_screen_action.triggered.connect(self._toggle_full_screen)
         self.ui.formula_help_action.triggered.connect(lambda: self._show_help("formula"))
         self.ui.analysis_help_action.triggered.connect(lambda: self._show_help("analysis"))
+        self.ui.template_help_action.triggered.connect(lambda: self._show_help("template"))
+        self.ui.theme_help_action.triggered.connect(lambda: self._show_help("theme"))
         self.ui.about_action.triggered.connect(self._show_about)
 
         # General Controls
@@ -148,6 +155,8 @@ class MainWindow(QMainWindow):
         self.export_handler.connect_signals()
         self.playback_handler.connect_signals()
         self.compute_handler.connect_signals()
+        self.template_handler.connect_signals()
+        self.theme_handler.connect_signals()
         
         self._connect_auto_apply_widgets()
 
@@ -236,6 +245,8 @@ class MainWindow(QMainWindow):
             for w in [self.ui.time_avg_start_slider, self.ui.time_avg_start_spinbox, self.ui.time_avg_end_slider, self.ui.time_avg_end_spinbox]: w.setMaximum(frame_count - 1)
             self.ui.time_avg_end_spinbox.setValue(frame_count - 1)
             self.config_handler.populate_config_combobox()
+            self.template_handler.populate_template_combobox() # Populate templates
+            self.theme_handler.populate_theme_combobox() # Populate themes
             self.ui.compute_and_add_btn.setEnabled(True)
             self._force_refresh_plot(reset_view=True)
             self.ui.status_bar.showMessage(f"项目加载成功，共 {frame_count} 帧数据。", 5000)
@@ -405,7 +416,10 @@ class MainWindow(QMainWindow):
             fc = self.data_manager.get_frame_count()
             self.ui.frame_info_label.setText(f"帧: {self.current_frame_index + 1}/{fc if fc > 0 else '?'}")
             info = self.data_manager.get_frame_info(self.current_frame_index)
-            if info and 'timestamp' in info: self.ui.timestamp_label.setText(f"时间戳: {info.get('timestamp', 'N/A')}")
+            if info and 'timestamp' in info:
+                ts_val = info.get('timestamp', 'N/A')
+                ts_str = f"{ts_val:.4f}" if isinstance(ts_val, (float, int)) else str(ts_val)
+                self.ui.timestamp_label.setText(f"时间戳: {ts_str}")
         
         self.ui.cache_label.setText(f"缓存: {self.data_manager.get_cache_info()['size']}/{self.data_manager.get_cache_info()['max_size']}")
 
@@ -468,14 +482,18 @@ class MainWindow(QMainWindow):
     def _force_refresh_plot(self, reset_view=False): self._should_reset_view_after_refresh = reset_view; self._apply_visualization_settings()
     
     def _show_help(self, help_type: str):
-        content = ""
-        if help_type == "formula": content = get_formula_help_html( self.data_manager.get_variables(), self.formula_engine.custom_global_variables, self.formula_engine.science_constants )
-        elif help_type == "axis_title": content = get_axis_title_help_html()
-        elif help_type == "custom_stats": content = get_custom_stats_help_html()
-        elif help_type == "analysis": content = get_analysis_help_html()
+        content_map = {
+            "formula": get_formula_help_html(self.data_manager.get_variables(), self.formula_engine.custom_global_variables, self.formula_engine.science_constants),
+            "axis_title": get_axis_title_help_html(),
+            "custom_stats": get_custom_stats_help_html(),
+            "analysis": get_analysis_help_html(),
+            "template": get_template_help_html(),
+            "theme": get_theme_help_html(),
+        }
+        content = content_map.get(help_type)
         if content: HelpDialog(content, self).exec()
 
-    def _show_about(self): QMessageBox.about(self, "关于 InterVis", "<h2>InterVis v3.3-ProFinal</h2><p>作者: StarsWhere</p><p>一个使用PyQt6和Matplotlib构建的交互式数据可视化工具。</p><p><b>v3.3 更新:</b></p><ul><li><b>一键导出:</b> 剖面图和全局统计数据可一键导出到输出目录。</li><li><b>公式探针:</b> 数据探针现在显示可视化所用的完整公式。</li><li><b>坐标剖面图:</b> 支持通过输入坐标来定义剖面线。</li><li><b>实时公式验证:</b> 输入框在语法错误时会变色并提示。</li><li><b>数据库维护:</b> 新增数据库信息显示和一键压缩优化功能。</li><li><b>多变量剖面图:</b> 剖面图窗口支持切换不同变量进行分析。</li><li><b>并行批量导出:</b> 多个视频导出任务可并行处理，加快速度。</li></ul>")
+    def _show_about(self): QMessageBox.about(self, "关于 InterVis", "<h2>InterVis v3.3-ProFinal</h2><p>作者: StarsWhere</p><p>一个使用PyQt6和Matplotlib构建的交互式数据可视化工具。</p><p><b>v3.3 更新:</b></p><ul><li><b>一键导出:</b> 剖面图和全局统计数据可一键导出到输出目录。</li><li><b>公式探针:</b> 数据探针现在显示可视化所用的完整公式。</li><li><b>坐标剖面图:</b> 支持通过输入坐标来定义剖面线。</li><li><b>实时公式验证:</b> 输入框在语法错误时会变色并提示。</li><li><b>数据库维护:</b> 新增数据库信息显示和一键压缩优化功能。</li><li><b>多变量剖面图:</b> 剖面图窗口支持切换不同变量进行分析。</li><li><b>并行批量导出:</b> 多个视频导出任务可并行处理，加快速度。</li><li><b>新增:</b> 可视化模板与绘图主题系统，提升效率与美观度。</li></ul>")
     def _force_reload_data(self):
         reply = QMessageBox.question(self, "确认重新导入", "这将删除现有数据库并从CSV文件重新导入所有数据。此操作不可撤销。\n\n是否继续？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
         if reply == QMessageBox.StandardButton.Yes:

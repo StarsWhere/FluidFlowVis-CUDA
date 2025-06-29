@@ -5,8 +5,10 @@
 """
 import logging
 import numpy as np
+import os # Import os for path operations
+from datetime import datetime # Import datetime for unique filenames
 from typing import Tuple, Optional
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton, QLabel, QWidget
+from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton, QLabel, QWidget, QMessageBox, QFileDialog # Add QMessageBox, QFileDialog
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.ticker as ticker
@@ -39,6 +41,11 @@ class TimeSeriesDialog(QDialog):
         self.fft_button.clicked.connect(self.plot_fft)
         self.fft_button.setEnabled(False)
         controls_layout.addWidget(self.fft_button)
+
+        self.export_fft_button = QPushButton("导出 FFT 结果")
+        self.export_fft_button.clicked.connect(self.export_fft_results)
+        self.export_fft_button.setEnabled(False)
+        controls_layout.addWidget(self.export_fft_button)
         main_layout.addLayout(controls_layout)
 
         self.figure = Figure(figsize=(8, 6), dpi=100)
@@ -72,6 +79,7 @@ class TimeSeriesDialog(QDialog):
             if self.current_df is None or self.current_df.empty:
                 self.ax_time.text(0.5, 0.5, "在此位置找不到时间序列数据", ha='center', va='center', transform=self.ax_time.transAxes)
                 self.fft_button.setEnabled(False)
+                self.export_fft_button.setEnabled(False)
             else:
                 self.ax_time.plot(self.current_df['timestamp'], self.current_df[selected_variable], marker='.', linestyle='-')
                 self.ax_time.set_title(f"'{selected_variable}' 的时间演化")
@@ -84,11 +92,13 @@ class TimeSeriesDialog(QDialog):
                 
                 is_valid_for_fft = len(self.current_df) > 1 and np.all(np.diff(self.current_df['timestamp']) > 0)
                 self.fft_button.setEnabled(is_valid_for_fft)
+                self.export_fft_button.setEnabled(False) # FFT not computed yet
 
         except Exception as e:
             logger.error(f"绘制时间序列图失败: {e}", exc_info=True)
             self.ax_time.text(0.5, 0.5, f"绘图失败:\n{e}", ha='center', va='center', color='red')
             self.fft_button.setEnabled(False)
+            self.export_fft_button.setEnabled(False)
             
         self.canvas.draw()
 
@@ -106,17 +116,51 @@ class TimeSeriesDialog(QDialog):
         if np.any(time_diffs <= 0):
             self.ax_fft.clear()
             self.ax_fft.text(0.5, 0.5, "时间戳不均匀或无效，无法计算FFT", ha='center', color='red')
-            self.canvas.draw(); return
+            self.canvas.draw()
+            self.export_fft_button.setEnabled(False)
+            return
             
         T = np.mean(time_diffs)
 
-        yf = np.fft.fft(signal - np.mean(signal)) # 减去均值
-        xf = np.fft.fftfreq(N, T)[:N//2]
+        self.yf = np.fft.fft(signal - np.mean(signal)) # 减去均值
+        self.xf = np.fft.fftfreq(N, T)[:N//2]
         
         self.ax_fft.clear()
-        self.ax_fft.plot(xf, 2.0/N * np.abs(yf[0:N//2]))
+        self.ax_fft.plot(self.xf, 2.0/N * np.abs(self.yf[0:N//2]))
         self.ax_fft.set_title(f"'{selected_variable}' 的快速傅里叶变换 (FFT)")
         self.ax_fft.set_xlabel("频率 (Hz)")
         self.ax_fft.set_ylabel("振幅")
         self.ax_fft.grid(True, linestyle='--', alpha=0.6)
         self.canvas.draw()
+        self.export_fft_button.setEnabled(True)
+
+    def export_fft_results(self):
+        if self.xf is None or self.yf is None:
+            logger.warning("没有可导出的 FFT 结果。请先计算 FFT。")
+            return
+
+        import pandas as pd
+        
+        # 获取默认输出目录 (假设 DataManager 有一个 output_dir 属性)
+        # 如果没有，可能需要从主窗口或其他地方获取
+        output_dir = getattr(self.dm, 'output_dir', os.path.join(os.getcwd(), 'output'))
+        os.makedirs(output_dir, exist_ok=True) # 确保目录存在
+
+        # 生成默认文件名，包含时间戳以确保唯一性
+        default_filename = f"fft_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        file_name = os.path.join(output_dir, default_filename)
+        
+        try:
+            # 提取振幅部分
+            amplitudes = 2.0/len(self.yf) * np.abs(self.yf[0:len(self.yf)//2])
+            
+            df_fft = pd.DataFrame({
+                '频率 (Hz)': self.xf,
+                '振幅': amplitudes
+            })
+            df_fft.to_csv(file_name, index=False)
+            logger.info(f"FFT 结果已成功导出到 {file_name}")
+            QMessageBox.information(self, "成功", f"FFT 结果已成功导出到:\n{file_name}")
+        except Exception as e:
+            logger.error(f"导出 FFT 结果失败: {e}", exc_info=True)
+            QMessageBox.critical(self, "导出失败", f"导出 FFT 结果失败:\n{e}")

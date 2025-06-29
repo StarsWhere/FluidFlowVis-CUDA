@@ -77,14 +77,21 @@ class VideoExportWorker(QThread):
 
             frame_conf = self.p_conf.copy()
             raw_title = frame_conf.get('chart_title', '')
+
+            # --- FIX: Evaluate the title for each frame ---
+            # This logic ensures that placeholders like {frame_index} and {time} are correctly
+            # replaced with the actual values for the current frame being rendered.
             if raw_title and '{' in raw_title and '}' in raw_title:
                 try:
                     info = self.dm.get_frame_info(idx)
+                    # Use a default value for timestamp if it's not available
                     time_val = info.get('timestamp', float(idx)) if info else float(idx)
+                    # Format the title string with the frame-specific data
                     evaluated_title = raw_title.format(frame_index=idx, time=time_val)
                     frame_conf['chart_title'] = evaluated_title
                 except (KeyError, ValueError, IndexError) as e:
                     logger.warning(f"格式化标题失败: '{raw_title}' with index={idx}, error: {e}. 使用原始标题。")
+                    # Fallback to the raw title if formatting fails
                     frame_conf['chart_title'] = raw_title
             
             plotter = HeadlessPlotter(frame_conf)

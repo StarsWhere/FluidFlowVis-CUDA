@@ -5,6 +5,8 @@
 """
 from typing import List, Dict
 
+# ... [保留 get_formula_help_html, get_custom_stats_help_html, get_axis_title_help_html, get_analysis_help_html 的完整代码]
+
 def get_formula_help_html(base_variables: List[str], custom_global_variables: Dict[str, float], science_constants: Dict[str, float]) -> str:
     """生成公式帮助的HTML内容"""
     var_list_html = "".join([f"<li><code>{var}</code></li>" for var in sorted(list(base_variables))])
@@ -232,5 +234,108 @@ def get_analysis_help_html() -> str:
             <li>一个新窗口会弹出。您可以在此窗口的下拉菜单中选择不同的变量，查看它们在该点的时间序列图。</li>
             <li>点击“<b>计算FFT</b>”按钮，可以对当前的时间序列进行快速傅里叶变换，分析其频域特性。</li>
         </ol>
+    </body></html>
+    """
+
+def get_template_help_html() -> str:
+    """生成可视化模板帮助的HTML内容"""
+    return """
+    <html><head><style>
+        body { font-family: sans-serif; line-height: 1.6; }
+        h2 { color: #28a745; border-bottom: 2px solid #28a745; padding-bottom: 5px; }
+        h3 { color: #28a745; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
+        code { background-color: #f0f0f0; padding: 2px 5px; border: 1px solid #ddd; border-radius: 3px; font-family: monospace; }
+        ul { list-style-type: circle; padding-left: 20px; }
+        .note { border-left: 3px solid #17a2b8; padding-left: 15px; background-color: #e2f3f5; margin-top:10px; }
+    </style></head><body>
+        <h2>可视化模板指南</h2>
+        <p><b>可视化模板</b>是一个强大的功能，它能让您一键保存和加载<b>一整套完整的可视化方案</b>。这对于重复性工作和快速切换分析视角非常有用。</p>
+        
+        <h3>模板是什么？</h3>
+        <p>一个模板本质上是您在“可视化”选项卡中所有设置的一个快照，它包括：</p>
+        <ul>
+            <li>时间分析模式 (瞬时场/时间平均场)</li>
+            <li>坐标轴与标题的公式</li>
+            <li>热力图的所有设置 (启用状态, 公式, 颜色映射, 范围)</li>
+            <li>等高线图的所有设置 (启用状态, 公式, 线条属性)</li>
+            <li>矢量/流线图的所有设置 (启用状态, 公式, 类型, 选项)</li>
+        </ul>
+        <div class="note">
+            <p><b>注意:</b> 模板<b>不包含</b>“导出与性能”或“数据管理”中的设置。它专注于“看”的方面。如需保存包含所有设置的完整配置，请使用“导出与性能”选项卡中的“设置管理”功能。</p>
+        </div>
+
+        <h3>如何使用？</h3>
+        <h4>加载模板</h4>
+        <ol>
+            <li>从“可视化模板”下拉菜单中选择一个您想要的模板。</li>
+            <li>点击旁边的“<b>加载</b>”按钮。</li>
+            <li>当前所有可视化设置将立即被模板中的设置所覆盖，图表也会自动刷新。</li>
+        </ol>
+        
+        <h4>保存新模板</h4>
+        <ol>
+            <li>首先，按照您的喜好，调整好“可视化”选项卡中的各项设置。</li>
+            <li>点击“<b>另存为...</b>”按钮。</li>
+            <li>在弹出的对话框中为您的新模板输入一个描述性的名称（如 `vorticity_and_pressure`），然后点击OK。</li>
+            <li>您的模板现在就被保存下来了，并会出现在下拉菜单中，供将来使用。</li>
+        </ol>
+
+        <h3>应用场景示例</h3>
+        <ul>
+            <li><b>场景一:</b> 您经常需要查看速度云图和压力等值线。您可以将这套配置保存为“速度与压力”模板，以后只需一键加载即可。</li>
+            <li><b>场景二:</b> 您想对比涡量和散度场。您可以分别创建两个模板，然后在它们之间快速切换，进行对比分析。</li>
+        </ul>
+    </body></html>
+    """
+
+def get_theme_help_html() -> str:
+    """生成绘图主题帮助的HTML内容"""
+    return """
+    <html><head><style>
+        body { font-family: sans-serif; line-height: 1.6; }
+        h2 { color: #6f42c1; border-bottom: 2px solid #6f42c1; padding-bottom: 5px; }
+        h3 { color: #6f42c1; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
+        code { background-color: #f0f0f0; padding: 2px 5px; border: 1px solid #ddd; border-radius: 3px; font-family: monospace; }
+        ul { list-style-type: circle; padding-left: 20px; }
+        .note { border-left: 3px solid #ffc107; padding-left: 15px; background-color: #fff9e2; margin-top:10px; }
+    </style></head><body>
+        <h2>绘图主题指南</h2>
+        <p><b>绘图主题</b>功能专注于图表的美学风格，让您能够轻松地改变图表的外观，以适应不同的展示需求，例如学术论文、PPT演示或个人偏好。</p>
+
+        <h3>主题是什么？</h3>
+        <p>主题是图表视觉元素（如颜色、字体、线条样式等）的一组集合。它与“可视化模板”不同：</p>
+        <ul>
+            <li><b>主题</b>控制“怎么画”（外观风格）。</li>
+            <li><b>模板</b>控制“画什么”（数据内容与公式）。</li>
+        </ul>
+        <p>一个主题主要保存以下类型的设置：</p>
+        <ul>
+            <li>坐标轴、刻度和网格的颜色与线型</li>
+            <li>背景颜色</li>
+            <li>字体系列、大小和颜色</li>
+            <li>默认的线条颜色和样式</li>
+        </ul>
+        <div class="note">
+            <p><b>注意:</b> 主题是一个全局设置。应用一个新主题后，当前图表和所有后续绘制的图表（包括剖面图、时间序列图等）都会使用新的风格。</p>
+        </div>
+        
+        <h3>如何使用？</h3>
+        <h4>应用主题</h4>
+        <ol>
+            <li>从“绘图主题”下拉菜单中选择一个主题（例如 `dark_mode` 或 `paper_bw`）。</li>
+            <li>点击“<b>应用</b>”按钮。</li>
+            <li>图表将立即使用新的风格重新绘制。</li>
+        </ol>
+
+        <h4>保存自定义主题</h4>
+        <p>目前，InterVis不提供在UI中直接编辑主题细节的功能。但您可以通过编辑JSON文件来创建自己的主题：</p>
+        <ol>
+            <li>在 `settings/themes/` 文件夹中，复制一个现有的主题文件（例如 `default.json`）并重命名。</li>
+            <li>用文本编辑器打开这个新的JSON文件。</li>
+            <li>文件内容是Matplotlib的 `rcParams`。您可以修改其中的值，例如将 `axes.facecolor` 改为您喜欢的颜色。关于可用的参数，请参考Matplotlib的官方文档。</li>
+            <li>保存文件后，重启InterVis，您的新主题就会出现在下拉菜单中。</li>
+        </ol>
+        <p>您也可以点击“<b>另存为...</b>”按钮，它会将当前正在使用的Matplotlib样式参数保存为一个新的主题文件，您可以基于此文件进行修改。</p>
+        
     </body></html>
     """

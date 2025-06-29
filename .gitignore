@@ -2,8 +2,8 @@
 data
 output
 logs
-settings
 dist
 build
 main.spec
 1.md
+settings\**.json

@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 from matplotlib.lines import Line2D
 from scipy.interpolate import interpn, griddata
+import matplotlib.contour as mcontour # Added import for mcontour
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
 from PyQt6.QtCore import pyqtSignal, QObject, QRunnable, QThreadPool, Qt
@@ -192,12 +193,22 @@ class PlotWidget(QWidget):
         self.colorbar_obj.set_label(self.heatmap_config.get('formula', ''))
 
     def _draw_contour(self):
+        # Always attempt to clear previous contour if it exists
         if self.contour_obj:
-            for coll in self.contour_obj.collections: coll.remove()
+            # Ensure contour_obj is a valid QuadContourSet before attempting to remove collections
+            if isinstance(self.contour_obj, mcontour.QuadContourSet) and hasattr(self.contour_obj, 'collections'):
+                for coll in self.contour_obj.collections:
+                    try:
+                        coll.remove()
+                    except ValueError: # Handle cases where collection might already be removed
+                        pass
             self.contour_obj = None
 
         data, gx, gy = self.interpolated_results.get('contour_data'), self.interpolated_results.get('grid_x'), self.interpolated_results.get('grid_y')
-        if not self.contour_config.get('enabled') or data is None or gx is None or np.all(np.isnan(data)): return
+        if not self.contour_config.get('enabled') or data is None or gx is None or np.all(np.isnan(data)):
+            # If contour is disabled or data is invalid, ensure contour_obj is None
+            self.contour_obj = None
+            return
 
         self.contour_obj = self.ax.contour(gx, gy, data, levels=self.contour_config.get('levels', 10), colors=self.contour_config.get('colors', 'black'), linewidths=self.contour_config.get('linewidths', 1.0))
         if self.contour_config.get('show_labels'): self.ax.clabel(self.contour_obj, inline=True, fontsize=8, fmt='%.2e')
