@@ -53,11 +53,16 @@ class FormulaEngine:
     def _validate_node(self, node) -> bool:
         if isinstance(node, ast.Constant): return isinstance(node.value, (int, float, complex))
         if isinstance(node, (ast.Num, ast.NameConstant)): return True
-        if isinstance(node, ast.Name): 
-            return (node.id in self.allowed_variables or 
-                    node.id in self.science_constants or
-                    node.id in self.custom_global_variables or
-                    node.id in self.allowed_functions)
+        if isinstance(node, ast.Name):
+            # 如果是已知的科学常量、自定义全局变量或允许的函数名，则通过
+            if node.id in self.science_constants or \
+               node.id in self.custom_global_variables or \
+               node.id in self.allowed_functions:
+                return True
+            # 否则，视为一个变量。变量的实际有效性（是否存在于数据中）将在评估时检查。
+            # 这里不严格要求变量必须在 self.allowed_variables 中，以支持动态数据列。
+            # 但需要避免与聚合函数名冲突，因为聚合函数应该通过 ast.Call 处理
+            return node.id not in self.allowed_aggregates
         if isinstance(node, ast.BinOp): return type(node.op) in self.allowed_op_types and self._validate_node(node.left) and self._validate_node(node.right)
         if isinstance(node, ast.UnaryOp): return type(node.op) in self.allowed_op_types and self._validate_node(node.operand)
         if isinstance(node, ast.Call):

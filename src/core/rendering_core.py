@@ -53,16 +53,16 @@ def prepare_gridded_data(data: np.ndarray, config: Dict[str, Any], formula_engin
         np.linspace(processed_data['__y_calculated__'].min(), processed_data['__y_calculated__'].max(), grid_resolution[1])
     )
     points = processed_data[['__x_calculated__', '__y_calculated__']].values
-    
+
     # --- 4. 绘图数据求值 (热力图、等高线、矢量场) ---
     def get_values_from_formula(cfg, formula_key='formula'):
         formula = cfg.get(formula_key, '').strip()
-        if not cfg.get('enabled') or not formula: 
+        if not cfg.get('enabled') or not formula:
             return None
-        
+
         # 聚合函数不能在GPU上按点计算
         uses_aggregates = any(agg_func in formula for agg_func in formula_engine.allowed_aggregates)
-        
+
         if use_gpu and not uses_aggregates:
             try:
                 req_vars = formula_engine.get_used_variables(formula)
@@ -79,13 +79,39 @@ def prepare_gridded_data(data: np.ndarray, config: Dict[str, Any], formula_engin
     contour_z = get_values_from_formula(contour_cfg)
     vector_u = get_values_from_formula(vector_cfg, 'u_formula')
     vector_v = get_values_from_formula(vector_cfg, 'v_formula')
-    
+
     # --- 5. 插值 ---
+    # 过滤掉包含 NaN 的点，因为 griddata 不支持 NaN
+    valid_indices = ~np.isnan(points).any(axis=1)
+    
+    # 检查 heatmap_z, contour_z, vector_u, vector_v 是否存在，并相应地更新 valid_indices
+    if heatmap_z is not None:
+        valid_indices = valid_indices & ~np.isnan(heatmap_z)
+    if contour_z is not None:
+        valid_indices = valid_indices & ~np.isnan(contour_z)
+    if vector_u is not None:
+        valid_indices = valid_indices & ~np.isnan(vector_u)
+    if vector_v is not None:
+        valid_indices = valid_indices & ~np.isnan(vector_v)
+
+    filtered_points = points[valid_indices]
+    
+    if filtered_points.size == 0:
+        logger.warning("所有点都包含 NaN 值或计算结果为 NaN，无法进行插值。")
+        return {
+            'grid_x': gx, 'grid_y': gy,
+            'heatmap_data': None,
+            'contour_data': None,
+            'vector_u_data': None,
+            'vector_v_data': None
+        }
+
     try:
-        heatmap_data = griddata(points, heatmap_z, (gx, gy), method='linear') if heatmap_z is not None else None
-        contour_data = griddata(points, contour_z, (gx, gy), method='linear') if contour_z is not None else None
-        vector_u_data = griddata(points, vector_u, (gx, gy), method='linear') if vector_u is not None else None
-        vector_v_data = griddata(points, vector_v, (gx, gy), method='linear') if vector_v is not None else None
+        # 只有在对应数据存在且非空时才进行插值
+        heatmap_data = griddata(filtered_points, heatmap_z[valid_indices], (gx, gy), method='linear') if heatmap_z is not None and heatmap_z[valid_indices].size > 0 else None
+        contour_data = griddata(filtered_points, contour_z[valid_indices], (gx, gy), method='linear') if contour_z is not None and contour_z[valid_indices].size > 0 else None
+        vector_u_data = griddata(filtered_points, vector_u[valid_indices], (gx, gy), method='linear') if vector_u is not None and vector_u[valid_indices].size > 0 else None
+        vector_v_data = griddata(filtered_points, vector_v[valid_indices], (gx, gy), method='linear') if vector_v is not None and vector_v[valid_indices].size > 0 else None
     except QhullError:
         raise ValueError(
             "输入点共线或退化，无法生成2D插值网格。\n\n"
