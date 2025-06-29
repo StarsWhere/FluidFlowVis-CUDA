@@ -178,3 +178,73 @@ def get_custom_stats_help_html() -> str:
         </p>
     </body></html>
     """
+
+def get_axis_title_help_html() -> str:
+    """生成坐标轴和标题帮助的HTML内容"""
+    return """
+    <html><head><style>
+        body { font-family: sans-serif; line-height: 1.6; }
+        h2 { color: #005A9C; border-bottom: 2px solid #005A9C; padding-bottom: 5px; }
+        h3 { color: #005A9C; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
+        code { background-color: #f0f0f0; padding: 2px 5px; border: 1px solid #ddd; border-radius: 3px; font-family: monospace; }
+        ul { list-style-type: disc; padding-left: 20px; }
+    </style></head><body>
+        <h2>坐标轴与标题指南</h2>
+        <p>
+            您可以使用公式来定义图表的X轴、Y轴以及图表标题。
+            这允许您根据数据变量创建自定义的坐标系或动态的标题。
+        </p>
+
+        <h3>X轴与Y轴公式</h3>
+        <ul>
+            <li>
+                <b>目的:</b>
+                定义数据点在图表上的X和Y坐标。
+                您可以直接使用原始数据变量，也可以通过数学表达式进行变换。
+            </li>
+            <li>
+                <b>示例:</b>
+                <ul>
+                    <li><code>x</code>: 使用原始X坐标</li>
+                    <li><code>rho * u</code>: 使用质量通量作为X坐标</li>
+                    <li><code>x - x_global_mean</code>: 使用相对X坐标</li>
+                </ul>
+            </li>
+            <li>
+                <b>可用内容:</b>
+                与“公式语法说明”中“数据变量”和“全局常量”相同的变量和函数。
+            </li>
+        </ul>
+
+        <h3>图表标题公式</h3>
+        <ul>
+            <li>
+                <b>目的:</b>
+                定义图表的显示标题。标题可以是静态文本，也可以包含动态信息。
+            </li>
+            <li>
+                <b>动态标题:</b>
+                您可以使用Python的f-string语法在标题中嵌入变量或表达式的值。
+                例如，<code>f"帧: {frame_index}, 时间: {time}"</code>。
+            </li>
+            <li>
+                <b>可用内容:</b>
+                除了公式中可用的变量外，标题公式还可以访问一些特殊的上下文变量，例如：
+                <ul>
+                    <li><code>frame_index</code>: 当前帧的索引 (整数)</li>
+                    <li><code>time</code>: 当前帧对应的时间戳 (浮点数)</li>
+                    <li><code>data_manager.current_frame_variables</code>: 包含当前帧所有变量的字典</li>
+                    <li>任何已定义的全局常量 (如 <code>u_global_mean</code>)</li>
+                </ul>
+            </li>
+            <li>
+                <b>示例:</b>
+                <ul>
+                    <li><code>"我的固定标题"</code></li>
+                    <li><code>f"帧 {frame_index} 的压力场"</code></li>
+                    <li><code>f"速度大小均值: {mean(sqrt(u**2 + v**2)):.2f}"</code> (注意：标题中的聚合函数是对当前帧数据执行的)</li>
+                </ul>
+            </li>
+        </ul>
+    </body></html>
+    """

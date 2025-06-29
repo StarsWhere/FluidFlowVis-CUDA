@@ -15,7 +15,7 @@ from src.core.data_manager import DataManager
 from src.core.formula_validator import FormulaValidator
 from src.utils.help_dialog import HelpDialog
 from src.utils.gpu_utils import is_gpu_available
-from src.utils.help_content import get_formula_help_html, get_custom_stats_help_html
+from src.utils.help_content import get_formula_help_html, get_custom_stats_help_html, get_axis_title_help_html
 from src.visualization.video_exporter import VideoExportDialog
 from src.ui.ui_setup import UiMainWindow
 from src.ui.dialogs import BatchExportDialog, StatsProgressDialog
@@ -151,6 +151,8 @@ class MainWindow(QMainWindow):
         self.ui.batch_export_btn.clicked.connect(self._start_batch_export)
         self.ui.apply_cache_btn.clicked.connect(self._apply_cache_settings)
         self.ui.gpu_checkbox.toggled.connect(self._on_gpu_toggle)
+        self.ui.refresh_button.clicked.connect(self._force_refresh_plot)
+        self.ui.plot_widget.plot_rendered.connect(self._on_plot_rendered)
         
         # Config management
         self.ui.config_combo.currentIndexChanged.connect(self._on_config_selected)
@@ -287,6 +289,15 @@ class MainWindow(QMainWindow):
         self._trigger_auto_apply()
         self._mark_config_as_dirty()
 
+    def _on_plot_rendered(self):
+        """图表渲染完成后调用，用于重置视图。"""
+        # 仅在需要重置视图时执行，例如通过“立即刷新”按钮触发
+        # 避免在每次渲染时都重置视图，影响用户操作
+        if hasattr(self, '_should_reset_view_after_refresh') and self._should_reset_view_after_refresh:
+            self.ui.plot_widget.reset_view()
+            self._should_reset_view_after_refresh = False # 重置标志
+            logger.info("图表视图已重置。")
+
     def _on_vector_plot_type_changed(self, *args):
         is_quiver = self.ui.vector_plot_type.currentText().startswith("矢量图")
         self.ui.quiver_options_group.setVisible(is_quiver)
@@ -317,6 +328,12 @@ class MainWindow(QMainWindow):
         if info: self.ui.timestamp_label.setText(f"时间戳: {info['timestamp']}")
         cache = self.data_manager.get_cache_info()
         self.ui.cache_label.setText(f"缓存: {cache['size']}/{cache['max_size']}")
+
+    def _force_refresh_plot(self):
+        """强制刷新当前图表，应用所有可视化设置。"""
+        self._should_reset_view_after_refresh = True # 设置标志
+        self._apply_visualization_settings()
+        logger.info("图表已手动刷新。等待渲染完成后重置视图。")
 
     def _apply_visualization_settings(self):
         if self.data_manager.get_frame_count() == 0: return
@@ -376,12 +393,18 @@ class MainWindow(QMainWindow):
     # endregion
 
     # region 菜单与文件操作
-    def _show_formula_help(self):
-        html_content = get_formula_help_html(
-            base_variables=self.data_manager.get_variables(),
-            custom_global_variables=self.formula_validator.custom_global_variables,
-            science_constants=self.formula_validator.science_constants
-        )
+    def _show_formula_help(self, help_type: str = "formula"):
+        """显示公式或轴标题的帮助文档。"""
+        if help_type == "axis_title":
+            html_content = get_axis_title_help_html()
+            title = "坐标轴与标题指南"
+        else: # "formula"
+            html_content = get_formula_help_html(
+                base_variables=self.data_manager.get_variables(),
+                custom_global_variables=self.formula_validator.custom_global_variables,
+                science_constants=self.formula_validator.science_constants
+            )
+            title = "公式语法说明"
         HelpDialog(html_content, self).exec()
 
     def _show_custom_stats_help(self):

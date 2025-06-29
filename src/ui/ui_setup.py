@@ -103,17 +103,17 @@ class UiMainWindow:
         axis_layout = QGridLayout(axis_group)
         
         title_label, title_layout, self.chart_title_edit = self._create_formula_input(
-            "图表标题:", "自动生成 (可自定义)", parent_window, parent_window._show_formula_help)
+            "图表标题:", "自动生成 (可自定义)", parent_window, lambda: parent_window._show_formula_help("axis_title"))
         axis_layout.addWidget(title_label, 0, 0)
         axis_layout.addLayout(title_layout, 0, 1)
 
         x_label, x_layout, self.x_axis_formula = self._create_formula_input(
-            "X轴公式:", "默认为 'x'", parent_window, parent_window._show_formula_help)
+            "X轴公式:", "默认为 'x'", parent_window, lambda: parent_window._show_formula_help("axis_title"))
         axis_layout.addWidget(x_label, 1, 0)
         axis_layout.addLayout(x_layout, 1, 1)
 
         y_label, y_layout, self.y_axis_formula = self._create_formula_input(
-            "Y轴公式:", "默认为 'y'", parent_window, parent_window._show_formula_help)
+            "Y轴公式:", "默认为 'y'", parent_window, lambda: parent_window._show_formula_help("axis_title"))
         axis_layout.addWidget(y_label, 2, 0)
         axis_layout.addLayout(y_layout, 2, 1)
         
@@ -371,6 +371,9 @@ class UiMainWindow:
         btns_layout.addWidget(self.prev_btn)
         self.next_btn = QPushButton(">>")
         btns_layout.addWidget(self.next_btn)
+        self.refresh_button = QPushButton("立即刷新")
+        self.refresh_button.setToolTip("刷新当前图表显示")
+        btns_layout.addWidget(self.refresh_button)
         btns_layout.addSpacing(20)
         btns_layout.addWidget(QLabel("跳帧:"))
         self.frame_skip_spinbox = QSpinBox()
