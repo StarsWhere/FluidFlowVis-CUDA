@@ -16,7 +16,11 @@ class FormulaEngine:
     def __init__(self):
         # 允许的操作符和函数
         self.allowed_op_types = {ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.USub, ast.UAdd}
-        self.allowed_functions = {'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'sinh', 'cosh', 'tanh', 'exp', 'log', 'log10', 'sqrt', 'abs', 'floor', 'ceil', 'round', 'min', 'max'}
+        
+        self.simple_math_functions = {'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'sinh', 'cosh', 'tanh', 'exp', 'log', 'log10', 'sqrt', 'abs', 'floor', 'ceil', 'round', 'min', 'max'}
+        self.spatial_functions = {'grad_x', 'grad_y', 'div', 'curl', 'laplacian'}
+        self.allowed_functions = self.simple_math_functions.union(self.spatial_functions)
+
         self.allowed_aggregates = {'mean', 'sum', 'median', 'std', 'var', 'min_frame', 'max_frame'}
 
         # 内置常量
@@ -44,6 +48,10 @@ class FormulaEngine:
     def validate(self, formula: str) -> bool:
         if not formula.strip(): return True
         try:
+            # 对于包含空间操作的公式，我们只做基本的语法检查，因为它们的验证更复杂
+            if any(func in formula for func in self.spatial_functions):
+                ast.parse(formula, mode='eval')
+                return True
             tree = ast.parse(formula, mode='eval')
             return self._validate_node(tree.body)
         except Exception as e:
@@ -54,14 +62,9 @@ class FormulaEngine:
         if isinstance(node, ast.Constant): return isinstance(node.value, (int, float, complex))
         if isinstance(node, (ast.Num, ast.NameConstant)): return True
         if isinstance(node, ast.Name):
-            # 如果是已知的科学常量、自定义全局变量或允许的函数名，则通过
-            if node.id in self.science_constants or \
-               node.id in self.custom_global_variables or \
+            if node.id in self.get_all_constants_and_globals() or \
                node.id in self.allowed_functions:
                 return True
-            # 否则，视为一个变量。变量的实际有效性（是否存在于数据中）将在评估时检查。
-            # 这里不严格要求变量必须在 self.allowed_variables 中，以支持动态数据列。
-            # 但需要避免与聚合函数名冲突，因为聚合函数应该通过 ast.Call 处理
             return node.id not in self.allowed_aggregates
         if isinstance(node, ast.BinOp): return type(node.op) in self.allowed_op_types and self._validate_node(node.left) and self._validate_node(node.right)
         if isinstance(node, ast.UnaryOp): return type(node.op) in self.allowed_op_types and self._validate_node(node.operand)
@@ -74,23 +77,25 @@ class FormulaEngine:
         return False
             
     def get_used_variables(self, formula: str) -> Set[str]:
-        if not self.validate(formula): return set()
-        tree = ast.parse(formula, mode='eval')
-        return {node.id for node in ast.walk(tree) if isinstance(node, ast.Name) and node.id in self.allowed_variables}
+        # 这是一个简化的实现，对于空间函数可能不完全准确，但对于GPU使用检查足够
+        try:
+            tree = ast.parse(formula, mode='eval')
+            return {node.id for node in ast.walk(tree) if isinstance(node, ast.Name) and node.id in self.allowed_variables}
+        except:
+            # 如果AST解析失败，使用正则作为后备
+            return {var for var in self.allowed_variables if re.search(r'\b' + var + r'\b', formula)}
 
     def evaluate_formula(self, data: pd.DataFrame, formula: str) -> pd.Series:
         formula_stripped = formula.strip()
         if not formula_stripped:
-            # 如果是空公式，并且数据中包含 'x' 或 'y'，则尝试使用它们作为默认值
-            # 这种情况应该由上层调用者确保不会发生，但作为最后的防御
-            if 'x' in data.columns: return data['x']
-            elif 'y' in data.columns: return data['y']
             raise ValueError("传入了空公式")
 
-        # 特殊处理单个变量作为公式的情况，无论是否在 allowed_variables 中
-        # 因为 x, y 可能是隐式变量，不一定在数据文件中直接列出
         if formula_stripped in data.columns:
             return data[formula_stripped]
+
+        # 空间函数不能在这里被评估
+        if any(f in formula_stripped for f in self.spatial_functions):
+            raise ValueError(f"空间函数 (如 grad_x, div) 无法直接在 evaluate_formula 中求值。请使用 computation_core。")
 
         eval_globals = self.get_all_constants_and_globals()
         local_scope = eval_globals.copy()
@@ -98,10 +103,27 @@ class FormulaEngine:
         
         # 1. 预处理聚合函数
         agg_pattern = re.compile(r'(\b(?:' + '|'.join(self.allowed_aggregates) + r'))\s*\((.*?)\)')
-        matches = list(agg_pattern.finditer(formula))
-        for i, match in enumerate(reversed(matches)):
-            agg_func_name, inner_expr = match.groups()
-            if inner_expr.count('(') != inner_expr.count(')'): continue # 简单括号匹配
+        
+        # 使用更稳健的方式处理嵌套括号
+        matches = []
+        for match in agg_pattern.finditer(formula):
+            # 检查括号平衡以确定表达式的结束位置
+            open_brackets = 0
+            expr_end = -1
+            expr_start = match.start(2)
+            for i in range(expr_start, len(formula)):
+                if formula[i] == '(':
+                    open_brackets += 1
+                elif formula[i] == ')':
+                    open_brackets -= 1
+                    if open_brackets == -1:
+                        expr_end = i
+                        break
+            if expr_end != -1:
+                matches.append((match, formula[expr_start:expr_end]))
+
+        for i, (match_obj, inner_expr) in enumerate(reversed(matches)):
+            agg_func_name = match_obj.group(1)
             
             try:
                 inner_values = data.eval(inner_expr, global_dict=eval_globals, local_dict={})
@@ -119,7 +141,8 @@ class FormulaEngine:
 
             temp_var_name = f"__agg_result_{len(matches) - 1 - i}__"
             local_scope[temp_var_name] = scalar_result
-            processed_formula = processed_formula[:match.start()] + f"@{temp_var_name}" + processed_formula[match.end():]
+            # 替换整个聚合函数调用
+            processed_formula = processed_formula[:match_obj.start()] + f"@{temp_var_name}" + processed_formula[match_obj.end():]
 
         # 2. 为所有外部变量添加 '@' 前缀以供 pandas.eval 使用
         all_external_vars = sorted(eval_globals.keys(), key=len, reverse=True)

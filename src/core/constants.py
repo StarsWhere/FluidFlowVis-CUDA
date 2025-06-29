@@ -32,6 +32,9 @@ class StreamlineColor(Enum):
         return cls.MAGNITUDE # 默认值
 
 class PickerMode(Enum):
-    """颜色拾取器的模式"""
+    """颜色拾取器/交互模式的枚举"""
     VMIN = "vmin"
     VMAX = "vmax"
+    TIMESERIES = "timeseries"
+    PROFILE_START = "profile_start" # 新增: 剖面图起点
+    PROFILE_END = "profile_end"     # 新增: 剖面图终点

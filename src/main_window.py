@@ -2,26 +2,28 @@
 # -*- coding: utf-8 -*-
 import os
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Optional
 import numpy as np
 from PyQt6.QtWidgets import QMainWindow, QMessageBox, QFileDialog, QLineEdit, QMenu
 from PyQt6.QtCore import Qt, QSettings, QPoint, QTimer
-from PyQt6.QtGui import QAction
 
 from src.core.data_manager import DataManager
 from src.core.formula_engine import FormulaEngine
-from src.core.constants import VectorPlotType, PickerMode
+from src.core.constants import PickerMode
 from src.utils.help_dialog import HelpDialog
 from src.utils.gpu_utils import is_gpu_available
-from src.utils.help_content import get_formula_help_html, get_axis_title_help_html
+from src.utils.help_content import get_formula_help_html, get_axis_title_help_html, get_custom_stats_help_html, get_analysis_help_html
 from src.ui.ui_setup import UiMainWindow
-from src.ui.dialogs import StatsProgressDialog
-from src.core.workers import DataScanWorker
+from src.ui.dialogs import ImportDialog
+from src.ui.timeseries_dialog import TimeSeriesDialog
+from src.ui.profile_plot_dialog import ProfilePlotDialog # 新增
+from src.core.workers import DatabaseImportWorker
 
 from src.handlers.config_handler import ConfigHandler
 from src.handlers.stats_handler import StatsHandler
 from src.handlers.export_handler import ExportHandler
 from src.handlers.playback_handler import PlaybackHandler
+from src.handlers.compute_handler import ComputeHandler
 
 try:
     import moviepy.editor
@@ -52,204 +54,239 @@ class MainWindow(QMainWindow):
         self.current_frame_index: int = 0
         self._should_reset_view_after_refresh: bool = False
         
-        self.data_dir = self.settings.value("data_directory", os.path.join(os.getcwd(), "data"))
+        self.project_dir = self.settings.value("project_directory", os.path.join(os.getcwd(), "data"))
         self.output_dir = self.settings.value("output_directory", os.path.join(os.getcwd(), "output"))
-        os.makedirs(self.data_dir, exist_ok=True)
+        os.makedirs(self.project_dir, exist_ok=True)
         os.makedirs(self.output_dir, exist_ok=True)
         
-        self.redraw_debounce_timer = QTimer(self)
-        self.redraw_debounce_timer.setSingleShot(True)
-        self.redraw_debounce_timer.setInterval(150)
-        
-        self.scan_worker: Optional[DataScanWorker] = None
-        self.scan_progress_dialog: Optional[StatsProgressDialog] = None
+        self.redraw_debounce_timer = QTimer(self); self.redraw_debounce_timer.setSingleShot(True); self.redraw_debounce_timer.setInterval(150)
+        self.import_worker: Optional[DatabaseImportWorker] = None
+        self.import_progress_dialog: Optional[ImportDialog] = None
+        self.timeseries_dialog: Optional[TimeSeriesDialog] = None
+        self.profile_dialog: Optional[ProfilePlotDialog] = None
 
-        self.config_handler = ConfigHandler(self, self.ui, self.data_manager)
+        self.config_handler = ConfigHandler(self, self.ui)
         self.stats_handler = StatsHandler(self, self.ui, self.data_manager, self.formula_engine)
         self.export_handler = ExportHandler(self, self.ui, self.data_manager, self.config_handler)
         self.playback_handler = PlaybackHandler(self, self.ui, self.data_manager)
+        self.compute_handler = ComputeHandler(self, self.ui, self.data_manager, self.formula_engine)
         
         self._init_ui()
         self._connect_signals()
         self._load_settings()
-        self._initialize_data()
+        self._initialize_project()
 
     def _init_ui(self):
         self.ui.setup_ui(self, self.formula_engine)
         self.ui.gpu_checkbox.setEnabled(is_gpu_available())
-        self.ui.data_dir_line_edit.setText(self.data_dir)
+        self.ui.data_dir_line_edit.setText(self.project_dir)
         self.ui.output_dir_line_edit.setText(self.output_dir)
         
         if not VIDEO_EXPORT_AVAILABLE:
-            tooltip_msg = "功能不可用：请安装 moviepy 或 imageio (e.g., pip install moviepy)"
-            self.ui.export_vid_btn.setEnabled(False)
-            self.ui.export_vid_btn.setToolTip(tooltip_msg)
-            self.ui.batch_export_btn.setEnabled(False)
-            self.ui.batch_export_btn.setToolTip(tooltip_msg)
-            logger.warning("视频导出功能不可用，因为 moviepy 和 imageio 均未安装。")
+            tooltip = "功能不可用：请安装 moviepy 或 imageio"
+            self.ui.export_vid_btn.setEnabled(False); self.ui.export_vid_btn.setToolTip(tooltip)
+            self.ui.batch_export_btn.setEnabled(False); self.ui.batch_export_btn.setToolTip(tooltip)
 
         self._update_gpu_status_label()
         self._on_vector_plot_type_changed()
+        self._on_time_analysis_mode_changed()
 
     def _connect_signals(self):
         self.data_manager.error_occurred.connect(self._on_error)
         self.redraw_debounce_timer.timeout.connect(self._apply_visualization_settings)
         
+        # Plot Widget
         self.ui.plot_widget.mouse_moved.connect(self._on_mouse_moved)
         self.ui.plot_widget.probe_data_ready.connect(self._on_probe_data)
         self.ui.plot_widget.value_picked.connect(self._on_value_picked)
+        self.ui.plot_widget.timeseries_point_picked.connect(self._on_timeseries_point_picked)
+        self.ui.plot_widget.profile_line_defined.connect(self._on_profile_line_defined)
         self.ui.plot_widget.plot_rendered.connect(self._on_plot_rendered)
         self.ui.plot_widget.interpolation_error.connect(self._on_interpolation_error)
         
-        self.ui.open_data_dir_action.triggered.connect(self._change_data_directory)
-        self.ui.reload_action.triggered.connect(self._reload_data)
+        # Menu & Toolbar
+        self.ui.open_data_dir_action.triggered.connect(self._change_project_directory)
+        self.ui.reload_action.triggered.connect(self._force_reload_data)
         self.ui.exit_action.triggered.connect(self.close)
         self.ui.reset_view_action.triggered.connect(self.ui.plot_widget.reset_view)
         self.ui.toggle_panel_action.triggered.connect(self._toggle_control_panel)
         self.ui.full_screen_action.triggered.connect(self._toggle_full_screen)
-        self.ui.formula_help_action.triggered.connect(self._show_formula_help)
+        self.ui.formula_help_action.triggered.connect(lambda: self._show_help("formula"))
+        self.ui.analysis_help_action.triggered.connect(lambda: self._show_help("analysis"))
         self.ui.about_action.triggered.connect(self._show_about)
 
-        self.ui.change_data_dir_btn.clicked.connect(self._change_data_directory)
-        self.ui.refresh_button.clicked.connect(self._force_refresh_plot)
+        # General Controls
+        self.ui.change_data_dir_btn.clicked.connect(self._change_project_directory)
+        self.ui.refresh_button.clicked.connect(lambda: self._force_refresh_plot(reset_view=True)) # 修复1
         self.ui.apply_cache_btn.clicked.connect(self._apply_cache_settings)
         self.ui.gpu_checkbox.toggled.connect(self._on_gpu_toggle)
         self.ui.vector_plot_type.currentIndexChanged.connect(self._on_vector_plot_type_changed)
+        
+        # Analysis Controls
+        self.ui.apply_filter_btn.clicked.connect(self._apply_global_filter)
+        self.ui.time_analysis_mode_combo.currentIndexChanged.connect(self._on_time_analysis_mode_changed)
+        self.ui.pick_timeseries_btn.toggled.connect(self._on_pick_timeseries_toggled)
+        self.ui.draw_profile_btn.toggled.connect(self._on_draw_profile_toggled)
+        self.ui.analysis_help_btn.clicked.connect(lambda: self._show_help("analysis"))
+        self.ui.time_avg_start_slider.valueChanged.connect(self.ui.time_avg_start_spinbox.setValue)
+        self.ui.time_avg_start_spinbox.valueChanged.connect(self.ui.time_avg_start_slider.setValue)
+        self.ui.time_avg_end_slider.valueChanged.connect(self.ui.time_avg_end_spinbox.setValue)
+        self.ui.time_avg_end_spinbox.valueChanged.connect(self.ui.time_avg_end_slider.setValue)
+        self.ui.time_avg_start_spinbox.editingFinished.connect(self._trigger_auto_apply)
+        self.ui.time_avg_end_spinbox.editingFinished.connect(self._trigger_auto_apply)
 
+        # Connect all handlers
         self.config_handler.connect_signals()
         self.stats_handler.connect_signals()
         self.export_handler.connect_signals()
         self.playback_handler.connect_signals()
+        self.compute_handler.connect_signals()
         
-        formula_widgets = [
-            self.ui.chart_title_edit, self.ui.x_axis_formula, self.ui.y_axis_formula, 
-            self.ui.heatmap_formula, self.ui.heatmap_vmin, self.ui.heatmap_vmax, 
-            self.ui.contour_formula, self.ui.vector_u_formula, self.ui.vector_v_formula
-        ]
-        for widget in formula_widgets:
-            if isinstance(widget, QLineEdit):
-                # Reset style on edit, and trigger redraw on finish
-                widget.textChanged.connect(lambda text, w=widget: self._reset_formula_widget_style(w))
-                widget.editingFinished.connect(self._trigger_auto_apply)
+        self._connect_auto_apply_widgets()
 
-        widgets_to_connect_for_redraw = [
-            self.ui.heatmap_enabled, self.ui.heatmap_colormap, self.ui.contour_labels,
-            self.ui.contour_levels, self.ui.contour_linewidth, self.ui.contour_colors,
-            self.ui.vector_enabled, self.ui.vector_plot_type, self.ui.quiver_density_spinbox,
-            self.ui.quiver_scale_spinbox, self.ui.stream_density_spinbox,
-            self.ui.stream_linewidth_spinbox, self.ui.stream_color_combo,
-        ]
-        for widget in widgets_to_connect_for_redraw:
-            if hasattr(widget, 'toggled'): widget.toggled.connect(self._trigger_auto_apply)
-            elif hasattr(widget, 'currentIndexChanged'): widget.currentIndexChanged.connect(self._trigger_auto_apply)
-            elif hasattr(widget, 'valueChanged'): widget.valueChanged.connect(self._trigger_auto_apply)
+    def _connect_auto_apply_widgets(self):
+        widgets = [ self.ui.chart_title_edit, self.ui.x_axis_formula, self.ui.y_axis_formula, self.ui.heatmap_formula, self.ui.heatmap_vmin, self.ui.heatmap_vmax, self.ui.contour_formula, self.ui.vector_u_formula, self.ui.vector_v_formula, self.ui.heatmap_enabled, self.ui.heatmap_colormap, self.ui.contour_enabled, self.ui.contour_labels, self.ui.contour_levels, self.ui.contour_linewidth, self.ui.contour_colors, self.ui.vector_enabled, self.ui.vector_plot_type, self.ui.quiver_density_spinbox, self.ui.quiver_scale_spinbox, self.ui.stream_density_spinbox, self.ui.stream_linewidth_spinbox, self.ui.stream_color_combo, self.ui.filter_enabled_checkbox]
+        for w in widgets:
+            if isinstance(w, QLineEdit): w.editingFinished.connect(self._trigger_auto_apply)
+            elif hasattr(w, 'toggled'): w.toggled.connect(self._trigger_auto_apply)
+            elif hasattr(w, 'currentIndexChanged'): w.currentIndexChanged.connect(self._trigger_auto_apply)
+            elif hasattr(w, 'valueChanged'): w.valueChanged.connect(self._trigger_auto_apply)
     
-    def _reset_formula_widget_style(self, widget: QLineEdit):
-        """Resets the style sheet of a widget, removing any error indicators."""
-        widget.setStyleSheet("")
-
     def _trigger_auto_apply(self, *args):
         if self.config_handler._is_loading_config: return
+        self.config_handler.mark_config_as_dirty()
         if self.data_manager.get_frame_count() > 0:
             self._should_reset_view_after_refresh = False
             self.redraw_debounce_timer.start()
-        self.config_handler.mark_config_as_dirty()
 
-    def _on_scan_finished(self, file_index: List[Dict], variables: List[str]):
-        if self.scan_progress_dialog: self.scan_progress_dialog.accept()
+    def _initialize_project(self):
+        if not self.data_manager.setup_project_directory(self.project_dir): return
+        if self.data_manager.is_database_ready():
+            logger.info(f"在 {self.project_dir} 中找到现有数据库，直接加载。")
+            self._load_project_data()
+        else:
+            reply = QMessageBox.question(self, "未找到数据库", f"在目录 '{self.project_dir}' 中未找到数据库文件。\n\n是否从此目录中的所有CSV文件创建新的数据库？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes: self._start_database_import()
+            else: self.ui.status_bar.showMessage("操作已取消。请选择一个包含CSV文件或数据库的项目目录。", 5000)
+
+    def _start_database_import(self):
+        self.import_progress_dialog = ImportDialog(self, "正在创建和分析数据库...")
+        self.import_worker = DatabaseImportWorker(self.data_manager)
+        self.import_worker.progress.connect(self.import_progress_dialog.update_progress)
+        self.import_worker.log_message.connect(self.import_progress_dialog.set_log_message)
+        self.import_worker.finished.connect(self._on_import_finished)
+        self.import_worker.error.connect(self._on_error)
+        self.import_worker.start()
+        self.import_progress_dialog.exec()
         
-        self.data_manager.post_scan_setup(file_index, variables)
-        
+    def _on_import_finished(self):
+        if self.import_progress_dialog: self.import_progress_dialog.accept()
+        QMessageBox.information(self, "导入完成", "数据库已成功创建，基础统计数据已计算完毕。")
+        self._load_project_data()
+
+    def _load_project_data(self):
+        self.data_manager.post_import_setup()
         frame_count = self.data_manager.get_frame_count()
         if frame_count > 0:
-            msg = f"成功索引 {frame_count} 帧数据"
-            self.ui.status_bar.showMessage(msg, 5000)
-            
+            self.stats_handler.load_definitions_and_stats()
             self.formula_engine.update_allowed_variables(self.data_manager.get_variables())
             self.ui.time_slider.setMaximum(frame_count - 1)
-            self.ui.video_start_frame.setMaximum(frame_count - 1)
-            self.ui.video_end_frame.setMaximum(frame_count - 1)
-            self.ui.video_end_frame.setValue(frame_count - 1)
+            self.ui.video_start_frame.setMaximum(frame_count - 1); self.ui.video_end_frame.setMaximum(frame_count - 1); self.ui.video_end_frame.setValue(frame_count - 1)
+            for w in [self.ui.time_avg_start_slider, self.ui.time_avg_start_spinbox, self.ui.time_avg_end_slider, self.ui.time_avg_end_spinbox]: w.setMaximum(frame_count - 1)
+            self.ui.time_avg_end_spinbox.setValue(frame_count - 1)
             self.config_handler.populate_config_combobox()
-            self.ui.calc_basic_stats_btn.setEnabled(True)
+            self.ui.compute_and_add_btn.setEnabled(True)
             self._force_refresh_plot(reset_view=True)
+            self.ui.status_bar.showMessage(f"项目加载成功，共 {frame_count} 帧数据。", 5000)
         else:
-            msg = "数据初始化失败：目录中未找到有效的CSV文件。"
-            self.ui.status_bar.showMessage(msg, 5000)
-            QMessageBox.warning(self, "数据为空", msg)
-            self.ui.calc_basic_stats_btn.setEnabled(False)
+            self.ui.status_bar.showMessage("项目加载失败：数据库为空或无法读取。", 5000); QMessageBox.warning(self, "数据为空", "项目加载失败：数据库为空或无法读取。")
+            self.ui.compute_and_add_btn.setEnabled(False)
 
-    def _on_interpolation_error(self, message: str):
-        QMessageBox.critical(self, "可视化错误", f"无法渲染图形，公式可能存在问题。\n\n错误详情:\n{message}")
-
-    def _on_error(self, message: str):
-        if self.scan_progress_dialog and self.scan_progress_dialog.isVisible(): self.scan_progress_dialog.accept()
-        self.ui.status_bar.showMessage(f"错误: {message}", 5000)
-        QMessageBox.critical(self, "发生错误", message)
-
-    def _on_mouse_moved(self, x: float, y: float):
-        self.ui.probe_coord_label.setText(f"({x:.3e}, {y:.3e})")
-
-    def _on_probe_data(self, probe_data: dict):
+    def _apply_global_filter(self):
         try:
-            lines = []
+            filter_text = self.ui.filter_text_edit.text() if self.ui.filter_enabled_checkbox.isChecked() else ""
+            self.data_manager.set_global_filter(filter_text)
+            self._force_refresh_plot(reset_view=True)
+            self.ui.status_bar.showMessage("全局过滤器已应用。", 3000)
+        except ValueError as e:
+            QMessageBox.critical(self, "过滤器错误", f"过滤器语法无效: {e}")
+
+    def _on_time_analysis_mode_changed(self):
+        is_time_avg = self.ui.time_analysis_mode_combo.currentText() == "时间平均场"
+        self.ui.playback_widget.setVisible(not is_time_avg)
+        self.playback_handler.set_enabled(not is_time_avg)
+        self.ui.time_average_range_widget.setVisible(is_time_avg)
+        self._trigger_auto_apply()
+        
+    def _on_pick_timeseries_toggled(self, checked):
+        if checked:
+            self.ui.draw_profile_btn.setChecked(False) # 确保另一个按钮被取消
+            self.ui.plot_widget.set_picker_mode(PickerMode.TIMESERIES)
+            self.ui.status_bar.showMessage("时间序列模式: 在图表上单击一点以拾取。", 0)
+        elif self.ui.plot_widget.picker_mode == PickerMode.TIMESERIES:
+            self.ui.plot_widget.set_picker_mode(None)
+            self.ui.status_bar.clearMessage()
+
+    def _on_draw_profile_toggled(self, checked):
+        if checked:
+            self.ui.pick_timeseries_btn.setChecked(False) # 确保另一个按钮被取消
+            self.ui.plot_widget.set_picker_mode(PickerMode.PROFILE_START)
+            self.ui.status_bar.showMessage("剖面图模式: 点击定义剖面线起点。", 0)
+        elif self.ui.plot_widget.picker_mode in [PickerMode.PROFILE_START, PickerMode.PROFILE_END]:
+            self.ui.plot_widget.set_picker_mode(None)
+            self.ui.status_bar.clearMessage()
+
+    def _on_timeseries_point_picked(self, coords):
+        self.ui.pick_timeseries_btn.setChecked(False)
+        if self.timeseries_dialog and self.timeseries_dialog.isVisible(): self.timeseries_dialog.close()
+        
+        filter_clause = self.data_manager.global_filter_clause if self.ui.filter_enabled_checkbox.isChecked() else ""
+        self.timeseries_dialog = TimeSeriesDialog(coords, self.data_manager, filter_clause, self)
+        self.timeseries_dialog.show()
+
+    def _on_profile_line_defined(self, start_point, end_point):
+        self.ui.draw_profile_btn.setChecked(False)
+        if not self.ui.plot_widget.interpolated_results:
+            QMessageBox.warning(self, "无数据", "无可用于剖面的插值数据。")
+            return
+        
+        if self.profile_dialog and self.profile_dialog.isVisible():
+            self.profile_dialog.close()
+        
+        self.profile_dialog = ProfilePlotDialog(
+            start_point, end_point, self.ui.plot_widget.interpolated_results,
+            self.ui.heatmap_formula.text(), self
+        )
+        self.profile_dialog.show()
+
+    def _apply_visualization_settings(self):
+        if self.data_manager.get_frame_count() == 0: return
+        
+        config = self.config_handler.get_current_config()
+        
+        self.ui.plot_widget.set_config(
+            heatmap_config=config['heatmap'], contour_config=config['contour'],
+            vector_config=config['vector'], analysis=config['analysis'],
+            x_axis_formula=config['axes']['x_formula'], y_axis_formula=config['axes']['y_formula'],
+            chart_title=config['axes']['title'],
+            grid_resolution=(config['export']['video_grid_w'], config['export']['video_grid_h']),
+            use_gpu=config['performance']['gpu']
+        )
+        
+        is_time_avg = config['analysis']['time_average']['enabled']
+        if is_time_avg:
+            start = config['analysis']['time_average']['start_frame']
+            end = config['analysis']['time_average']['end_frame']
+            if start >= end:
+                self.ui.status_bar.showMessage("时间平均范围无效：起始帧必须小于结束帧。", 3000)
+                return
+            data = self.data_manager.get_time_averaged_data(start, end)
+            self.ui.plot_widget.update_data(data)
+            self._update_frame_info(is_time_avg=True, start=start, end=end)
+        else:
+            self._load_frame(self.current_frame_index)
             
-            if probe_data.get('variables'):
-                lines.append(f"{'--- 最近原始数据点 ---':^30}")
-                lines.extend([f"{k:<16s} {v:12.6e}" for k, v in probe_data['variables'].items()])
-                lines.append("")
-
-            if probe_data.get('interpolated'):
-                lines.append(f"{'--- 鼠标位置插值数据 ---':^30}")
-                lines.extend([f"{k:<16s} {v:12.6e}" if isinstance(v, (int,float)) and not np.isnan(v) else f"{k:<16s} {'N/A'}" for k, v in probe_data['interpolated'].items()])
-                lines.append("")
-
-            if probe_data.get('evaluated_formulas'):
-                lines.append(f"{'--- 公式求值 (在最近点) ---':^30}")
-                for name, value in probe_data['evaluated_formulas'].items():
-                    line = f"{name:<16s} {value:12.6e}" if isinstance(value, (int, float)) and not np.isnan(value) else f"{name:<16s} {value}"
-                    lines.append(line)
-
-            self.ui.probe_text.setPlainText("\n".join(lines))
-        except Exception as e:
-            logger.debug(f"更新探针数据显示失败: {e}")
-
-    def _on_value_picked(self, mode: PickerMode, value: float):
-        target_widget = self.ui.heatmap_vmin if mode == PickerMode.VMIN else self.ui.heatmap_vmax
-        target_widget.setText(f"{value:.4e}")
-        self._trigger_auto_apply()
-
-    def _on_plot_rendered(self):
-        if self.playback_handler.is_playing:
-            self.playback_handler.play_timer.start()
-        
-        if self._should_reset_view_after_refresh:
-            self.ui.plot_widget.reset_view()
-            self._should_reset_view_after_refresh = False
-            logger.info("图表视图已重置。")
-
-    def _on_gpu_toggle(self, is_on):
-        self.ui.plot_widget.set_config(use_gpu=is_on)
-        self._update_gpu_status_label()
-        self._trigger_auto_apply()
-
-    def _on_vector_plot_type_changed(self, *args):
-        selected_enum = self.ui.vector_plot_type.currentData(Qt.ItemDataRole.UserRole)
-        is_quiver = selected_enum == VectorPlotType.QUIVER
-        self.ui.quiver_options_group.setVisible(is_quiver)
-        self.ui.streamline_options_group.setVisible(not is_quiver)
-        self._trigger_auto_apply()
-    
-    def _initialize_data(self):
-        if not self.data_manager.setup_directory(self.data_dir): return
-        
-        self.scan_progress_dialog = StatsProgressDialog(self, "正在扫描数据文件...")
-        self.scan_worker = DataScanWorker(self.data_dir)
-        self.scan_worker.progress.connect(self.scan_progress_dialog.update_progress)
-        self.scan_worker.finished.connect(self._on_scan_finished)
-        self.scan_worker.error.connect(self._on_error)
-        self.scan_worker.start()
-        self.scan_progress_dialog.exec()
+        self.ui.status_bar.showMessage("可视化设置已更新。", 2000)
 
     def _load_frame(self, frame_index: int):
         if not (0 <= frame_index < self.data_manager.get_frame_count()): return
@@ -258,189 +295,122 @@ class MainWindow(QMainWindow):
             self.current_frame_index = frame_index
             self.ui.plot_widget.update_data(data)
             self._update_frame_info()
-            if self.ui.plot_widget.last_mouse_coords:
-                x, y = self.ui.plot_widget.last_mouse_coords
-                self.ui.plot_widget.get_probe_data_at_coords(x, y)
+            if self.ui.plot_widget.last_mouse_coords: self.ui.plot_widget.get_probe_data_at_coords(*self.ui.plot_widget.last_mouse_coords)
 
-    def _update_frame_info(self):
-        fc = self.data_manager.get_frame_count()
-        self.ui.frame_info_label.setText(f"帧: {self.current_frame_index + 1}/{fc}")
-        info = self.data_manager.get_frame_info(self.current_frame_index)
-        if info: self.ui.timestamp_label.setText(f"时间戳: {info.get('timestamp', 'N/A')}")
-        cache = self.data_manager.get_cache_info()
-        self.ui.cache_label.setText(f"缓存: {cache['size']}/{cache['max_size']}")
-
-    def _force_refresh_plot(self, reset_view=False):
-        self._should_reset_view_after_refresh = reset_view
-        self._apply_visualization_settings()
-        logger.info("图表已手动刷新。")
-
-    def _apply_visualization_settings(self):
-        if self.data_manager.get_frame_count() == 0: return
-
-        # 定义检查函数
-        def check_formula(widget: QLineEdit, name: str) -> bool:
-            formula = widget.text().strip()
-            # 对于可选的公式（热力图、等高线、矢量），只有在启用时才强制要求非空
-            is_enabled = True
-            if widget in [self.ui.heatmap_formula, self.ui.contour_formula, self.ui.vector_u_formula, self.ui.vector_v_formula]:
-                group_box = widget.parent().parent() # 获取对应的 GroupBox
-                if hasattr(group_box, 'isChecked'):
-                    is_enabled = group_box.isChecked()
-
-            if is_enabled and formula and not self.formula_engine.validate(formula):
-                # UX Improvement: Highlight instead of clearing
-                widget.setStyleSheet("border: 1px solid red;")
-                QMessageBox.warning(self, "公式错误", f"{name}公式无效: '{formula}'\n\n请修正高亮的输入框。")
-                return False
-            
-            widget.setStyleSheet("") # Clear error style if valid
-            return True
-
-        # 按顺序验证所有公式
-        if not all([
-            check_formula(self.ui.x_axis_formula, "X轴"),
-            check_formula(self.ui.y_axis_formula, "Y轴"),
-            check_formula(self.ui.heatmap_formula, "热力图"),
-            check_formula(self.ui.contour_formula, "等高线"),
-            check_formula(self.ui.vector_u_formula, "矢量U"),
-            check_formula(self.ui.vector_v_formula, "矢量V"),
-        ]):
-            return # 如果任何验证失败，则停止应用
-
-        # 所有验证通过后，获取配置并应用
-        config = self.config_handler.get_current_config()
-        
-        config_changed = self.ui.plot_widget.set_config(
-            heatmap_config=config['heatmap'], contour_config=config['contour'],
-            vector_config=config['vector'], x_axis_formula=config['axes']['x_formula'] or 'x',
-            y_axis_formula=config['axes']['y_formula'] or 'y', chart_title=config['axes']['title']
-        )
-        
-        self._load_frame(self.current_frame_index)
-        self.ui.status_bar.showMessage("可视化设置已更新", 2000)
-
-    def _show_formula_help(self, help_type: str = "formula"):
-        if help_type == "axis_title":
-            html_content = get_axis_title_help_html()
-            title = "坐标轴与标题指南"
+    def _update_frame_info(self, is_time_avg: bool = False, start: int = 0, end: int = 0):
+        if is_time_avg:
+            self.ui.frame_info_label.setText(f"时间平均: 帧 {start}-{end}")
+            self.ui.timestamp_label.setText("")
         else:
-            html_content = get_formula_help_html(
-                base_variables=self.data_manager.get_variables(),
-                custom_global_variables=self.formula_engine.custom_global_variables,
-                science_constants=self.formula_engine.science_constants
-            )
-            title = "公式语法说明"
-        # HelpDialog's constructor was modified in the prompt, let's assume it takes a window title
-        dialog = HelpDialog(html_content, self)
-        dialog.setWindowTitle(title)
-        dialog.exec()
+            fc = self.data_manager.get_frame_count()
+            self.ui.frame_info_label.setText(f"帧: {self.current_frame_index + 1}/{fc if fc > 0 else '?'}")
+            info = self.data_manager.get_frame_info(self.current_frame_index)
+            if info and 'timestamp' in info: self.ui.timestamp_label.setText(f"时间戳: {info.get('timestamp', 'N/A')}")
         
-    def _show_about(self): 
-        QMessageBox.about(self, "关于 InterVis", 
-                          "<h2>InterVis v1.8 (Optimized)</h2>"
-                          "<p>作者: StarsWhere</p>"
-                          "<p>一个使用PyQt6和Matplotlib构建的交互式数据可视化工具。</p>"
-                          "<p><b>v1.8 优化更新:</b></p>"
-                          "<ul>"
-                          "<li><b>核心性能:</b> 自定义全局统计计算采用单遍算法，速度提升一个数量级。</li>"
-                          "<li><b>内存优化:</b> 视频导出采用临时文件流，极大降低了内存消耗。</li>"
-                          "<li><b>用户体验:</b> 公式验证失败时不再清空输入，而是高亮显示，保留用户输入。</li>"
-                          "<li><b>数据IO:</b> 默认尝试使用更快的`pyarrow`引擎读取CSV，提升加载速度。</li>"
-                          "<li><b>数值精度:</b> 基础统计采用更稳健的Welford算法计算方差/标准差。</li>"
-                          "</ul>")
+        self.ui.cache_label.setText(f"缓存: {self.data_manager.get_cache_info()['size']}/{self.data_manager.get_cache_info()['max_size']}")
+
+    def _on_error(self, message: str):
+        if self.import_progress_dialog and self.import_progress_dialog.isVisible(): self.import_progress_dialog.accept()
+        self.ui.status_bar.showMessage(f"错误: {message}", 5000)
+        QMessageBox.critical(self, "发生错误", message)
+
+    def _on_mouse_moved(self, x, y): self.ui.probe_coord_label.setText(f"({x:.3e}, {y:.3e})")
+    def _on_probe_data(self, data):
+        lines = []
+        if data.get('variables'): lines.extend([f"{'--- 最近原始数据点 ---':^30}"] + [f"{k:<16s} {v:12.6e}" for k, v in data['variables'].items()] + [""])
+        if data.get('interpolated'): lines.extend([f"{'--- 鼠标位置插值数据 ---':^30}"] + [f"{k:<16s} {v:12.6e}" if isinstance(v, (int,float)) and not np.isnan(v) else f"{k:<16s} {'N/A'}" for k, v in data['interpolated'].items()] + [""])
+        self.ui.probe_text.setPlainText("\n".join(lines))
+
+    def _on_value_picked(self, mode, value):
+        target = self.ui.heatmap_vmin if mode == PickerMode.VMIN else self.ui.heatmap_vmax
+        target.setText(f"{value:.4e}"); self._trigger_auto_apply()
+
+    def _on_plot_rendered(self):
+        if self.playback_handler.is_playing: self.playback_handler.play_timer.start()
+        if self._should_reset_view_after_refresh: self.ui.plot_widget.reset_view(); self._should_reset_view_after_refresh = False
+        
+        if self.ui.plot_widget.picker_mode == PickerMode.PROFILE_END:
+            self.ui.status_bar.showMessage("剖面图模式: 点击定义剖面线终点。", 0)
+
+    def _on_interpolation_error(self, message: str):
+        QMessageBox.critical(self, "可视化错误", f"无法渲染图形，公式可能存在问题。\n\n错误详情:\n{message}")
+        self.ui.status_bar.showMessage(f"渲染错误: {message}", 5000)
+
+    def _on_gpu_toggle(self, is_on): self.ui.plot_widget.set_config(use_gpu=is_on); self._update_gpu_status_label(); self._trigger_auto_apply()
+    def _on_vector_plot_type_changed(self):
+        is_q = self.ui.vector_plot_type.currentData(Qt.ItemDataRole.UserRole) == self.config_handler.VectorPlotType.QUIVER
+        self.ui.quiver_options_group.setVisible(is_q); self.ui.streamline_options_group.setVisible(not is_q); self._trigger_auto_apply()
+
+    def _force_refresh_plot(self, reset_view=False): self._should_reset_view_after_refresh = reset_view; self._apply_visualization_settings()
     
-    def _reload_data(self):
-        if self.playback_handler.is_playing: self.playback_handler.toggle_play()
-        self.stats_handler.reset_global_stats()
-        self.data_manager.clear_all()
-        self._initialize_data()
+    def _show_help(self, help_type: str):
+        content = ""
+        if help_type == "formula": content = get_formula_help_html( self.data_manager.get_variables(), self.formula_engine.custom_global_variables, self.formula_engine.science_constants )
+        elif help_type == "axis_title": content = get_axis_title_help_html()
+        elif help_type == "custom_stats": content = get_custom_stats_help_html()
+        elif help_type == "analysis": content = get_analysis_help_html()
+        if content: HelpDialog(content, self).exec()
 
-    def _change_data_directory(self):
-        new_dir = QFileDialog.getExistingDirectory(self, "选择数据目录", self.data_dir)
-        if new_dir and new_dir != self.data_dir:
-            self.data_dir = new_dir
-            self.ui.data_dir_line_edit.setText(self.data_dir)
-            self._reload_data()
-            
-    def _toggle_control_panel(self, checked):
-        self.ui.control_panel.setVisible(checked)
+    def _show_about(self): QMessageBox.about(self, "关于 InterVis", "<h2>InterVis v3.1-ProAnalysis</h2><p>作者: StarsWhere</p><p>一个使用PyQt6和Matplotlib构建的交互式数据可视化工具。</p><p><b>v3.1 更新:</b></p><ul><li><b>并行计算:</b> 显著提升复杂全局统计的计算速度。</li><li><b>一维剖面图:</b> 新增沿任意直线查看变量分布的专业工具。</li><li><b>FFT分析:</b> 增强时间序列分析，支持快速傅里叶变换。</li><li><b>数据导出:</b> 可将过滤后的数据导出为CSV。</li><li>修复了视频导出标题和UI刷新等问题。</li></ul>")
+    def _force_reload_data(self):
+        reply = QMessageBox.question(self, "确认重新导入", "这将删除现有数据库并从CSV文件重新导入所有数据。此操作不可撤销。\n\n是否继续？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        if reply == QMessageBox.StandardButton.Yes:
+            self.playback_handler.stop_playback()
+            self.stats_handler.reset_global_stats()
+            try: os.remove(self.data_manager.db_path)
+            except Exception as e: self._on_error(f"删除旧数据库失败: {e}"); return
+            self._initialize_project()
 
-    def _toggle_full_screen(self, checked):
-        if checked: self.showFullScreen()
-        else: self.showNormal()
+    def _change_project_directory(self):
+        new_dir = QFileDialog.getExistingDirectory(self, "选择项目目录 (包含CSV文件)", self.project_dir)
+        if new_dir and new_dir != self.project_dir:
+            self.project_dir = new_dir; self.ui.data_dir_line_edit.setText(self.project_dir)
+            self.playback_handler.stop_playback()
+            self.stats_handler.reset_global_stats(); self.data_manager.clear_all()
+            self._initialize_project()
             
-    def _apply_cache_settings(self): 
-        self.data_manager.set_cache_size(self.ui.cache_size_spinbox.value())
-        self._update_frame_info()
+    def _toggle_control_panel(self, checked): self.ui.control_panel.setVisible(checked)
+    def _toggle_full_screen(self, checked): self.showFullScreen() if checked else self.showNormal()
+    def _apply_cache_settings(self): self.data_manager.set_cache_size(self.ui.cache_size_spinbox.value()); self._update_frame_info()
 
     def _load_settings(self):
         self.restoreGeometry(self.settings.value("geometry", self.saveGeometry()))
         self.restoreState(self.settings.value("windowState", self.saveState()))
-        panel_visible = self.settings.value("panel_visible", True, type=bool)
-        self.ui.control_panel.setVisible(panel_visible)
-        self.ui.toggle_panel_action.setChecked(panel_visible)
-        self.export_handler.set_output_dir(self.output_dir)
-        self._update_gpu_status_label()
+        self.ui.control_panel.setVisible(self.settings.value("panel_visible", True, type=bool)); self.ui.toggle_panel_action.setChecked(self.ui.control_panel.isVisible())
+        self.export_handler.set_output_dir(self.output_dir); self._update_gpu_status_label()
 
     def _save_settings(self):
-        self.settings.setValue("geometry", self.saveGeometry())
-        self.settings.setValue("windowState", self.saveState())
-        self.settings.setValue("data_directory", self.data_dir)
-        self.settings.setValue("output_directory", self.export_handler.output_dir)
+        self.settings.setValue("geometry", self.saveGeometry()); self.settings.setValue("windowState", self.saveState())
+        self.settings.setValue("project_directory", self.project_dir); self.settings.setValue("output_directory", self.export_handler.output_dir)
         self.settings.setValue("panel_visible", self.ui.control_panel.isVisible())
-        if self.config_handler.current_config_file:
-            self.settings.setValue("last_config_file", self.config_handler.current_config_file)
+        if self.config_handler.current_config_file: self.settings.setValue("last_config_file", self.config_handler.current_config_file)
 
     def closeEvent(self, event):
-        if not self.export_handler.on_main_window_close():
-            event.ignore()
-            return
-
+        if not self.export_handler.on_main_window_close(): event.ignore(); return
         if self.config_handler.config_is_dirty:
             reply = QMessageBox.question(self, '未保存的修改', "退出前是否保存当前修改？", QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
             if reply == QMessageBox.StandardButton.Save: self.config_handler.save_current_config()
             elif reply == QMessageBox.StandardButton.Cancel: event.ignore(); return
-
-        self._save_settings()
-        self.playback_handler.stop_playback()
-        if self.ui.plot_widget.thread_pool:
-            self.ui.plot_widget.thread_pool.clear()
-            self.ui.plot_widget.thread_pool.waitForDone()
-        logger.info("应用程序正常关闭")
+        self._save_settings(); self.playback_handler.stop_playback()
+        if self.ui.plot_widget.thread_pool: self.ui.plot_widget.thread_pool.clear(); self.ui.plot_widget.thread_pool.waitForDone()
+        if self.timeseries_dialog: self.timeseries_dialog.close()
+        if self.profile_dialog: self.profile_dialog.close()
         super().closeEvent(event)
 
     def _update_gpu_status_label(self):
-        if is_gpu_available():
-            status, color = ("GPU: 启用", "green") if self.ui.gpu_checkbox.isChecked() else ("GPU: 可用", "orange")
-        else:
-            status, color = ("GPU: 不可用", "red")
-        self.ui.gpu_status_label.setText(status)
-        self.ui.gpu_status_label.setStyleSheet(f"color: {color};")
+        status, color = ("GPU: 启用", "green") if self.ui.gpu_checkbox.isChecked() and is_gpu_available() else (("GPU: 可用", "orange") if is_gpu_available() else ("GPU: 不可用", "red"))
+        self.ui.gpu_status_label.setText(status); self.ui.gpu_status_label.setStyleSheet(f"color: {color};")
 
     def _show_variable_menu(self, line_edit: QLineEdit, position: QPoint):
         menu = QMenu(self)
-        
-        def insert_text(text_to_insert):
-            # 改进的插入逻辑：如果输入框为空，直接设置文本；否则在光标处插入
-            if not line_edit.text().strip():
-                line_edit.setText(text_to_insert)
-            else:
-                line_edit.insert(f" {text_to_insert} ") # 在已有文本中插入时保留空格
-
+        def insert_text(text): line_edit.insert(f" {text} ")
         var_menu = menu.addMenu("数据变量")
-        for var in sorted(self.data_manager.get_variables()):
-            var_menu.addAction(var).triggered.connect(lambda checked=False, v=var: insert_text(v))
-        
+        for var in sorted(self.data_manager.get_variables()): var_menu.addAction(var).triggered.connect(lambda checked=False, v=var: insert_text(v))
         if self.formula_engine.custom_global_variables:
             global_menu = menu.addMenu("全局常量")
-            for g_var in sorted(self.formula_engine.custom_global_variables.keys()):
-                global_menu.addAction(g_var).triggered.connect(lambda checked=False, v=g_var: insert_text(v))
-
+            for g_var in sorted(self.formula_engine.custom_global_variables.keys()): global_menu.addAction(g_var).triggered.connect(lambda checked=False, v=g_var: insert_text(v))
         if self.formula_engine.science_constants:
             const_menu = menu.addMenu("科学常数")
-            for const in sorted(self.formula_engine.science_constants.keys()):
-                const_menu.addAction(const).triggered.connect(lambda checked=False, v=const: insert_text(v))
-        
+            for const in sorted(self.formula_engine.science_constants.keys()): const_menu.addAction(const).triggered.connect(lambda checked=False, v=const: insert_text(v))
         if not menu.actions(): menu.addAction("无可用变量").setEnabled(False)
         menu.exec(position)

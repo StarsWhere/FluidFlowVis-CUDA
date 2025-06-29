@@ -8,11 +8,39 @@ from typing import List
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, 
-    QPushButton, QTextEdit, QListWidget, QDialogButtonBox
+    QPushButton, QTextEdit, QListWidget, QDialogButtonBox, QMessageBox
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
+class ImportDialog(QDialog):
+    """显示数据导入到数据库进度的对话框"""
+    def __init__(self, parent=None, title="正在导入数据"):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setFixedSize(450, 150)
+        layout = QVBoxLayout(self)
+        self.status_label = QLabel("正在初始化...")
+        layout.addWidget(self.status_label)
+        self.progress_bar = QProgressBar()
+        layout.addWidget(self.progress_bar)
+        self.log_label = QLabel("") # 用于显示额外信息，如写入数据库
+        self.log_label.setStyleSheet("color: grey;")
+        layout.addWidget(self.log_label)
+        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+        self.setWindowFlag(Qt.WindowType.WindowSystemMenuHint, False)
+
+    def update_progress(self, current: int, total: int, msg: str = ""):
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(current)
+        if msg:
+            self.status_label.setText(msg)
+        else:
+            self.status_label.setText(f"正在处理第 {current}/{total} 个数据文件...")
+
+    def set_log_message(self, msg: str):
+        self.log_label.setText(msg)
 
 class ConfigSelectionDialog(QDialog):
     """一个自定义对话框，用于从特定目录选择一个或多个配置文件。"""

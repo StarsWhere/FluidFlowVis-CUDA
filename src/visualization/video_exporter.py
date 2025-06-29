@@ -22,7 +22,6 @@ class VideoExportWorker(QThread):
         self.is_cancelled = False
         self.executor = ThreadPoolExecutor(max_workers=max(1, os.cpu_count() // 2))
         self.temp_dir = None
-        # **MODIFICATION**: Add attributes to store results for synchronous waiting
         self.success = False
         self.message = ""
 
@@ -36,49 +35,38 @@ class VideoExportWorker(QThread):
         
         try:
             total = self.e_f - self.s_f + 1
-            if total <= 0: raise ValueError("帧范围无效，起始帧必须小于或等于结束帧。")
+            if total <= 0: raise ValueError("帧范围无效。")
             
             frame_paths, futures = {}, {self.executor.submit(self._render_frame, i, self.temp_dir): i for i in range(self.s_f, self.e_f + 1)}
             
             processed_count = 0
             for future in as_completed(futures):
                 if self.is_cancelled: break
-                idx = futures[future]
-                try: 
-                    result_path = future.result()
-                    if result_path: frame_paths[idx] = result_path
-                except Exception as e: 
-                    logger.error(f"渲染帧 {idx} 出错: {e}")
-                
+                idx, result_path = futures[future], future.result()
+                if result_path: frame_paths[idx] = result_path
                 processed_count += 1
                 self.progress_updated.emit(processed_count, total, f"已渲染 {processed_count}/{total} 帧")
 
             if self.is_cancelled:
-                self.success = False
-                self.message = "导出已取消"
+                self.success, self.message = False, "导出已取消"
                 self.export_finished.emit(self.success, self.message); return
 
             image_files = [frame_paths[i] for i in range(self.s_f, self.e_f + 1) if i in frame_paths]
-            if not image_files: raise ValueError("没有成功渲染任何帧。请检查日志。")
+            if not image_files: raise ValueError("没有成功渲染任何帧。")
 
             self.progress_updated.emit(total, total, "正在编码视频...")
             self._create_video(image_files, self.fname, self.fps)
             
-            self.success = True
-            self.message = f"视频已成功导出到:\n{self.fname}"
+            self.success, self.message = True, f"视频已成功导出到:\n{self.fname}"
             self.export_finished.emit(self.success, self.message)
 
         except Exception as e:
             logger.error(f"视频导出失败: {e}", exc_info=True)
-            self.success = False
-            self.message = f"导出失败: {e}"
+            self.success, self.message = False, f"导出失败: {e}"
             self.export_finished.emit(self.success, self.message)
         finally:
             self.executor.shutdown(wait=True)
-            if self.temp_dir and os.path.exists(self.temp_dir):
-                shutil.rmtree(self.temp_dir)
-                logger.info(f"已清理临时目录: {self.temp_dir}")
-            logger.info("VideoExportWorker 线程已结束。")
+            if self.temp_dir: shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def _render_frame(self, idx, temp_dir):
         if self.is_cancelled: return None
@@ -86,70 +74,65 @@ class VideoExportWorker(QThread):
             data = self.dm.get_frame_data(idx)
             if data is None: raise ValueError(f"无法为帧 {idx} 加载数据")
 
-            plotter = HeadlessPlotter(self.p_conf)
+            # *** FIX: Evaluate dynamic title for each frame ***
+            frame_conf = self.p_conf.copy()
+            raw_title = frame_conf.get('chart_title', '')
+            if raw_title:
+                try:
+                    info = self.dm.get_frame_info(idx)
+                    time_val = info.get('timestamp', float(idx)) if info else float(idx)
+                    evaluated_title = raw_title.format(frame_index=idx, time=time_val)
+                    frame_conf['chart_title'] = evaluated_title
+                except (KeyError, ValueError, IndexError):
+                    # Not an f-string or has invalid keys, use as is.
+                    frame_conf['chart_title'] = raw_title
+            # *** END OF FIX ***
+
+            plotter = HeadlessPlotter(frame_conf)
             image_array = plotter.render_frame(data, self.dm.get_variables())
             
-            # Save array to a temp file and return path
             import imageio
             frame_path = os.path.join(temp_dir, f'frame_{idx:06d}.png')
             imageio.imwrite(frame_path, image_array)
             return frame_path
         except Exception as e:
-            logger.error(f"渲染帧 {idx} 并保存到临时文件时失败: {e}")
-            return None # Ensure failure returns None
+            logger.error(f"渲染帧 {idx} 失败: {e}")
+            return None
 
     def _create_video(self, image_files, fname, fps):
-        """
-        从一系列图像文件创建视频，实现从 moviepy 到 imageio 的自动降级。
-        """
         try:
             import moviepy.editor as mp
-            logger.info(f"使用 moviepy (首选) 从临时文件编码视频: {fname}")
-            final_clip = mp.ImageSequenceClip(image_files, fps=fps)
+            logger.info(f"使用 moviepy 从临时文件编码视频: {fname}")
+            clip = mp.ImageSequenceClip(image_files, fps=fps)
             if fname.lower().endswith('.gif'): 
-                final_clip.write_gif(fname, fps=fps, logger=None)
+                clip.write_gif(fname, fps=fps, logger=None)
             else: 
-                codec = 'libx264' if fname.lower().endswith('.mp4') else 'libvpx'
-                final_clip.write_videofile(fname, fps=fps, codec=codec, logger='bar', threads=os.cpu_count())
-            final_clip.close()
-            return
-        except ImportError:
-            logger.warning("moviepy 未安装，将尝试使用 imageio 作为备选方案。")
+                clip.write_videofile(fname, fps=fps, codec='libx264', logger='bar', threads=os.cpu_count())
+            clip.close()
         except Exception as e:
-            logger.error(f"使用 moviepy 导出失败: {e}，将尝试使用 imageio。")
-
-        try:
-            import imageio
-            logger.info(f"使用 imageio (备选) 从临时文件编码视频: {fname}")
-            writer_kwargs = {'fps': fps}
-            if fname.lower().endswith('.mp4'):
-                writer_kwargs.update({'codec': 'libx264', 'quality': 8, 'pixelformat': 'yuv420p'})
-
-            with imageio.get_writer(fname, **writer_kwargs) as writer:
-                for i, fpath in enumerate(image_files):
-                    if self.is_cancelled: break
-                    self.progress_updated.emit(i + 1, len(image_files), f"正在编码帧 {i+1}/{len(image_files)}")
-                    img = imageio.imread(fpath)
-                    writer.append_data(img)
-            return
-        except ImportError:
-            logger.error("视频导出失败：moviepy 和 imageio 均未安装。")
-            raise RuntimeError("必要的视频导出库（moviepy 或 imageio）未安装。")
-        except Exception as e:
-            logger.error(f"使用 imageio 导出也失败了: {e}", exc_info=True)
-            raise e
+            logger.warning(f"Moviepy 失败: {e}. 尝试 ImageIO...")
+            try:
+                import imageio
+                writer_kwargs = {'fps': fps}
+                if fname.lower().endswith('.mp4'):
+                    writer_kwargs.update({'codec': 'libx264', 'quality': 8, 'pixelformat': 'yuv420p'})
+                with imageio.get_writer(fname, **writer_kwargs) as writer:
+                    for i, fpath in enumerate(image_files):
+                        if self.is_cancelled: break
+                        self.progress_updated.emit(i+1, len(image_files), f"ImageIO 编码帧 {i+1}/{len(image_files)}")
+                        writer.append_data(imageio.imread(fpath))
+            except Exception as e2:
+                raise RuntimeError(f"Moviepy 和 ImageIO 均导出失败: {e2}")
 
 class VideoExportDialog(QDialog):
     def __init__(self, parent, dm, p_conf, fname, s_f, e_f, fps):
-        super().__init__(parent)
-        self.worker = None
-        self._init_ui(fname, s_f, e_f, fps)
-        self._start_export(dm, p_conf, fname, s_f, e_f, fps)
+        super().__init__(parent); self.worker = None
+        self._init_ui(fname, s_f, e_f, fps); self._start_export(dm, p_conf, fname, s_f, e_f, fps)
     
     def _init_ui(self, fname, s_f, e_f, fps):
         self.setWindowTitle("正在导出视频"); self.setModal(True); self.setFixedSize(450, 320)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"<b>文件:</b> {os.path.basename(fname)}<br><b>帧:</b> {s_f}-{e_f} ({e_f-s_f+1}帧)<br><b>帧率:</b> {fps}fps"))
+        layout.addWidget(QLabel(f"<b>文件:</b> {os.path.basename(fname)}<br><b>帧:</b> {s_f}-{e_f}<br><b>帧率:</b> {fps}fps"))
         self.progress_bar = QProgressBar(); layout.addWidget(self.progress_bar)
         self.status_label = QLabel("准备..."); layout.addWidget(self.status_label)
         self.log_text = QTextEdit(); self.log_text.setReadOnly(True); layout.addWidget(self.log_text)

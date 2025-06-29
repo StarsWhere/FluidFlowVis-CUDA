@@ -18,11 +18,14 @@ logger = logging.getLogger(__name__)
 class ConfigHandler:
     """处理所有与加载、保存和管理可视化设置文件相关的逻辑。"""
     
-    def __init__(self, main_window, ui, data_manager):
+    def __init__(self, main_window, ui):
         self.main_window = main_window
         self.ui = ui
-        self.dm = data_manager
         self.settings = main_window.settings
+        
+        # Share enums for easier access in main_window
+        self.VectorPlotType = VectorPlotType
+        self.StreamlineColor = StreamlineColor
         
         self.settings_dir = os.path.join(os.getcwd(), "settings")
         os.makedirs(self.settings_dir, exist_ok=True)
@@ -41,31 +44,8 @@ class ConfigHandler:
         self.ui.save_config_action.triggered.connect(self.save_current_config)
         self.ui.save_config_as_action.triggered.connect(self.save_config_as)
 
-        widgets_to_mark_dirty = [
-            self.ui.heatmap_enabled, self.ui.heatmap_colormap, self.ui.contour_labels,
-            self.ui.contour_levels, self.ui.contour_linewidth, self.ui.contour_colors,
-            self.ui.chart_title_edit, self.ui.x_axis_formula, self.ui.y_axis_formula, 
-            self.ui.heatmap_formula, self.ui.heatmap_vmin, self.ui.heatmap_vmax, 
-            self.ui.contour_formula,
-            self.ui.vector_enabled, self.ui.vector_plot_type, self.ui.quiver_density_spinbox,
-            self.ui.quiver_scale_spinbox, self.ui.stream_density_spinbox,
-            self.ui.stream_linewidth_spinbox, self.ui.stream_color_combo,
-            self.ui.vector_u_formula, self.ui.vector_v_formula,
-            self.ui.export_dpi, self.ui.video_fps, self.ui.video_start_frame, 
-            self.ui.video_end_frame, self.ui.video_grid_w, self.ui.video_grid_h,
-            self.ui.gpu_checkbox, self.ui.cache_size_spinbox,
-            self.ui.frame_skip_spinbox
-        ]
-
-        for widget in widgets_to_mark_dirty:
-            if hasattr(widget, 'toggled'):
-                widget.toggled.connect(self.mark_config_as_dirty)
-            elif hasattr(widget, 'currentIndexChanged'):
-                widget.currentIndexChanged.connect(self.mark_config_as_dirty)
-            elif hasattr(widget, 'valueChanged'):
-                widget.valueChanged.connect(self.mark_config_as_dirty)
-            elif hasattr(widget, 'editingFinished'):
-                widget.editingFinished.connect(self.mark_config_as_dirty)
+        # Let main_window handle connecting widgets for auto-apply and dirty marking
+        # This simplifies the handler's responsibility.
 
     def mark_config_as_dirty(self, *args):
         if self._is_loading_config: return
@@ -81,7 +61,7 @@ class ConfigHandler:
         else:
             self.config_is_dirty = False
             current_file = os.path.basename(self.current_config_file) if self.current_config_file else "新设置"
-            self.ui.config_status_label.setText(f"{current_file} (已保存)")
+            self.ui.config_status_label.setText(f"{current_file}")
             self.ui.config_status_label.setStyleSheet("color: green;")
 
     def populate_config_combobox(self):
@@ -113,8 +93,7 @@ class ConfigHandler:
             if reply == QMessageBox.StandardButton.Save: self.save_current_config()
             elif reply == QMessageBox.StandardButton.Cancel:
                 self.ui.config_combo.blockSignals(True)
-                if self.current_config_file:
-                    self.ui.config_combo.setCurrentText(os.path.basename(self.current_config_file))
+                if self.current_config_file: self.ui.config_combo.setCurrentText(os.path.basename(self.current_config_file))
                 self.ui.config_combo.blockSignals(False)
                 return
         self.load_config_by_name(self.ui.config_combo.currentText())
@@ -122,9 +101,7 @@ class ConfigHandler:
     def load_config_by_name(self, filename: str):
         if not filename: return
         filepath = os.path.join(self.settings_dir, filename)
-        if not os.path.exists(filepath): 
-            logger.warning(f"尝试加载但配置文件不存在: {filepath}")
-            return
+        if not os.path.exists(filepath): return
         
         self._is_loading_config = True
         try:
@@ -147,44 +124,32 @@ class ConfigHandler:
         self.main_window._trigger_auto_apply()
 
     def save_current_config(self):
-        if not self.current_config_file: 
-            self.save_config_as()
-            return
-        
+        if not self.current_config_file: self.save_config_as(); return
         try:
-            with open(self.current_config_file, 'w', encoding='utf-8') as f:
-                current_config = self.get_current_config()
-                json.dump(current_config, f, indent=4)
+            current_config = self.get_current_config()
+            with open(self.current_config_file, 'w', encoding='utf-8') as f: json.dump(current_config, f, indent=4)
             self._loaded_config = current_config
             self.config_is_dirty = False
             self._check_config_dirty_status()
             self.ui.status_bar.showMessage(f"设置已保存到 {os.path.basename(self.current_config_file)}", 3000)
-        except Exception as e:
-            QMessageBox.critical(self.main_window, "保存失败", f"无法写入配置文件 '{self.current_config_file}':\n{e}")
+        except Exception as e: QMessageBox.critical(self.main_window, "保存失败", f"无法写入配置文件 '{self.current_config_file}':\n{e}")
 
     def save_config_as(self):
-        """使用 QInputDialog 让用户输入文件名进行另存为。"""
         current_name = os.path.splitext(os.path.basename(self.current_config_file or "untitled"))[0]
         text, ok = QInputDialog.getText(self.main_window, "设置另存为", "请输入新配置文件的名称:", text=f"{current_name}_copy")
-        if not (ok and text):
-            return
+        if not (ok and text): return
 
         filename = f"{text}.json" if not text.endswith('.json') else text
         filepath = os.path.join(self.settings_dir, filename)
         
         if os.path.exists(filepath):
-            reply = QMessageBox.question(self.main_window, "确认覆盖", f"文件 '{filename}' 已存在。您想覆盖它吗？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            if reply == QMessageBox.StandardButton.No:
-                return
+            if QMessageBox.question(self.main_window, "确认覆盖", f"文件 '{filename}' 已存在。是否覆盖？") != QMessageBox.StandardButton.Yes: return
 
-        self.current_config_file = filepath
-        self.save_current_config()
+        self.current_config_file = filepath; self.save_current_config()
         
         self.ui.config_combo.blockSignals(True)
-        config_name = os.path.basename(filepath)
-        if self.ui.config_combo.findText(config_name) == -1:
-            self.ui.config_combo.addItem(config_name)
-        self.ui.config_combo.setCurrentText(config_name)
+        if self.ui.config_combo.findText(filename) == -1: self.ui.config_combo.addItem(filename)
+        self.ui.config_combo.setCurrentText(filename)
         self.ui.config_combo.blockSignals(False)
         self.settings.setValue("last_config_file", filepath)
 
@@ -197,43 +162,21 @@ class ConfigHandler:
                 if QMessageBox.question(self.main_window, "文件已存在", f"文件 '{new_filename}' 已存在。是否覆盖？") != QMessageBox.StandardButton.Yes: return
 
             self.current_config_file = new_filepath
-            # 应用一个空白配置并保存
-            self.apply_config({}) # 清空UI
-            self.save_current_config()
-            
-            self.populate_config_combobox()
-            self.ui.config_combo.setCurrentText(new_filename)
+            self.apply_config({}); self.save_current_config()
+            self.populate_config_combobox(); self.ui.config_combo.setCurrentText(new_filename)
 
     def get_current_config(self) -> Dict[str, Any]:
-        """从UI控件收集当前配置，并将其序列化为字典，同时清理文本输入。"""
-        vector_type_enum = self.ui.vector_plot_type.currentData(Qt.ItemDataRole.UserRole)
-        vector_type_str = vector_type_enum.name if vector_type_enum else VectorPlotType.STREAMLINE.name
-
-        stream_color_enum = self.ui.stream_color_combo.currentData(Qt.ItemDataRole.UserRole)
-        stream_color_str = stream_color_enum.value if stream_color_enum else StreamlineColor.MAGNITUDE.value
-
+        vt = self.ui.vector_plot_type.currentData(Qt.ItemDataRole.UserRole)
+        sc = self.ui.stream_color_combo.currentData(Qt.ItemDataRole.UserRole)
         return {
-            "version": "1.8.0",
-            "axes": {
-                "title": self.ui.chart_title_edit.text().strip(),
-                "x_formula": self.ui.x_axis_formula.text().strip() or "x",
-                "y_formula": self.ui.y_axis_formula.text().strip() or "y"
-            },
-            "heatmap": {
-                'enabled': self.ui.heatmap_enabled.isChecked(), 'formula': self.ui.heatmap_formula.text().strip(), 
-                'colormap': self.ui.heatmap_colormap.currentText(), 'vmin': self.ui.heatmap_vmin.text().strip() or None, 
-                'vmax': self.ui.heatmap_vmax.text().strip() or None
-            },
-            "contour": {
-                'enabled': self.ui.contour_enabled.isChecked(), 'formula': self.ui.contour_formula.text().strip(), 
-                'levels': self.ui.contour_levels.value(), 'colors': self.ui.contour_colors.currentText(), 
-                'linewidths': self.ui.contour_linewidth.value(), 'show_labels': self.ui.contour_labels.isChecked()
-            },
-            "vector": {
-                'enabled': self.ui.vector_enabled.isChecked(), 'type': vector_type_str,
-                'u_formula': self.ui.vector_u_formula.text().strip(), 'v_formula': self.ui.vector_v_formula.text().strip(),
-                'quiver_options': {'density': self.ui.quiver_density_spinbox.value(), 'scale': self.ui.quiver_scale_spinbox.value()},
-                'streamline_options': {'density': self.ui.stream_density_spinbox.value(), 'linewidth': self.ui.stream_linewidth_spinbox.value(), 'color_by': stream_color_str}
+            "version": "2.0.0",
+            "axes": {"title": self.ui.chart_title_edit.text().strip(), "x_formula": self.ui.x_axis_formula.text().strip() or "x", "y_formula": self.ui.y_axis_formula.text().strip() or "y"},
+            "heatmap": {'enabled': self.ui.heatmap_enabled.isChecked(), 'formula': self.ui.heatmap_formula.text().strip(), 'colormap': self.ui.heatmap_colormap.currentText(), 'vmin': self.ui.heatmap_vmin.text().strip() or None, 'vmax': self.ui.heatmap_vmax.text().strip() or None},
+            "contour": {'enabled': self.ui.contour_enabled.isChecked(), 'formula': self.ui.contour_formula.text().strip(), 'levels': self.ui.contour_levels.value(), 'colors': self.ui.contour_colors.currentText(), 'linewidths': self.ui.contour_linewidth.value(), 'show_labels': self.ui.contour_labels.isChecked()},
+            "vector": {'enabled': self.ui.vector_enabled.isChecked(), 'type': vt.name if vt else 'STREAMLINE', 'u_formula': self.ui.vector_u_formula.text().strip(), 'v_formula': self.ui.vector_v_formula.text().strip(), 'quiver_options': {'density': self.ui.quiver_density_spinbox.value(), 'scale': self.ui.quiver_scale_spinbox.value()}, 'streamline_options': {'density': self.ui.stream_density_spinbox.value(), 'linewidth': self.ui.stream_linewidth_spinbox.value(), 'color_by': sc.value if sc else 'Magnitude'}},
+            "analysis": {
+                "filter": {"enabled": self.ui.filter_enabled_checkbox.isChecked(), "text": self.ui.filter_text_edit.text().strip()},
+                "time_average": {"enabled": self.ui.time_analysis_mode_combo.currentText() == "时间平均场", "start_frame": self.ui.time_avg_start_spinbox.value(), "end_frame": self.ui.time_avg_end_spinbox.value()}
             },
             "playback": {"frame_skip_step": self.ui.frame_skip_spinbox.value()},
             "export": {"dpi": self.ui.export_dpi.value(), "video_fps": self.ui.video_fps.value(), "video_start_frame": self.ui.video_start_frame.value(), "video_end_frame": self.ui.video_end_frame.value(), "video_grid_w": self.ui.video_grid_w.value(), "video_grid_h": self.ui.video_grid_h.value()},
@@ -241,37 +184,31 @@ class ConfigHandler:
         }
 
     def apply_config(self, config: Dict[str, Any]):
-        """将字典中的配置应用到UI控件。"""
-        all_widgets = self.ui.control_panel.findChildren(QWidget)
-        for widget in all_widgets: widget.blockSignals(True)
-        
+        all_widgets = self.ui.control_panel.findChildren(QWidget); [w.blockSignals(True) for w in all_widgets]
         try:
-            axes = config.get("axes", {}); heatmap = config.get("heatmap", {}); contour = config.get("contour", {})
-            vector = config.get("vector", {}); playback = config.get("playback", {}); export = config.get("export", {}); perf = config.get("performance", {})
+            axes, heatmap, contour, vector, playback, export, perf, analysis = (config.get(k, {}) for k in ["axes", "heatmap", "contour", "vector", "playback", "export", "performance", "analysis"])
             
             self.ui.chart_title_edit.setText(axes.get("title", "")); self.ui.x_axis_formula.setText(axes.get("x_formula", "x")); self.ui.y_axis_formula.setText(axes.get("y_formula", "y"))
             self.ui.heatmap_enabled.setChecked(heatmap.get("enabled", False)); self.ui.heatmap_formula.setText(heatmap.get("formula", "")); self.ui.heatmap_colormap.setCurrentText(heatmap.get("colormap", "viridis")); self.ui.heatmap_vmin.setText(str(heatmap.get("vmin") or "")); self.ui.heatmap_vmax.setText(str(heatmap.get("vmax") or ""))
             self.ui.contour_enabled.setChecked(contour.get("enabled", False)); self.ui.contour_formula.setText(contour.get("formula", "")); self.ui.contour_levels.setValue(contour.get("levels", 10)); self.ui.contour_colors.setCurrentText(contour.get("colors", "black")); self.ui.contour_linewidth.setValue(contour.get("linewidths", 1.0)); self.ui.contour_labels.setChecked(contour.get("show_labels", True))
             
-            vector_type_str = vector.get("type", "STREAMLINE")
-            vector_type = VectorPlotType[vector_type_str] if vector_type_str in VectorPlotType.__members__ else VectorPlotType.STREAMLINE
-            self.ui.vector_plot_type.setCurrentIndex(self.ui.vector_plot_type.findData(vector_type))
-            
-            s_opts = vector.get('streamline_options', {})
-            stream_color_val = s_opts.get("color_by", StreamlineColor.MAGNITUDE.value)
-            stream_color = StreamlineColor.from_str(stream_color_val)
-            self.ui.stream_color_combo.setCurrentIndex(self.ui.stream_color_combo.findData(stream_color))
-            
-            q_opts = vector.get('quiver_options', {})
+            vt = self.VectorPlotType[vector.get("type", "STREAMLINE")]
+            self.ui.vector_plot_type.setCurrentIndex(self.ui.vector_plot_type.findData(vt))
+            so = vector.get('streamline_options', {}); sc = self.StreamlineColor.from_str(so.get("color_by"))
+            self.ui.stream_color_combo.setCurrentIndex(self.ui.stream_color_combo.findData(sc))
+            qo = vector.get('quiver_options', {})
             self.ui.vector_enabled.setChecked(vector.get("enabled", False)); self.ui.vector_u_formula.setText(vector.get("u_formula", "")); self.ui.vector_v_formula.setText(vector.get("v_formula", ""))
-            self.ui.quiver_density_spinbox.setValue(q_opts.get("density", 10)); self.ui.quiver_scale_spinbox.setValue(q_opts.get("scale", 1.0)); self.ui.stream_density_spinbox.setValue(s_opts.get("density", 1.5)); self.ui.stream_linewidth_spinbox.setValue(s_opts.get("linewidth", 1.0))
+            self.ui.quiver_density_spinbox.setValue(qo.get("density", 10)); self.ui.quiver_scale_spinbox.setValue(qo.get("scale", 1.0)); self.ui.stream_density_spinbox.setValue(so.get("density", 1.5)); self.ui.stream_linewidth_spinbox.setValue(so.get("linewidth", 1.0))
             
+            filt = analysis.get('filter', {}); self.ui.filter_enabled_checkbox.setChecked(filt.get("enabled", False)); self.ui.filter_text_edit.setText(filt.get("text", ""))
+            ta = analysis.get('time_average', {}); self.ui.time_analysis_mode_combo.setCurrentIndex(1 if ta.get("enabled", False) else 0)
+            self.ui.time_avg_start_spinbox.setValue(ta.get("start_frame", 0)); self.ui.time_avg_end_spinbox.setValue(ta.get("end_frame", 0))
+
             self.ui.frame_skip_spinbox.setValue(playback.get("frame_skip_step", 1))
             self.ui.export_dpi.setValue(export.get("dpi", 300)); self.ui.video_fps.setValue(export.get("video_fps", 15)); self.ui.video_start_frame.setValue(export.get("video_start_frame", 0)); self.ui.video_end_frame.setValue(export.get("video_end_frame", 0)); self.ui.video_grid_w.setValue(export.get("video_grid_w", 300)); self.ui.video_grid_h.setValue(export.get("video_grid_h", 300))
             if self.ui.gpu_checkbox.isEnabled(): self.ui.gpu_checkbox.setChecked(perf.get("gpu", False))
-            self.ui.cache_size_spinbox.setValue(perf.get("cache", 100))
-            self.dm.set_cache_size(self.ui.cache_size_spinbox.value())
+            self.ui.cache_size_spinbox.setValue(perf.get("cache", 100)); self.main_window.data_manager.set_cache_size(self.ui.cache_size_spinbox.value())
         finally:
-            for widget in all_widgets: widget.blockSignals(False)
-            self.main_window._update_gpu_status_label()
-            self.main_window._on_vector_plot_type_changed()
+            [w.blockSignals(False) for w in all_widgets]
+            self.main_window._update_gpu_status_label(); self.main_window._on_vector_plot_type_changed(); self.main_window._on_time_analysis_mode_changed()
+            self.main_window._apply_global_filter()

@@ -28,8 +28,8 @@ class StatsHandler:
         self.custom_stats_worker = None
 
     def connect_signals(self):
-        self.ui.calc_basic_stats_btn.clicked.connect(self.start_global_stats_calculation)
-        self.ui.calc_custom_stats_btn.clicked.connect(self.start_custom_stats_calculation)
+        self.ui.recalc_basic_stats_btn.clicked.connect(self.start_global_stats_calculation)
+        self.ui.save_and_calc_custom_stats_btn.clicked.connect(self.start_custom_stats_calculation)
         self.ui.export_stats_btn.clicked.connect(self.export_global_stats)
         self.ui.custom_stats_help_action.triggered.connect(self.show_custom_stats_help)
 
@@ -37,92 +37,110 @@ class StatsHandler:
         """当数据重载时调用，重置统计信息和UI状态。"""
         self.dm.clear_global_stats()
         self.formula_engine.update_custom_global_variables({})
-        self.ui.stats_results_text.setText("数据已重载，请重新计算。")
+        self.ui.stats_results_text.setText("数据已重载。")
+        self.ui.custom_stats_input.clear()
         self.ui.export_stats_btn.setEnabled(False)
-        self.ui.calc_custom_stats_btn.setEnabled(False)
+        self.ui.save_and_calc_custom_stats_btn.setEnabled(False)
 
+    def load_definitions_and_stats(self):
+        """从数据库加载统计和定义，并更新UI。"""
+        self.dm.load_global_stats()
+        self.formula_engine.update_custom_global_variables(self.dm.global_stats)
+        
+        definitions = self.dm.load_custom_definitions()
+        self.ui.custom_stats_input.setPlainText("\n".join(definitions))
+        
+        self.update_stats_display()
+        
+        has_stats = bool(self.dm.global_stats)
+        self.ui.export_stats_btn.setEnabled(has_stats)
+        self.ui.save_and_calc_custom_stats_btn.setEnabled(True)
+    
     def start_global_stats_calculation(self):
+        """强制重新计算所有变量的基础统计数据。"""
         if self.dm.get_frame_count() == 0: return
-        self.stats_progress_dialog = StatsProgressDialog(self.main_window, "正在计算基础统计")
-        self.stats_worker = GlobalStatsWorker(self.dm)
+        reply = QMessageBox.question(self.main_window, "确认", "这将重新计算所有变量的基础统计数据并覆盖现有值。是否继续？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes: return
+        
+        self.stats_progress_dialog = StatsProgressDialog(self.main_window, "重新计算基础统计")
+        all_vars = self.dm.get_variables()
+        self.stats_worker = GlobalStatsWorker(self.dm, all_vars)
         self.stats_worker.progress.connect(self.stats_progress_dialog.update_progress)
         self.stats_worker.finished.connect(self.on_global_stats_finished)
-        self.stats_worker.error.connect(self.on_global_stats_error)
+        self.stats_worker.error.connect(self.on_stats_error)
         self.stats_worker.start()
         self.stats_progress_dialog.exec()
 
-    def on_global_stats_finished(self, results: Dict[str, float]):
-        self.stats_progress_dialog.accept()
-        if not results:
-            self.ui.stats_results_text.setText("计算完成，无结果。")
-            return
-
-        self.dm.global_stats = results
+    def on_global_stats_finished(self):
+        """在基础统计计算完成后调用。"""
+        if self.stats_progress_dialog: self.stats_progress_dialog.accept()
+        self.dm.load_global_stats() # 从数据库重新加载以获取最新值
         self.update_stats_display()
-        self.ui.export_stats_btn.setEnabled(True)
-        self.ui.calc_custom_stats_btn.setEnabled(True)
         self.formula_engine.update_custom_global_variables(self.dm.global_stats)
-        self.main_window._trigger_auto_apply() # 触发重绘以应用新变量
-        QMessageBox.information(self.main_window, "计算完成", "基础统计数据已计算并可用于公式中。")
-
-    def on_global_stats_error(self, error_msg: str):
-        self.stats_progress_dialog.accept()
-        QMessageBox.critical(self.main_window, "计算失败", f"计算基础统计时发生错误: \n{error_msg}")
+        self.main_window._trigger_auto_apply()
+        QMessageBox.information(self.main_window, "计算完成", "基础统计数据已更新。")
 
     def start_custom_stats_calculation(self):
         definitions_text = self.ui.custom_stats_input.toPlainText().strip()
-        if not definitions_text: return
-        definitions = [line.strip() for line in definitions_text.split('\n') if line.strip()]
+        definitions = [line.strip() for line in definitions_text.split('\n') if line.strip() and not line.strip().startswith('#')]
         
+        try:
+            self.dm.save_custom_definitions(definitions)
+            logger.info("自定义常量定义已保存。")
+        except Exception as e:
+            self.on_stats_error(f"保存定义失败: {e}")
+            return
+            
         self.stats_progress_dialog = StatsProgressDialog(self.main_window, "正在计算自定义常量")
         self.custom_stats_worker = CustomGlobalStatsWorker(self.dm, definitions)
         self.custom_stats_worker.progress.connect(self.stats_progress_dialog.update_progress)
         self.custom_stats_worker.finished.connect(self.on_custom_stats_finished)
-        self.custom_stats_worker.error.connect(self.on_custom_stats_error)
+        self.custom_stats_worker.error.connect(self.on_stats_error)
         self.custom_stats_worker.start()
         self.stats_progress_dialog.exec()
 
-    def on_custom_stats_finished(self, new_stats: Dict[str, float]): # new_stats 现在只包含名称和数值
-        self.stats_progress_dialog.accept()
-        if not new_stats:
-            QMessageBox.warning(self.main_window, "计算完成", "未计算出任何新的自定义常量。"); return
-        
-        self.dm.global_stats.update(new_stats)
-        # custom_global_formulas 已经在 CustomGlobalStatsWorker 中更新，这里无需再次更新
+    def on_custom_stats_finished(self):
+        if self.stats_progress_dialog: self.stats_progress_dialog.accept()
+        self.dm.load_global_stats() # 重新加载以包含新计算的常量
         self.update_stats_display()
         self.formula_engine.update_custom_global_variables(self.dm.global_stats)
         self.main_window._trigger_auto_apply()
-        QMessageBox.information(self.main_window, "计算完成", f"成功计算了 {len(new_stats)} 个自定义常量。")
+        QMessageBox.information(self.main_window, "计算完成", "自定义常量已计算并更新。")
 
-    def on_custom_stats_error(self, error_msg: str):
-        self.stats_progress_dialog.accept()
-        QMessageBox.critical(self.main_window, "计算失败", f"计算自定义常量时发生错误: \n{error_msg}")
+    def on_stats_error(self, error_msg: str):
+        if self.stats_progress_dialog: self.stats_progress_dialog.accept()
+        QMessageBox.critical(self.main_window, "计算失败", f"计算时发生错误: \n{error_msg}")
 
     def update_stats_display(self):
         all_stats = self.dm.global_stats
         if not all_stats:
             self.ui.stats_results_text.setText("无统计结果。"); return
         
-        text = "\n".join([f"{k}: {v:.6e}" for k, v in all_stats.items()])
+        text = "\n".join([f"{k}: {v:.6e}" for k, v in sorted(all_stats.items())])
         self.ui.stats_results_text.setText(text)
+        self.ui.export_stats_btn.setEnabled(True)
 
     def export_global_stats(self):
         if not self.dm.global_stats:
             QMessageBox.warning(self.main_window, "导出失败", "没有可导出的统计结果。"); return
 
-        # 构造文件名
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f"global_stats_{timestamp}.csv"
-        filepath = os.path.join(self.output_dir, filename)
+        filepath, _ = QFileDialog.getSaveFileName(self.main_window, "保存统计结果", os.path.join(self.output_dir, filename), "CSV 文件 (*.csv)")
+        if not filepath: return
 
         try:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write("Name,Value,Formula\n") # CSV 头部
+            with open(filepath, 'w', encoding='utf-8', newline='') as f:
+                import csv
+                writer = csv.writer(f)
+                writer.writerow(["Name", "Value", "Definition (if custom)"])
                 
-                # 遍历所有统计结果
-                for name, value in self.dm.global_stats.items():
-                    formula = self.dm.custom_global_formulas.get(name, "") # 获取自定义公式，如果没有则为空
-                    f.write(f"{name},{value:.6e},{formula}\n")
+                # 获取自定义公式的名称
+                custom_names = self.dm.custom_global_formulas.keys()
+                
+                for name, value in sorted(self.dm.global_stats.items()):
+                    formula = self.dm.custom_global_formulas.get(name, "")
+                    writer.writerow([name, f"{value:.6e}", formula])
             
             QMessageBox.information(self.main_window, "导出成功", f"统计结果已保存到:\n{filepath}")
         except Exception as e:

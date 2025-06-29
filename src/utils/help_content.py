@@ -11,33 +11,13 @@ def get_formula_help_html(base_variables: List[str], custom_global_variables: Di
     const_list_html = "".join([f"<li><code>{key}</code>: {val:.4e}</li>" for key, val in science_constants.items()])
     
     all_globals = sorted(custom_global_variables.items())
-    basic_globals = []
-    custom_globals = []
-
-    if base_variables:
-        basic_prefixes = tuple(f"{var}_global_" for var in base_variables)
-        for key, val in all_globals:
-            if key.startswith(basic_prefixes):
-                basic_globals.append((key, val))
-            else:
-                custom_globals.append((key, val))
-    else:
-        custom_globals = all_globals
-        
-    basic_globals_html = "".join([f"<li><code>{key}</code>: {val:.4e}</li>" for key, val in basic_globals])
-    custom_globals_html = "".join([f"<li><code>{key}</code>: {val:.4e}</li>" for key, val in custom_globals])
+    custom_globals_html = "".join([f"<li><code>{key}</code>: {val:.4e}</li>" for key, val in all_globals])
 
     global_section = ""
-    if basic_globals_html:
-        global_section += f"""
-        <h3>基础统计变量 (跨所有帧)</h3>
-        <p>这些是在“全局统计”标签页中根据每个原始变量自动计算的统计量:</p>
-        <ul>{basic_globals_html}</ul>
-        """
     if custom_globals_html:
         global_section += f"""
-        <h3>自定义全局常量 (跨所有帧)</h3>
-        <p>这些是在“全局统计”标签页中由用户定义的常量:</p>
+        <h3>全局变量与常量</h3>
+        <p>这些是在“全局统计”标签页中自动计算或由用户定义的常量，它们在所有计算中可用:</p>
         <ul>{custom_globals_html}</ul>
         """
 
@@ -48,61 +28,53 @@ def get_formula_help_html(base_variables: List[str], custom_global_variables: Di
         h3 {{ color: #005A9C; border-bottom: 1px solid #ccc; padding-bottom: 5px; }}
         code {{ background-color: #f0f0f0; padding: 2px 5px; border: 1px solid #ddd; border-radius: 3px; font-family: monospace; }}
         ul {{ list-style-type: none; padding-left: 0; }} li {{ margin-bottom: 5px; }}
+        .note {{ border-left: 3px solid #17a2b8; padding-left: 15px; background-color: #e2f3f5; margin-top:10px; }}
+        .new {{ color: red; font-weight: bold; }}
     </style></head><body>
         <h2>公式语法说明</h2><p>您可以使用标准的Python数学表达式来创建新的派生变量。</p>
         
-        <h3>通用语法</h3>
+        <h3>可用变量与常量</h3>
+        <h4>数据变量 (逐点变化)</h4>
+        <p>以下变量来自您的数据，代表每个数据点的属性:</p>
+        <ul>{var_list_html or "<li>(无可用数据)</li>"}</ul>
+        {global_section or "<h4>全局变量与常量</h4><p>(请先在“全局统计”标签页中进行计算)</p>"}
+        <h4>科学常量</h4><ul>{const_list_html}</ul>
+
+        <h3>函数列表</h3>
+        <h4>标准数学函数</h4>
         <ul>
             <li><b>基本运算符:</b> <code>+</code>, <code>-</code>, <code>*</code>, <code>/</code>, <code>**</code> (乘方), <code>()</code></li>
-            <li><b>标准数学函数:</b> <code>sin</code>, <code>cos</code>, <code>sqrt</code>, <code>log</code>, <code>abs</code>, <code>min(a,b)</code>, <code>max(a,b)</code> 等。</li>
+            <li><b>通用函数:</b> <code>sin</code>, <code>cos</code>, <code>sqrt</code>, <code>log</code>, <code>abs</code>, <code>min(a,b)</code>, <code>max(a,b)</code> 等。</li>
         </ul>
 
-        <h3>公式应用场景</h3>
-        <p>您可以在以下场景中使用公式:</p>
+        <h4><span class="new">逐帧</span>聚合函数 (对当前帧所有点计算)</h4>
+        <div class="note"><p>这些函数在“逐帧计算”或可视化公式中使用，对当前显示帧的数据进行聚合。</p></div>
         <ul>
-            <li><b>坐标轴:</b> 变换X轴和Y轴的显示坐标。</li>
-            <li><b>热力图/等高线:</b> 定义用于着色或绘制等高线的标量场。</li>
-            <li><b>矢量/流线图:</b> 定义矢量场的U (水平) 和V (垂直) 分量。</li>
+            <li><code>mean(expr)</code>, <code>sum(expr)</code>, <code>std(expr)</code>, <code>var(expr)</code>, <code>median(expr)</code></li>
+            <li><code>min_frame(expr)</code>, <code>max_frame(expr)</code> (为避免与`min/max`数学函数冲突)</li>
         </ul>
 
-        <h3>可用变量与常量</h3>
-        
-        <h4>数据变量 (逐点变化)</h4>
-        <p>以下变量来自您加载的数据文件，代表每个数据点的属性:</p>
-        <ul>{var_list_html or "<li>(无可用数据)</li>"}</ul>
-        
-        <h4>单帧聚合函数 (对当前帧计算)</h4>
-        <p>这些函数对当前帧的所有数据点进行计算，返回一个标量值。聚合函数内部也支持公式:</p>
+        <h4>空间运算/矩阵函数 (对网格化场计算)</h4>
+        <div class="note">
+            <p>这些函数对插值到网格上的<b>空间场</b>进行操作，用于计算导数等。它们可以<b>相互嵌套</b>。</p>
+        </div>
         <ul>
-            <li><code>mean(expr)</code>: 平均值, 如 <code>mean(p)</code> 或 <code>mean(u*u + v*v)</code></li>
-            <li><code>sum(expr)</code>: 总和</li>
-            <li><code>std(expr)</code>: 标准差</li>
-            <li>...等等 (<code>median</code>, <code>var</code>, <code>min_frame</code>, <code>max_frame</code>)</li>
+            <li><code>grad_x(field)</code>: 计算标量场 <code>field</code> 的X方向梯度 (∂/dx)。</li>
+            <li><code>grad_y(field)</code>: 计算标量场 <code>field</code> 的Y方向梯度 (∂/dy)。</li>
+            <li><code>div(u_field, v_field)</code>: 计算矢量场 <code>(u, v)</code> 的散度 (∂u/∂x + ∂v/∂y)。</li>
+            <li><code>curl(u_field, v_field)</code>: 计算2D矢量场 <code>(u, v)</code> 的旋度 (∂v/∂x - ∂u/∂y)，结果为标量。</li>
+            <li><code>laplacian(field)</code>: 计算标量场 <code>field</code> 的拉普拉斯算子 (∂²/∂x² + ∂²/∂y²)。</li>
         </ul>
-        <p><b>注意:</b> 为避免与 `min/max` 数学函数冲突, 帧内聚合请使用 `min_frame/max_frame`。</p>
-
-        {global_section or "<h4>全局统计变量</h4><p>(请先在“全局统计”标签页中进行计算)</p>"}
-        
-        <h4>科学常量</h4><ul>{const_list_html}</ul>
 
         <h3>示例</h3>
         <ul>
-            <li><b>速度大小 (用于热力图):</b> <code>sqrt(u**2 + v**2)</code></li>
-            <li><b>动压 (用于等高线):</b> <code>0.5 * rho * (u**2 + v**2)</code></li>
+            <li><b>速度大小 (热力图):</b> <code>sqrt(u**2 + v**2)</code></li>
+            <li><b>动压 (等高线):</b> <code>0.5 * rho * (u**2 + v**2)</code></li>
             <li><b>压力波动 (帧内):</b> <code>p - mean(p)</code></li>
-            <li><b>马赫数归一化 (使用全局值):</b> <code>Ma / Ma_global_max</code></li>
-            <li><b>速度脉动 (用于矢量图):</b>
-              <ul>
-                <li>U分量公式: <code>u - u_global_mean</code></li>
-                <li>V分量公式: <code>v - v_global_mean</code></li>
-              </ul>
-            </li>
-            <li><b>质量通量 (用于流线图):</b>
-              <ul>
-                <li>U分量公式: <code>rho * u</code></li>
-                <li>V分量公式: <code>rho * v</code></li>
-              </ul>
-            </li>
+            <li><b>速度脉动 (矢量图U分量):</b> <code>u - u_global_mean</code></li>
+            <li><b>涡量 (热力图):</b> <code>curl(u, v)</code></li>
+            <li><b>压力梯度X分量 (热力图):</b> <code>grad_x(p)</code></li>
+            <li><b>嵌套示例 (复杂):</b> <code>grad_x(curl(rho*u, rho*v))</code></li>
         </ul>
     </body></html>"""
 
@@ -115,136 +87,142 @@ def get_custom_stats_help_html() -> str:
         h3 { color: #005A9C; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
         code { background-color: #f0f0f0; padding: 2px 5px; border: 1px solid #ddd; border-radius: 3px; font-family: monospace; }
         ul { list-style-type: circle; padding-left: 20px; }
-        .note { border-left: 3px solid #f0ad4e; padding-left: 15px; background-color: #fcf8e3; }
+        .note { border-left: 3px solid #f0ad4e; padding-left: 15px; background-color: #fcf8e3; margin-top:10px; }
+        .new { color: red; font-weight: bold; }
     </style></head><body>
         <h2>自定义常量计算指南</h2>
-        <p>
-            此功能允许您基于整个数据集 (所有CSV文件) 计算新的<b>全局常量</b>。
-            这些常量计算完成后，即可在任何可视化公式中使用，就像 `pi` 或 `u_global_mean` 一样。
-        </p>
+        <p>此功能允许您基于<b>整个数据集</b>计算新的<b>全局常量</b>。这些定义会<span class="new">永久保存在数据库中</span>，并可在所有可视化公式中使用。</p>
 
         <h3>基本格式</h3>
-        <p>每行定义一个常量，必须遵循以下格式:</p>
-        <code>new_constant_name = aggregate_function(expression)</code>
+        <p>每行定义一个常量: <code>new_constant_name = aggregate_function(expression)</code></p>
 
-        <h3>核心组件</h3>
+        <h3>计算模式</h3>
+        <p>引擎会自动选择最高效的计算路径：</p>
         <ul>
-            <li>
-                <b><code>new_constant_name</code></b><br>
-                您为新常量指定的名称。必须是有效的Python标识符 (只能包含字母、数字和下划线，且不能以数字开头)。
-            </li>
-            <li>
-                <b><code>aggregate_function</code></b><br>
-                一个聚合函数，用于将表达式在整个数据集上的计算结果合并成一个单一的数值。支持的函数有:
+            <li><b>标准公式 (无空间运算):</b> 使用<b>超快SQL查询</b>在数据库中直接完成。</li>
+            <li><b>含空间运算的公式 (如 <code>curl</code>, <code>grad_x</code>等):</b> 自动切换到<span class="new">并行的逐帧迭代</span>模式。这会充分利用您的CPU多核性能，但仍可能需要一些时间。</li>
+        </ul>
+
+        <h3>组件说明</h3>
+        <ul>
+            <li><b><code>new_constant_name</code></b>: 新常量的名称 (字母、数字、下划线)。</li>
+            <li><b><code>aggregate_function</code></b>: 聚合函数，对所有帧或所有点生效。支持 <code>mean</code>, <code>sum</code>, <code>std</code>, <code>var</code>。</li>
+            <li><b><code>expression</code></b>: 数学表达式，支持:
                 <ul>
-                    <li><code>mean</code>: 计算表达式在所有数据点上的平均值。</li>
-                    <li><code>sum</code>: 计算总和。</li>
-                    <li><code>std</code>: 计算标准差。</li>
-                    <li><code>var</code>: 计算方差。</li>
-                </ul>
-            </li>
-            <li>
-                <b><code>expression</code></b><br>
-                一个数学表达式，其计算基于<b>每个数据点</b>。您可以在此表达式中使用:
-                <ul>
-                    <li>原始数据变量 (如 <code>u</code>, <code>v</code>, <code>p</code>, <code>rho</code> 等)。</li>
-                    <li>所有已计算的基础统计量 (如 <code>u_global_mean</code>, <code>p_global_max</code> 等)。</li>
-                    <li>在此文本框中，位于当前行<b>之前</b>已定义的其他自定义常量。</li>
-                    <li>标准数学运算符 (<code>+</code>, <code>-</code>, <code>*</code>, <code>/</code>, <code>**</code>) 和函数 (<code>sqrt</code>, <code>sin</code> 等)。</li>
+                    <li>原始数据变量 (如 <code>u</code>, <code>p</code>)。</li>
+                    <li>任何已计算的全局常量 (包括之前定义的)。</li>
+                    <li>标准数学函数 (<code>sqrt</code>, <code>sin</code>等)。</li>
+                    <li>新增的空间函数 (<code>grad_x</code>, <code>div</code>, <code>curl</code> 等)。</li>
                 </ul>
             </li>
         </ul>
 
-        <h3>示例</h3>
-        
-        <h4>1. 计算平均湍动能 (TKE)</h4>
-        <p>假设湍动能由速度分量的平方和定义。</p>
-        <code>tke_global_mean = mean(0.5 * (u**2 + v**2 + w**2))</code>
-        <p class="note">
-            这里，<code>0.5 * (u**2 + v**2 + w**2)</code> 会对数据集中的每一个点进行计算，然后 <code>mean(...)</code> 函数计算所有这些结果的平均值。
-        </p>
+        <h3>工作流程</h3>
+        <ol>
+            <li>在文本框中添加或编辑您的定义。</li>
+            <li>点击“<b>保存定义并重新计算</b>”按钮。</li>
+            <li>您的定义会被保存到数据库，然后程序会开始计算。</li>
+            <li>计算完成后，新的常量即可在任何地方使用。</li>
+        </ol>
 
-        <h4>2. 计算雷诺应力</h4>
-        <p>雷诺应力是速度脉动的乘积的平均值。</p>
+        <h3>示例</h3>
+        <h4>1. 计算平均湍动能 (TKE) - <span style="color:green;">快速SQL模式</span></h4>
+        <code>tke_global_mean = mean(0.5 * (u**2 + v**2))</code>
+
+        <h4>2. 计算雷诺应力 - <span style="color:green;">快速SQL模式</span></h4>
         <code>reynolds_stress_uv = mean((u - u_global_mean) * (v - v_global_mean))</code>
 
-        <h4>3. 计算基于前面结果的派生常量</h4>
-        <p>您可以分步定义复杂的常量。</p>
-        <code>tke_fluct_mean = mean(0.5 * ((u - u_global_mean)**2 + (v - v_global_mean)**2))</code><br>
-        <code>intensity_fluct_ratio = sqrt(tke_fluct_mean) / u_global_mean</code>
-
-        <p class="note">
-            <b>重要:</b> 计算顺序是自上而下的。确保在使用一个自定义常量之前，它已经在前面的行中被定义。
-        </p>
+        <h4>3. <span class="new">计算全场平均涡量 - 并行迭代模式</span></h4>
+        <div class="note">
+            <p>因为包含 <code>curl()</code>，此计算会并行地遍历所有帧，对每一帧计算涡量场，然后取所有帧涡量均值的均值。</p>
+        </div>
+        <code>mean_vorticity = mean(curl(u, v))</code>
     </body></html>
     """
 
 def get_axis_title_help_html() -> str:
-    """生成坐标轴和标题帮助的HTML内容"""
     return """
     <html><head><style>
         body { font-family: sans-serif; line-height: 1.6; }
         h2 { color: #005A9C; border-bottom: 2px solid #005A9C; padding-bottom: 5px; }
-        h3 { color: #005A9C; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
         code { background-color: #f0f0f0; padding: 2px 5px; border: 1px solid #ddd; border-radius: 3px; font-family: monospace; }
         ul { list-style-type: disc; padding-left: 20px; }
+        .note {{ border-left: 3px solid #17a2b8; padding-left: 15px; background-color: #e2f3f5; margin-top:10px; }}
     </style></head><body>
         <h2>坐标轴与标题指南</h2>
-        <p>
-            您可以使用公式来定义图表的X轴、Y轴以及图表标题。
-            这允许您根据数据变量创建自定义的坐标系或动态的标题。
-        </p>
-
-        <h3>X轴与Y轴公式</h3>
         <ul>
-            <li>
-                <b>目的:</b>
-                定义数据点在图表上的X和Y坐标。
-                您可以直接使用原始数据变量，也可以通过数学表达式进行变换。
-            </li>
-            <li>
-                <b>示例:</b>
+            <li><b>X轴与Y轴公式:</b> 定义数据点在图表上的坐标。可使用任何数据变量和全局常量，如 <code>x</code>, <code>rho*u</code>, <code>x-x_global_mean</code>。</li>
+            <li><b>图表标题:</b>
+                <p>可以是静态文本，或使用 <code>{...}</code> 占位符语法包含动态信息。</p>
+                <div class="note">
+                    <p><b>注意:</b> 请不要使用Python的f-string (即不要在字符串前加'f')，直接使用大括号即可。</p>
+                </div>
+                <p>可用占位符:</p>
                 <ul>
-                    <li><code>x</code>: 使用原始X坐标</li>
-                    <li><code>rho * u</code>: 使用质量通量作为X坐标</li>
-                    <li><code>x - x_global_mean</code>: 使用相对X坐标</li>
+                    <li><code>{frame_index}</code> - 当前帧的索引。</li>
+                    <li><code>{time}</code> - 当前帧的时间戳。您可以进行格式化，例如 <code>{time:.3f}</code> 会将时间戳显示为三位小数。</li>
                 </ul>
-            </li>
-            <li>
-                <b>可用内容:</b>
-                与“公式语法说明”中“数据变量”和“全局常量”相同的变量和函数。
+                <p><b>示例:</b> <code>Frame: {frame_index}, Time: {time:.4f}s</code></p>
             </li>
         </ul>
+    </body></html>
+    """
 
-        <h3>图表标题公式</h3>
+def get_analysis_help_html() -> str:
+    """生成“分析”选项卡功能的帮助HTML内容"""
+    return """
+    <html><head><style>
+        body { font-family: sans-serif; line-height: 1.6; }
+        h2 { color: #005A9C; border-bottom: 2px solid #005A9C; padding-bottom: 5px; }
+        h3 { color: #28a745; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
+        code { background-color: #f0f0f0; padding: 2px 5px; border: 1px solid #ddd; border-radius: 3px; font-family: monospace; }
+        ul { list-style-type: circle; padding-left: 20px; }
+        .note { border-left: 3px solid #ffc107; padding-left: 15px; background-color: #fff9e2; margin-top:10px; }
+        .new { color: #007bff; font-weight: bold; }
+    </style></head><body>
+        <h2>分析功能指南</h2>
+        <p>本页包含“分析”和“数据过滤”选项卡中高级功能的说明。</p>
+
+        <h3>全局数据过滤器</h3>
+        <p>此功能允许您对<b>整个数据集</b>应用一个筛选条件，所有后续的可视化、统计计算和导出都将只考虑满足条件的数据点。</p>
         <ul>
-            <li>
-                <b>目的:</b>
-                定义图表的显示标题。标题可以是静态文本，也可以包含动态信息。
-            </li>
-            <li>
-                <b>动态标题:</b>
-                您可以使用Python的f-string语法在标题中嵌入变量或表达式的值。
-                例如，<code>f"帧: {frame_index}, 时间: {time}"</code>。
-            </li>
-            <li>
-                <b>可用内容:</b>
-                除了公式中可用的变量外，标题公式还可以访问一些特殊的上下文变量，例如：
+            <li><b>语法:</b> 使用标准的 <b>SQL `WHERE` 子句</b> 语法 (不需要写 "WHERE" 关键字)。</li>
+            <li><b>变量:</b> 您可以使用数据库中的任何原始或派生变量名。</li>
+            <li><b>示例:</b>
                 <ul>
-                    <li><code>frame_index</code>: 当前帧的索引 (整数)</li>
-                    <li><code>time</code>: 当前帧对应的时间戳 (浮点数)</li>
-                    <li><code>data_manager.current_frame_variables</code>: 包含当前帧所有变量的字典</li>
-                    <li>任何已定义的全局常量 (如 <code>u_global_mean</code>)</li>
-                </ul>
-            </li>
-            <li>
-                <b>示例:</b>
-                <ul>
-                    <li><code>"我的固定标题"</code></li>
-                    <li><code>f"帧 {frame_index} 的压力场"</code></li>
-                    <li><code>f"速度大小均值: {mean(sqrt(u**2 + v**2)):.2f}"</code> (注意：标题中的聚合函数是对当前帧数据执行的)</li>
+                    <li><code>p > 101325</code> (只分析压力高于一个大气压的区域)</li>
+                    <li><code>sqrt(u*u + v*v) > 100</code> (只分析高速区域)</li>
+                    <li><code>x < 0.5 AND y > 0.2</code> (只分析某个几何区域)</li>
                 </ul>
             </li>
         </ul>
+        <div class="note">
+            <p><b>重要:</b> 应用或更改过滤器后，建议点击主工具栏的“重置视图”按钮，以确保您看到的是过滤后数据的完整视图。</p>
+        </div>
+
+        <h3>数据探针</h3>
+        <p>当您在图表上移动鼠标时，“数据探针”窗口会实时显示两种信息：</p>
+        <ul>
+            <li><b>最近原始数据点:</b> 离您鼠标最近的原始数据文件中那个点的值。</li>
+            <li><b>鼠标位置插值数据:</b> 根据周围数据点插值计算出的、您鼠标精确位置上的值。这对于查看平滑的热力图和等高线图的精确数值非常有用。</li>
+        </ul>
+
+        <h3><span class="new">一维剖面图</span></h3>
+        <p>此功能允许您在2D图上画一条线，并查看变量如何沿着这条线变化。</p>
+        <ol>
+            <li>点击“<b>绘制剖面图</b>”按钮，鼠标将变为十字形。</li>
+            <li>在图表上<b>第一次点击</b>，定义剖面线的<b>起点</b>。</li>
+            <li>移动鼠标，您会看到一条预览线。<b>第二次点击</b>，定义剖面线的<b>终点</b>。</li>
+            <li>一个新窗口会弹出，显示主热力图变量沿着这条线的数值分布图。</li>
+        </ol>
+
+        <h3>时间序列分析</h3>
+        <p>此功能用于查看图上某一个固定点，其物理量随时间的变化情况。</p>
+        <ol>
+            <li>点击“<b>拾取时间序列点</b>”按钮，鼠标变为十字形。</li>
+            <li>在图表上单击您感兴趣的一点。</li>
+            <li>一个新窗口会弹出。您可以在此窗口的下拉菜单中选择不同的变量，查看它们在该点的时间序列图。</li>
+            <li><span class="new">新增功能:</span> 点击“<b>计算FFT</b>”按钮，可以对当前的时间序列进行快速傅里叶变换，分析其频域特性。</li>
+        </ol>
     </body></html>
     """

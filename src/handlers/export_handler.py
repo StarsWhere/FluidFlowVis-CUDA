@@ -8,17 +8,15 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from PyQt6.QtWidgets import QMessageBox
-
-# **MODIFICATION**: Removed QFileDialog, will be handled by custom dialog
+from PyQt6.QtWidgets import QMessageBox, QFileDialog
 from src.visualization.video_exporter import VideoExportDialog
-from src.ui.dialogs import BatchExportDialog, ConfigSelectionDialog
-from src.core.workers import BatchExportWorker
+from src.ui.dialogs import BatchExportDialog, ConfigSelectionDialog, ImportDialog as ProgressDialog
+from src.core.workers import BatchExportWorker, DataExportWorker
 
 logger = logging.getLogger(__name__)
 
 class ExportHandler:
-    """处理所有与导出图像、视频和批量任务相关的逻辑。"""
+    """处理所有与导出图像、视频和数据相关的逻辑。"""
 
     def __init__(self, main_window, ui, data_manager, config_handler):
         self.main_window = main_window
@@ -31,6 +29,7 @@ class ExportHandler:
 
         self.batch_export_dialog: Optional[BatchExportDialog] = None
         self.batch_export_worker: Optional[BatchExportWorker] = None
+        self.data_export_worker: Optional[DataExportWorker] = None
 
     def connect_signals(self):
         self.ui.export_img_btn.clicked.connect(self.export_image)
@@ -38,14 +37,13 @@ class ExportHandler:
         self.ui.batch_export_btn.clicked.connect(self.start_batch_export)
         self.ui.set_output_dir_action.triggered.connect(self._change_output_directory)
         self.ui.change_output_dir_btn.clicked.connect(self._change_output_directory)
+        self.ui.export_data_csv_btn.clicked.connect(self.export_filtered_data_to_csv)
 
     def set_output_dir(self, directory: str):
         self.output_dir = directory
         self.ui.output_dir_line_edit.setText(self.output_dir)
 
     def _change_output_directory(self):
-        # This still uses QFileDialog, which is appropriate here for directory selection.
-        from PyQt6.QtWidgets import QFileDialog
         new_dir = QFileDialog.getExistingDirectory(self.main_window, "选择输出目录", self.output_dir)
         if new_dir and new_dir != self.output_dir:
             self.set_output_dir(new_dir)
@@ -63,7 +61,8 @@ class ExportHandler:
         if s_f >= e_f:
             QMessageBox.warning(self.main_window, "参数错误", "起始帧必须小于结束帧"); return
         
-        fname = os.path.join(self.output_dir, f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+        fname, _ = QFileDialog.getSaveFileName(self.main_window, "保存视频文件", os.path.join(self.output_dir, f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"), "Video Files (*.mp4 *.gif)")
+        if not fname: return
         
         current_config = self.config_handler.get_current_config()
         
@@ -85,15 +84,10 @@ class ExportHandler:
         if self.dm.get_frame_count() == 0:
             QMessageBox.warning(self.main_window, "无数据", "请先加载数据再执行批量导出。"); return
             
-        # --- MODIFICATION: Replace QFileDialog with custom in-app dialog ---
         dialog = ConfigSelectionDialog(self.settings_dir, self.main_window)
-        # Execute the dialog. If the user clicks "Cancel", .exec() returns False.
-        if not dialog.exec():
-            return
+        if not dialog.exec(): return
 
         config_files = dialog.selected_files()
-        # --- End of Modification ---
-
         if not config_files:
             QMessageBox.information(self.main_window, "无选择", "您没有选择任何配置文件。")
             return
@@ -109,6 +103,27 @@ class ExportHandler:
 
         self.batch_export_dialog.show()
         self.batch_export_worker.start()
+
+    def export_filtered_data_to_csv(self):
+        if self.dm.get_frame_count() == 0:
+            QMessageBox.warning(self.main_window, "无数据", "请先加载数据再导出。"); return
+        
+        default_name = f"filtered_data_{datetime.now().strftime('%Y%m%d')}.csv"
+        filepath, _ = QFileDialog.getSaveFileName(self.main_window, "导出数据到CSV", os.path.join(self.output_dir, default_name), "CSV 文件 (*.csv)")
+        if not filepath: return
+        
+        progress = ProgressDialog(self.main_window, "正在导出数据...")
+        filter_clause = self.dm.global_filter_clause if self.ui.filter_enabled_checkbox.isChecked() else ""
+        
+        self.data_export_worker = DataExportWorker(self.dm, filepath, filter_clause)
+        self.data_export_worker.progress.connect(progress.update_progress)
+        self.data_export_worker.finished.connect(lambda: QMessageBox.information(self.main_window, "成功", f"数据已成功导出到:\n{filepath}"))
+        self.data_export_worker.finished.connect(progress.accept)
+        self.data_export_worker.error.connect(lambda msg: QMessageBox.critical(self.main_window, "导出失败", msg))
+        self.data_export_worker.error.connect(progress.accept)
+        
+        self.data_export_worker.start()
+        progress.exec()
 
     def _on_batch_export_summary_ready(self, summary_message: str):
         if self.batch_export_dialog and self.batch_export_dialog.isVisible():
