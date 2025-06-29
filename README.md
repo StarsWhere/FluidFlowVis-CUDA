@@ -3,7 +3,7 @@
 [![Python Version](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![UI Framework](https://img.shields.io/badge/UI-PyQt6-brightgreen.svg)](https://www.riverbankcomputing.com/software/pyqt/)
-[![Version](https://img.shields.io/badge/Version-1.5-blue)](https://github.com/StarsWhere/InterVis)
+[![Version](https://img.shields.io/badge/Version-1.7--Refactored-blue)](https://github.com/StarsWhere/InterVis)
 
 **English:** An powerful, interactive tool for visualizing and analyzing time-series scientific computing data.
 <br>
@@ -206,29 +206,43 @@ InterVis 提供了将分析结果保存为高质量文件的功能。
 ## 目录结构 (Directory Structure)
 项目结构经过重构，以实现更好的模块化和可维护性。
 The project structure has been refactored for better modularity and maintainability.
-```InterVis/
+```
+InterVis/
 ├── data/              # 存放您的 CSV 数据文件 (Place your CSV data files here)
 ├── logs/              # 程序运行日志 (Application logs)
 ├── output/            # 导出的图片、视频和统计结果 (Exported images, videos, stats)
 ├── png/               # README 文档所需的图片 (Images for this README)
 ├── settings/          # 保存的可视化配置文件 (.json) (Saved configuration files)
 ├── src/               # 源代码 (Source code)
-│   ├── core/          # 核心逻辑与数据处理 (Core logic and data handling)
+│   ├── core/          # 核心逻辑与引擎 (Core logic and engines)
+│   │   ├── __init__.py
 │   │   ├── data_manager.py
-│   │   ├── formula_validator.py
+│   │   ├── formula_engine.py
+│   │   ├── rendering_core.py
+│   │   ├── statistics_calculator.py
 │   │   └── workers.py
+│   ├── handlers/      # UI事件与业务逻辑处理器 (UI event and business logic handlers)
+│   │   ├── __init__.py
+│   │   ├── config_handler.py
+│   │   ├── export_handler.py
+│   │   ├── playback_handler.py
+│   │   └── stats_handler.py
 │   ├── ui/            # UI 相关模块 (UI-related modules)
+│   │   ├── __init__.py
 │   │   ├── dialogs.py
 │   │   └── ui_setup.py
 │   ├── utils/         # 辅助工具 (Utility modules)
+│   │   ├── __init__.py
 │   │   ├── gpu_utils.py
+│   │   ├── help_content.py
 │   │   ├── help_dialog.py
 │   │   └── logger.py
 │   ├── visualization/ # 可视化相关模块 (Visualization modules)
+│   │   ├── __init__.py
 │   │   ├── headless_renderer.py
 │   │   ├── plot_widget.py
 │   │   └── video_exporter.py
-│   └── main_window.py # 主窗口逻辑 (Main window logic)
+│   └── main_window.py # 主窗口 (协调器) (Main window (coordinator))
 ├── main.py            # 主程序入口 (Main application entry point)
 ├── README.md          # 本文档 (This file)
 └── requirements.txt   # Python 依赖项 (Python dependencies)
@@ -237,9 +251,10 @@ The project structure has been refactored for better modularity and maintainabil
 ## 未来计划 (Future Plans)
 
 *   [x] ~~**矢量图与流线图 (Vector & Streamline Plots):**~~ **(v1.5 已实现)**
+*   [x] ~~**UI/UX 改进 (UI/UX Improvements):**~~ **(v1.6 已实现)**
+*   [x] **代码重构 (Code Refactoring):** **(v1.7 已实现)** - 重构项目结构，分离关注点，提高可维护性。
 *   [ ] **3D 可视化支持 (3D Visualization Support):** 增加对 3D 数据切片或体渲染的支持。
 *   [ ] **更丰富的分析功能 (More Analysis Functions):** 集成如傅里叶变换 (FFT) 等更高级的数据分析工具。
-*   [x] ~~**UI/UX 改进 (UI/UX Improvements):**~~ 持续优化用户界面和交互体验。**(v1.6 已实现)**
 
 ## 贡献 (Contributing)
 欢迎各种形式的贡献！如果您有任何建议、发现任何错误或想要添加新功能，请随时提交 Pull Request 或创建 Issue。
