@@ -160,6 +160,14 @@ class MainWindow(QMainWindow):
         try:
             lines = [f"{'变量名':<16s} {'数值'}", "---------------------------"]
             lines.extend([f"{k:<16s} {v:12.6e}" for k, v in probe_data['variables'].items()])
+
+            evaluated_formulas = probe_data.get('evaluated_formulas', {})
+            if evaluated_formulas:
+                lines.append("\n")
+                lines.append(f"{'公式':<16s} {'计算值'}")
+                lines.append("---------------------------")
+                lines.extend([f"{k:<16s} {v:12.6e}" if not isinstance(v, str) else f"{k:<16s} {v}" for k, v in evaluated_formulas.items()])
+
             self.ui.probe_text.setPlainText("\n".join(lines))
         except Exception as e:
             logger.debug(f"更新探针数据显示失败: {e}")

@@ -124,7 +124,11 @@ class UiMainWindow:
         coord_layout = QHBoxLayout(); coord_layout.addWidget(QLabel("鼠标坐标:")); self.probe_coord_label = QLabel("(0.00, 0.00)")
         self.probe_coord_label.setFont(QFont("monospace")); coord_layout.addWidget(self.probe_coord_label); coord_layout.addStretch(); probe_layout.addLayout(coord_layout)
         self.probe_text = QTextEdit(); self.probe_text.setReadOnly(True); self.probe_text.setFont(QFont("Courier New", 9)); self.probe_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
-        probe_layout.addWidget(self.probe_text); layout.addWidget(probe_group); layout.addStretch(); return tab
+        probe_layout.addWidget(self.probe_text)
+        layout.addWidget(probe_group)
+        # 移除此处的 addStretch()，确保 probe_text 可以充分扩展
+        # layout.addStretch()
+        return tab
         
     def _create_statistics_tab(self, parent_window) -> QWidget:
         tab = QWidget(); main_layout = QVBoxLayout(tab)

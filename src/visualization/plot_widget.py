@@ -98,7 +98,7 @@ class PlotWidget(QWidget):
         if font_paths:
             plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei']  # 设置中文显示
             plt.rcParams['axes.unicode_minus'] = False  # 解决负号'-'显示为方块的问题
-            logger.info(f"使用字体: {plt.rcParams['font.sans-serif']}")
+            logger.debug(f"使用字体: {plt.rcParams['font.sans-serif']}")
         else:
             logger.warning("未找到'Microsoft YaHei'或'SimHei'字体，中文可能无法正常显示。请确保系统安装了这些字体。")
 
@@ -238,8 +238,38 @@ class PlotWidget(QWidget):
             dist_sq = (x_probe_values - x)**2 + (y_probe_values - y)**2
             idx = dist_sq.idxmin()
             original_x, original_y = self.current_data.get('x', [0])[idx], self.current_data.get('y', [0])[idx]
-            self.probe_data_ready.emit({'x': x, 'y': y, 'nearest_point': {'x': original_x, 'y': original_y}, 'variables': self.current_data.loc[idx].to_dict()})
-        except Exception: return
+            
+            # 获取并评估所有相关的公式
+            evaluated_formulas = {}
+            formulas_to_evaluate = {
+                self.x_axis_formula: self.x_axis_formula,
+                self.y_axis_formula: self.y_axis_formula,
+                self.heatmap_config.get('formula'): self.heatmap_config.get('formula'),
+                self.contour_config.get('formula'): self.contour_config.get('formula'),
+                self.vector_config.get('u_formula'): self.vector_config.get('u_formula'),
+                self.vector_config.get('v_formula'): self.vector_config.get('v_formula'),
+            }
+
+            for name, formula in formulas_to_evaluate.items():
+                if formula and formula.strip():
+                    try:
+                        # 确保只评估当前探测点的数据
+                        # 对于 evaluate_formula，我们传递整个 DataFrame，但结果是 Series，需要取特定索引的值
+                        evaluated_value = self.formula_engine.evaluate_formula(processed_data.loc[[idx]], formula).iloc[0]
+                        evaluated_formulas[name] = evaluated_value
+                    except Exception as e:
+                        evaluated_formulas[name] = f"评估失败: {e}"
+
+            self.probe_data_ready.emit({
+                'x': x,
+                'y': y,
+                'nearest_point': {'x': original_x, 'y': original_y},
+                'variables': self.current_data.loc[idx].to_dict(),
+                'evaluated_formulas': evaluated_formulas
+            })
+        except Exception as e:
+            logger.error(f"获取探测数据时出错: {e}")
+            return
 
     def _on_scroll(self, event):
         if event.inaxes != self.ax: return
