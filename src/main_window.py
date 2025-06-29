@@ -171,6 +171,7 @@ class MainWindow(QMainWindow):
     def _trigger_auto_apply(self, *args):
         if self._is_loading_config: return
         if self.data_manager.get_frame_count() > 0:
+            self._should_reset_view_after_refresh = True # 设置标志，以便在渲染完成后重置视图
             self._apply_visualization_settings()
         self._mark_config_as_dirty()
     # endregion
