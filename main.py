@@ -25,7 +25,7 @@ def main():
         # 创建QApplication实例
         app = QApplication(sys.argv)
         app.setApplicationName("InterVis")
-        app.setApplicationVersion("1.7-Refactored") # 更新版本号
+        app.setApplicationVersion("1.8.0-Optimized") # 更新版本号
         app.setOrganizationName("StarsWhere")
         
         # Qt6 自动处理高DPI缩放

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os, logging, time, numpy as np
+import tempfile
+import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, QPushButton, QTextEdit, QMessageBox
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
@@ -19,100 +21,123 @@ class VideoExportWorker(QThread):
         self.e_f = min(e_f, self.dm.get_frame_count() - 1)
         self.is_cancelled = False
         self.executor = ThreadPoolExecutor(max_workers=max(1, os.cpu_count() // 2))
+        self.temp_dir = None
+        # **MODIFICATION**: Add attributes to store results for synchronous waiting
+        self.success = False
+        self.message = ""
 
     def cancel(self):
         self.is_cancelled = True
-        self.executor.shutdown(wait=True, cancel_futures=True)
+        self.executor.shutdown(wait=False, cancel_futures=True)
     
     def run(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="intervis_export_")
+        logger.info(f"为视频导出创建临时目录: {self.temp_dir}")
+        
         try:
             total = self.e_f - self.s_f + 1
             if total <= 0: raise ValueError("帧范围无效，起始帧必须小于或等于结束帧。")
             
-            frames, futures = {}, {self.executor.submit(self._render_frame, i): i for i in range(self.s_f, self.e_f + 1)}
+            frame_paths, futures = {}, {self.executor.submit(self._render_frame, i, self.temp_dir): i for i in range(self.s_f, self.e_f + 1)}
             
             processed_count = 0
             for future in as_completed(futures):
                 if self.is_cancelled: break
                 idx = futures[future]
                 try: 
-                    result = future.result()
-                    if result is not None: frames[idx] = result
+                    result_path = future.result()
+                    if result_path: frame_paths[idx] = result_path
                 except Exception as e: 
                     logger.error(f"渲染帧 {idx} 出错: {e}")
                 
                 processed_count += 1
-                self.progress_updated.emit(processed_count, total, f"已处理 {processed_count}/{total} 帧")
-
-            if self.is_cancelled: 
-                self.export_finished.emit(False, "导出已取消"); return
-
-            images = [frames[i] for i in range(self.s_f, self.e_f + 1) if i in frames]
-            if not images: raise ValueError("没有成功渲染任何帧。请检查日志。")
+                self.progress_updated.emit(processed_count, total, f"已渲染 {processed_count}/{total} 帧")
 
             if self.is_cancelled:
-                self.export_finished.emit(False, "导出已取消"); return
+                self.success = False
+                self.message = "导出已取消"
+                self.export_finished.emit(self.success, self.message); return
+
+            image_files = [frame_paths[i] for i in range(self.s_f, self.e_f + 1) if i in frame_paths]
+            if not image_files: raise ValueError("没有成功渲染任何帧。请检查日志。")
 
             self.progress_updated.emit(total, total, "正在编码视频...")
-            self._create_video(images, self.fname, self.fps)
-            self.export_finished.emit(True, f"视频已成功导出到:\n{self.fname}")
+            self._create_video(image_files, self.fname, self.fps)
+            
+            self.success = True
+            self.message = f"视频已成功导出到:\n{self.fname}"
+            self.export_finished.emit(self.success, self.message)
 
         except Exception as e:
             logger.error(f"视频导出失败: {e}", exc_info=True)
-            self.export_finished.emit(False, f"导出失败: {e}")
+            self.success = False
+            self.message = f"导出失败: {e}"
+            self.export_finished.emit(self.success, self.message)
         finally:
-            self.executor.shutdown(wait=True, cancel_futures=True)
+            self.executor.shutdown(wait=True)
+            if self.temp_dir and os.path.exists(self.temp_dir):
+                shutil.rmtree(self.temp_dir)
+                logger.info(f"已清理临时目录: {self.temp_dir}")
             logger.info("VideoExportWorker 线程已结束。")
 
-    def _render_frame(self, idx):
+    def _render_frame(self, idx, temp_dir):
         if self.is_cancelled: return None
-        data = self.dm.get_frame_data(idx)
-        if data is None: raise ValueError(f"无法为帧 {idx} 加载数据")
+        try:
+            data = self.dm.get_frame_data(idx)
+            if data is None: raise ValueError(f"无法为帧 {idx} 加载数据")
 
-        plotter = HeadlessPlotter(self.p_conf)
-        return plotter.render_frame(data, self.dm.get_variables())
+            plotter = HeadlessPlotter(self.p_conf)
+            image_array = plotter.render_frame(data, self.dm.get_variables())
+            
+            # Save array to a temp file and return path
+            import imageio
+            frame_path = os.path.join(temp_dir, f'frame_{idx:06d}.png')
+            imageio.imwrite(frame_path, image_array)
+            return frame_path
+        except Exception as e:
+            logger.error(f"渲染帧 {idx} 并保存到临时文件时失败: {e}")
+            return None # Ensure failure returns None
 
-    def _create_video(self, images, fname, fps):
+    def _create_video(self, image_files, fname, fps):
         """
-        创建视频文件，实现从 moviepy 到 imageio 的自动降级。
+        从一系列图像文件创建视频，实现从 moviepy 到 imageio 的自动降级。
         """
-        # 方案一：尝试使用 moviepy (功能更全，首选)
         try:
             import moviepy.editor as mp
-            logger.info(f"使用 moviepy (首选) 编码视频: {fname}")
-            clips = [mp.ImageClip(m, duration=1.0/fps) for m in images]
-            final_clip = mp.concatenate_videoclips(clips, method="compose")
-            
+            logger.info(f"使用 moviepy (首选) 从临时文件编码视频: {fname}")
+            final_clip = mp.ImageSequenceClip(image_files, fps=fps)
             if fname.lower().endswith('.gif'): 
                 final_clip.write_gif(fname, fps=fps, logger=None)
             else: 
                 codec = 'libx264' if fname.lower().endswith('.mp4') else 'libvpx'
                 final_clip.write_videofile(fname, fps=fps, codec=codec, logger='bar', threads=os.cpu_count())
-            return # 成功，直接返回
+            final_clip.close()
+            return
         except ImportError:
             logger.warning("moviepy 未安装，将尝试使用 imageio 作为备选方案。")
         except Exception as e:
             logger.error(f"使用 moviepy 导出失败: {e}，将尝试使用 imageio。")
 
-        # 方案二：如果 moviepy 失败，则降级到 imageio
         try:
             import imageio
-            logger.info(f"使用 imageio (备选) 编码视频: {fname}")
-            
-            if fname.lower().endswith('.gif'):
-                imageio.mimsave(fname, images, fps=fps)
-            else:
-                # For MP4, specify codec and quality settings
-                with imageio.get_writer(fname, fps=fps, codec='libx264', quality=8, pixelformat='yuv420p', macro_block_size=1) as writer:
-                    for img in images:
-                        writer.append_data(img)
-            return # 成功，直接返回
+            logger.info(f"使用 imageio (备选) 从临时文件编码视频: {fname}")
+            writer_kwargs = {'fps': fps}
+            if fname.lower().endswith('.mp4'):
+                writer_kwargs.update({'codec': 'libx264', 'quality': 8, 'pixelformat': 'yuv420p'})
+
+            with imageio.get_writer(fname, **writer_kwargs) as writer:
+                for i, fpath in enumerate(image_files):
+                    if self.is_cancelled: break
+                    self.progress_updated.emit(i + 1, len(image_files), f"正在编码帧 {i+1}/{len(image_files)}")
+                    img = imageio.imread(fpath)
+                    writer.append_data(img)
+            return
         except ImportError:
             logger.error("视频导出失败：moviepy 和 imageio 均未安装。")
             raise RuntimeError("必要的视频导出库（moviepy 或 imageio）未安装。")
         except Exception as e:
             logger.error(f"使用 imageio 导出也失败了: {e}", exc_info=True)
-            raise e # 将最终错误重新抛出
+            raise e
 
 class VideoExportDialog(QDialog):
     def __init__(self, parent, dm, p_conf, fname, s_f, e_f, fps):

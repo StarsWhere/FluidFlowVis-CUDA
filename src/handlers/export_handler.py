@@ -8,10 +8,11 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from PyQt6.QtWidgets import QMessageBox, QFileDialog
+from PyQt6.QtWidgets import QMessageBox
 
+# **MODIFICATION**: Removed QFileDialog, will be handled by custom dialog
 from src.visualization.video_exporter import VideoExportDialog
-from src.ui.dialogs import BatchExportDialog
+from src.ui.dialogs import BatchExportDialog, ConfigSelectionDialog
 from src.core.workers import BatchExportWorker
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,8 @@ class ExportHandler:
         self.ui.output_dir_line_edit.setText(self.output_dir)
 
     def _change_output_directory(self):
+        # This still uses QFileDialog, which is appropriate here for directory selection.
+        from PyQt6.QtWidgets import QFileDialog
         new_dir = QFileDialog.getExistingDirectory(self.main_window, "选择输出目录", self.output_dir)
         if new_dir and new_dir != self.output_dir:
             self.set_output_dir(new_dir)
@@ -82,41 +85,56 @@ class ExportHandler:
         if self.dm.get_frame_count() == 0:
             QMessageBox.warning(self.main_window, "无数据", "请先加载数据再执行批量导出。"); return
             
-        config_files, _ = QFileDialog.getOpenFileNames(self.main_window, "选择要批量导出的配置文件", self.settings_dir, "JSON files (*.json)")
-        if not config_files: return
+        # --- MODIFICATION: Replace QFileDialog with custom in-app dialog ---
+        dialog = ConfigSelectionDialog(self.settings_dir, self.main_window)
+        # Execute the dialog. If the user clicks "Cancel", .exec() returns False.
+        if not dialog.exec():
+            return
+
+        config_files = dialog.selected_files()
+        # --- End of Modification ---
+
+        if not config_files:
+            QMessageBox.information(self.main_window, "无选择", "您没有选择任何配置文件。")
+            return
 
         self.batch_export_dialog = BatchExportDialog(self.main_window)
         self.batch_export_worker = BatchExportWorker(config_files, self.dm, self.output_dir)
+        
         self.batch_export_worker.progress.connect(self.batch_export_dialog.update_progress)
         self.batch_export_worker.log_message.connect(self.batch_export_dialog.add_log)
-        self.batch_export_worker.finished.connect(self.batch_export_dialog.on_finish)
-        self.batch_export_worker.finished.connect(self._on_batch_export_finished)
+        self.batch_export_worker.summary_ready.connect(self.batch_export_dialog.on_finish)
+        self.batch_export_worker.summary_ready.connect(self._on_batch_export_summary_ready)
+        self.batch_export_worker.finished.connect(self._on_batch_export_thread_finished)
+
         self.batch_export_dialog.show()
         self.batch_export_worker.start()
 
-    def _on_batch_export_finished(self, summary_message: str):
+    def _on_batch_export_summary_ready(self, summary_message: str):
         if self.batch_export_dialog and self.batch_export_dialog.isVisible():
              QMessageBox.information(self.main_window, "批量导出完成", summary_message)
         else:
              self.ui.status_bar.showMessage(summary_message, 10000)
+
+    def _on_batch_export_thread_finished(self):
+        logger.info("BatchExportWorker thread has finished. Cleaning up references.")
         self.batch_export_worker = None
         self.batch_export_dialog = None
     
     def on_main_window_close(self):
-        """在主窗口关闭时由主窗口调用，用于安全地停止工作线程。"""
         if self.batch_export_worker and self.batch_export_worker.isRunning():
             if QMessageBox.question(self.main_window, "确认", "批量导出正在进行，确定退出吗？") == QMessageBox.StandardButton.Yes:
                 self.batch_export_worker.cancel()
-                # 尝试安全地断开信号连接
                 try:
                     self.batch_export_worker.progress.disconnect()
                     self.batch_export_worker.log_message.disconnect()
+                    self.batch_export_worker.summary_ready.disconnect()
                     self.batch_export_worker.finished.disconnect()
-                except TypeError: # 如果信号未连接会引发TypeError
+                except TypeError:
                     pass
-                self.batch_export_worker.wait(30000) # 增加等待时间，例如30秒
+                self.batch_export_worker.wait(30000)
                 self.batch_export_worker.deleteLater()
-                return True # 表示可以关闭
+                return True
             else:
-                return False # 表示取消关闭
-        return True # 表示没有正在运行的worker，可以关闭
+                return False
+        return True

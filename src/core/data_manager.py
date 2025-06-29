@@ -8,6 +8,7 @@ from collections import OrderedDict
 from PyQt6.QtCore import QObject, pyqtSignal
 
 logger = logging.getLogger(__name__)
+PYARROW_AVAILABLE = True
 
 class DataManager(QObject):
     """
@@ -49,13 +50,27 @@ class DataManager(QObject):
         else:
             logger.warning("目录中未找到有效的CSV文件。")
 
+    def _read_csv(self, path: str, use_cols: Optional[List[str]]) -> pd.DataFrame:
+        """Helper function to read CSV with pyarrow fallback."""
+        global PYARROW_AVAILABLE
+        if PYARROW_AVAILABLE:
+            try:
+                return pd.read_csv(path, usecols=use_cols, engine='pyarrow')
+            except Exception as e:
+                # On first failure, log warning and disable for subsequent reads
+                if "pyarrow" in str(e).lower():
+                    logger.warning(f"Pyarrow engine failed ('{e}'). Falling back to default pandas engine for all subsequent reads. For better performance, `pip install pyarrow`.")
+                    PYARROW_AVAILABLE = False
+                return pd.read_csv(path, usecols=use_cols) # Fallback on any error
+        return pd.read_csv(path, usecols=use_cols)
+
     def get_frame_data(self, frame_index: int) -> Optional[pd.DataFrame]:
         if not (0 <= frame_index < len(self.file_index)): return None
         if frame_index in self.cache:
             self.cache.move_to_end(frame_index)
             return self.cache[frame_index]
         try:
-            data = pd.read_csv(self.file_index[frame_index]['path'], usecols=self.variables)
+            data = self._read_csv(self.file_index[frame_index]['path'], use_cols=self.variables)
             self.cache[frame_index] = data
             self._enforce_cache_limit()
             return data
@@ -70,7 +85,9 @@ class DataManager(QObject):
         cols_to_use = use_cols if use_cols is not None else self.variables
         for file_info in self.file_index:
             try:
-                yield pd.read_csv(file_info['path'], usecols=lambda c: c in cols_to_use)
+                # The lambda version of usecols is slower, better to pass the list directly
+                cols_to_yield = lambda c: c in cols_to_use if use_cols is not None else None
+                yield self._read_csv(file_info['path'], use_cols=cols_to_yield)
             except Exception as e:
                 logger.error(f"迭代读取文件 {file_info['path']} 时出错: {e}")
                 continue

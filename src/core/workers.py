@@ -10,7 +10,7 @@ import pandas as pd
 from typing import List, Dict, Any
 from datetime import datetime
 
-from PyQt6.QtCore import QThread, pyqtSignal, QEventLoop
+from PyQt6.QtCore import QThread, pyqtSignal
 
 from src.core.data_manager import DataManager
 from src.core.statistics_calculator import StatisticsCalculator
@@ -43,7 +43,10 @@ class DataScanWorker(QThread):
             
             # 从第一个文件中读取数值列作为基准变量列表
             first_file_path = os.path.join(self.directory, csv_files[0])
-            df_sample = pd.read_csv(first_file_path, nrows=10)
+            try:
+                df_sample = pd.read_csv(first_file_path, nrows=10, engine='pyarrow')
+            except (ImportError, Exception):
+                df_sample = pd.read_csv(first_file_path, nrows=10) # Fallback
             base_variables = {col for col in df_sample.columns if pd.api.types.is_numeric_dtype(df_sample[col])}
 
             if not base_variables:
@@ -64,7 +67,7 @@ class DataScanWorker(QThread):
 class BatchExportWorker(QThread):
     progress = pyqtSignal(int, int, str)
     log_message = pyqtSignal(str)
-    finished = pyqtSignal(str)
+    summary_ready = pyqtSignal(str) 
 
     def __init__(self, config_files: List[str], data_manager: DataManager, output_dir: str, parent=None):
         super().__init__(parent)
@@ -77,13 +80,8 @@ class BatchExportWorker(QThread):
         successful, failed = 0, 0
         total = len(self.config_files)
 
-        current_video_worker = None
-
         for i, filepath in enumerate(self.config_files):
             if self.is_cancelled:
-                if current_video_worker and current_video_worker.isRunning():
-                    current_video_worker.cancel()
-                    current_video_worker.wait()
                 break
             
             filename = os.path.basename(filepath)
@@ -114,32 +112,34 @@ class BatchExportWorker(QThread):
                 out_fname = os.path.join(self.output_dir, f"batch_{config_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
                 self.log_message.emit(f"准备导出视频: {os.path.basename(out_fname)}")
                 
+                # --- MODIFICATION: Replaced QEventLoop with a simple, robust wait() ---
                 current_video_worker = VideoExportWorker(self.data_manager, p_conf, out_fname, s_f, e_f, fps)
-                loop = QEventLoop()
-                export_success, export_message = False, ""
-
-                def on_video_finished(success, msg):
-                    nonlocal export_success, export_message
-                    export_success, export_message = success, msg
-                    loop.quit()
-
-                current_video_worker.export_finished.connect(on_video_finished)
+                
+                # The progress signal from the inner worker can still be connected to update the log
                 current_video_worker.progress_updated.connect(lambda cur, tot, msg: self.log_message.emit(f"  └ {msg}"))
-                current_video_worker.start(); loop.exec(); current_video_worker.deleteLater()
 
-                if export_success: self.log_message.emit(f"成功: {filename}"); successful += 1
-                else: self.log_message.emit(f"失败: {filename}. 原因: {export_message}"); failed += 1
+                current_video_worker.start()
+                current_video_worker.wait() # This blocks BatchExportWorker's thread, which is safe and intended.
+
+                # Now, get the result directly from the worker's attributes
+                export_success = current_video_worker.success
+                export_message = current_video_worker.message
+                
+                current_video_worker.deleteLater() # Schedule for cleanup
+                # --- End of Modification ---
+
+                if export_success: 
+                    self.log_message.emit(f"成功: {filename}")
+                    successful += 1
+                else: 
+                    self.log_message.emit(f"失败: {filename}. 原因: {export_message}")
+                    failed += 1
 
             except Exception as e:
-                self.log_message.emit(f"处理 '{filename}' 时发生严重错误: {e}"); failed += 1
+                self.log_message.emit(f"处理 '{filename}' 时发生严重错误: {e}")
+                failed += 1
         
-        if current_video_worker and current_video_worker.isRunning():
-            logger.warning("BatchExportWorker 结束时发现 video_worker 仍在运行，尝试取消并等待。")
-            current_video_worker.cancel()
-            current_video_worker.wait(30000)
-            current_video_worker.deleteLater()
-
-        self.finished.emit(f"成功导出 {successful} 个视频，失败 {failed} 个。")
+        self.summary_ready.emit(f"成功导出 {successful} 个视频，失败 {failed} 个。")
 
     def cancel(self): self.is_cancelled = True
 
@@ -179,7 +179,8 @@ class CustomGlobalStatsWorker(QThread):
 
     def run(self):
         try:
-            base_stats = self.data_manager.global_stats
+            # Create a copy to avoid modifying the original during calculation
+            base_stats = self.data_manager.global_stats.copy()
             if not base_stats:
                 raise RuntimeError("计算自定义常量前，必须先计算基础统计数据。")
             
@@ -189,7 +190,11 @@ class CustomGlobalStatsWorker(QThread):
             
             new_stats = calculated_data.get("stats", {})
             new_formulas = calculated_data.get("formulas", {})
+            
+            # Update the central formula store in the data manager
             self.data_manager.custom_global_formulas.update(new_formulas)
+            
+            # Emit only the newly calculated stats
             self.finished.emit(new_stats)
         except Exception as e:
             logger.error(f"自定义全局常量计算失败: {e}", exc_info=True)

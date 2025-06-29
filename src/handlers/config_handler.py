@@ -206,11 +206,14 @@ class ConfigHandler:
 
     def get_current_config(self) -> Dict[str, Any]:
         """从UI控件收集当前配置，并将其序列化为字典，同时清理文本输入。"""
-        vector_type_str = self.ui.vector_plot_type.currentData(Qt.ItemDataRole.UserRole).name
-        stream_color_str = self.ui.stream_color_combo.currentData(Qt.ItemDataRole.UserRole).value
+        vector_type_enum = self.ui.vector_plot_type.currentData(Qt.ItemDataRole.UserRole)
+        vector_type_str = vector_type_enum.name if vector_type_enum else VectorPlotType.STREAMLINE.name
+
+        stream_color_enum = self.ui.stream_color_combo.currentData(Qt.ItemDataRole.UserRole)
+        stream_color_str = stream_color_enum.value if stream_color_enum else StreamlineColor.MAGNITUDE.value
 
         return {
-            "version": "1.7.3",
+            "version": "1.8.0",
             "axes": {
                 "title": self.ui.chart_title_edit.text().strip(),
                 "x_formula": self.ui.x_axis_formula.text().strip() or "x",
@@ -250,11 +253,13 @@ class ConfigHandler:
             self.ui.heatmap_enabled.setChecked(heatmap.get("enabled", False)); self.ui.heatmap_formula.setText(heatmap.get("formula", "")); self.ui.heatmap_colormap.setCurrentText(heatmap.get("colormap", "viridis")); self.ui.heatmap_vmin.setText(str(heatmap.get("vmin") or "")); self.ui.heatmap_vmax.setText(str(heatmap.get("vmax") or ""))
             self.ui.contour_enabled.setChecked(contour.get("enabled", False)); self.ui.contour_formula.setText(contour.get("formula", "")); self.ui.contour_levels.setValue(contour.get("levels", 10)); self.ui.contour_colors.setCurrentText(contour.get("colors", "black")); self.ui.contour_linewidth.setValue(contour.get("linewidths", 1.0)); self.ui.contour_labels.setChecked(contour.get("show_labels", True))
             
-            vector_type = VectorPlotType[vector.get("type", "STREAMLINE")]
+            vector_type_str = vector.get("type", "STREAMLINE")
+            vector_type = VectorPlotType[vector_type_str] if vector_type_str in VectorPlotType.__members__ else VectorPlotType.STREAMLINE
             self.ui.vector_plot_type.setCurrentIndex(self.ui.vector_plot_type.findData(vector_type))
             
             s_opts = vector.get('streamline_options', {})
-            stream_color = StreamlineColor.from_str(s_opts.get("color_by", StreamlineColor.MAGNITUDE.value))
+            stream_color_val = s_opts.get("color_by", StreamlineColor.MAGNITUDE.value)
+            stream_color = StreamlineColor.from_str(stream_color_val)
             self.ui.stream_color_combo.setCurrentIndex(self.ui.stream_color_combo.findData(stream_color))
             
             q_opts = vector.get('quiver_options', {})

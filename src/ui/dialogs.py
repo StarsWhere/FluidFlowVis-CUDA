@@ -3,13 +3,63 @@
 """
 自定义对话框模块
 """
+import os
+from typing import List
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, 
-    QPushButton, QTextEdit
+    QPushButton, QTextEdit, QListWidget, QDialogButtonBox
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
+
+
+class ConfigSelectionDialog(QDialog):
+    """一个自定义对话框，用于从特定目录选择一个或多个配置文件。"""
+    def __init__(self, settings_dir: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("选择批量导出配置")
+        self.setMinimumSize(450, 350)
+        self.settings_dir = settings_dir
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("请选择要用于批量导出的一个或多个配置文件:"))
+
+        self.list_widget = QListWidget()
+        # 允许多选，支持Ctrl和Shift键
+        self.list_widget.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        layout.addWidget(self.list_widget)
+
+        self._populate_files()
+
+        # 使用标准的OK/Cancel按钮框
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def _populate_files(self):
+        """填充设置目录中的json文件列表。"""
+        try:
+            if not os.path.isdir(self.settings_dir):
+                self.list_widget.addItem("错误: 找不到设置目录！")
+                self.list_widget.setEnabled(False)
+                return
+            
+            config_files = sorted([f for f in os.listdir(self.settings_dir) if f.endswith('.json')])
+            if not config_files:
+                self.list_widget.addItem("未找到任何配置文件 (.json)。")
+                self.list_widget.setEnabled(False)
+            else:
+                self.list_widget.addItems(config_files)
+        except Exception as e:
+            self.list_widget.addItem(f"读取文件时出错: {e}")
+            self.list_widget.setEnabled(False)
+
+    def selected_files(self) -> List[str]:
+        """返回所选文件的完整路径列表。"""
+        selected_items = self.list_widget.selectedItems()
+        return [os.path.join(self.settings_dir, item.text()) for item in selected_items]
 
 
 class BatchExportDialog(QDialog):

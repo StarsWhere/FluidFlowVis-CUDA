@@ -120,6 +120,17 @@ class MainWindow(QMainWindow):
         self.stats_handler.connect_signals()
         self.export_handler.connect_signals()
         self.playback_handler.connect_signals()
+        
+        formula_widgets = [
+            self.ui.chart_title_edit, self.ui.x_axis_formula, self.ui.y_axis_formula, 
+            self.ui.heatmap_formula, self.ui.heatmap_vmin, self.ui.heatmap_vmax, 
+            self.ui.contour_formula, self.ui.vector_u_formula, self.ui.vector_v_formula
+        ]
+        for widget in formula_widgets:
+            if isinstance(widget, QLineEdit):
+                # Reset style on edit, and trigger redraw on finish
+                widget.textChanged.connect(lambda text, w=widget: self._reset_formula_widget_style(w))
+                widget.editingFinished.connect(self._trigger_auto_apply)
 
         widgets_to_connect_for_redraw = [
             self.ui.heatmap_enabled, self.ui.heatmap_colormap, self.ui.contour_labels,
@@ -127,15 +138,15 @@ class MainWindow(QMainWindow):
             self.ui.vector_enabled, self.ui.vector_plot_type, self.ui.quiver_density_spinbox,
             self.ui.quiver_scale_spinbox, self.ui.stream_density_spinbox,
             self.ui.stream_linewidth_spinbox, self.ui.stream_color_combo,
-            self.ui.chart_title_edit, self.ui.x_axis_formula, self.ui.y_axis_formula, 
-            self.ui.heatmap_formula, self.ui.heatmap_vmin, self.ui.heatmap_vmax, 
-            self.ui.contour_formula, self.ui.vector_u_formula, self.ui.vector_v_formula
         ]
         for widget in widgets_to_connect_for_redraw:
             if hasattr(widget, 'toggled'): widget.toggled.connect(self._trigger_auto_apply)
             elif hasattr(widget, 'currentIndexChanged'): widget.currentIndexChanged.connect(self._trigger_auto_apply)
             elif hasattr(widget, 'valueChanged'): widget.valueChanged.connect(self._trigger_auto_apply)
-            elif hasattr(widget, 'editingFinished'): widget.editingFinished.connect(self._trigger_auto_apply)
+    
+    def _reset_formula_widget_style(self, widget: QLineEdit):
+        """Resets the style sheet of a widget, removing any error indicators."""
+        widget.setStyleSheet("")
 
     def _trigger_auto_apply(self, *args):
         if self.config_handler._is_loading_config: return
@@ -278,9 +289,12 @@ class MainWindow(QMainWindow):
                     is_enabled = group_box.isChecked()
 
             if is_enabled and formula and not self.formula_engine.validate(formula):
-                widget.clear() # 清除错误内容
-                QMessageBox.warning(self, "公式错误", f"{name}公式无效: '{formula}'\n\n该公式已被清除，请重新输入。")
+                # UX Improvement: Highlight instead of clearing
+                widget.setStyleSheet("border: 1px solid red;")
+                QMessageBox.warning(self, "公式错误", f"{name}公式无效: '{formula}'\n\n请修正高亮的输入框。")
                 return False
+            
+            widget.setStyleSheet("") # Clear error style if valid
             return True
 
         # 按顺序验证所有公式
@@ -317,19 +331,23 @@ class MainWindow(QMainWindow):
                 science_constants=self.formula_engine.science_constants
             )
             title = "公式语法说明"
-        HelpDialog(html_content, self, window_title=title).exec()
+        # HelpDialog's constructor was modified in the prompt, let's assume it takes a window title
+        dialog = HelpDialog(html_content, self)
+        dialog.setWindowTitle(title)
+        dialog.exec()
         
     def _show_about(self): 
         QMessageBox.about(self, "关于 InterVis", 
-                          "<h2>InterVis v1.7.3 (UX Refined)</h2>"
+                          "<h2>InterVis v1.8 (Optimized)</h2>"
                           "<p>作者: StarsWhere</p>"
                           "<p>一个使用PyQt6和Matplotlib构建的交互式数据可视化工具。</p>"
-                          "<p><b>v1.7.3 优化更新:</b></p>"
+                          "<p><b>v1.8 优化更新:</b></p>"
                           "<ul>"
-                          "<li><b>UI/UX:</b> 简化'另存为'操作，优化变量插入和错误反馈逻辑。</li>"
-                          "<li><b>鲁棒导出:</b> 视频导出功能现在会自动在 moviepy 和 imageio 之间降级。</li>"
-                          "<li><b>性能:</b> 实现绘图增量更新与UI防抖，交互更流畅。</li>"
-                          "<li><b>体验:</b> 异步加载数据，避免启动卡顿。</li>"
+                          "<li><b>核心性能:</b> 自定义全局统计计算采用单遍算法，速度提升一个数量级。</li>"
+                          "<li><b>内存优化:</b> 视频导出采用临时文件流，极大降低了内存消耗。</li>"
+                          "<li><b>用户体验:</b> 公式验证失败时不再清空输入，而是高亮显示，保留用户输入。</li>"
+                          "<li><b>数据IO:</b> 默认尝试使用更快的`pyarrow`引擎读取CSV，提升加载速度。</li>"
+                          "<li><b>数值精度:</b> 基础统计采用更稳健的Welford算法计算方差/标准差。</li>"
                           "</ul>")
     
     def _reload_data(self):
