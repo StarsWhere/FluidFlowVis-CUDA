@@ -239,7 +239,7 @@ The project structure has been refactored for better modularity and maintainabil
 *   [x] ~~**矢量图与流线图 (Vector & Streamline Plots):**~~ **(v1.5 已实现)**
 *   [ ] **3D 可视化支持 (3D Visualization Support):** 增加对 3D 数据切片或体渲染的支持。
 *   [ ] **更丰富的分析功能 (More Analysis Functions):** 集成如傅里叶变换 (FFT) 等更高级的数据分析工具。
-*   [ ] **UI/UX 改进 (UI/UX Improvements):** 持续优化用户界面和交互体验。
+*   [x] ~~**UI/UX 改进 (UI/UX Improvements):**~~ 持续优化用户界面和交互体验。**(v1.6 已实现)**
 
 ## 贡献 (Contributing)
 欢迎各种形式的贡献！如果您有任何建议、发现任何错误或想要添加新功能，请随时提交 Pull Request 或创建 Issue。
