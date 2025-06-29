@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import logging
 import traceback
+import sys
 from typing import Optional, Dict, Any
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -11,11 +12,14 @@ from matplotlib.figure import Figure
 import matplotlib.ticker as ticker
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
+from scipy.interpolate import interpn
+
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
 from PyQt6.QtCore import pyqtSignal, QObject, QRunnable, QThreadPool, Qt
 from PyQt6.QtGui import QCursor
 
 from src.core.rendering_core import prepare_gridded_data
+from src.core.constants import VectorPlotType, StreamlineColor, PickerMode
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +38,6 @@ class InterpolationWorker(QRunnable):
         
     def run(self):
         try:
-            # 直接调用核心渲染函数
             result = prepare_gridded_data(self.data, self.config, self.formula_engine)
             self.signals.result.emit(result)
         except Exception as e:
@@ -48,7 +51,7 @@ class PlotWidget(QWidget):
     mouse_moved = pyqtSignal(float, float)
     probe_data_ready = pyqtSignal(dict)
     plot_rendered = pyqtSignal()
-    value_picked = pyqtSignal(str, float)
+    value_picked = pyqtSignal(PickerMode, float)
     interpolation_error = pyqtSignal(str)
 
     def __init__(self, formula_engine, parent=None):
@@ -62,7 +65,6 @@ class PlotWidget(QWidget):
         self.current_data: Optional[pd.DataFrame] = None
         self.interpolated_results: Dict[str, Any] = {}
         
-        # 可视化配置
         self.x_axis_formula, self.y_axis_formula = 'x', 'y'
         self.chart_title = ""
         self.use_gpu = False
@@ -71,11 +73,9 @@ class PlotWidget(QWidget):
         self.vector_config = {'enabled': False}
         self.grid_resolution = (150, 150)
         
-        # 绘图对象
-        self.heatmap_obj = self.contour_obj = self.colorbar_obj = None
+        self.heatmap_obj = self.contour_obj = self.colorbar_obj = self.vector_quiver_obj = self.vector_stream_obj = None
         
-        # 状态
-        self.is_dragging = False; self.drag_start_pos = None; self.picker_mode: Optional[str] = None
+        self.is_dragging = False; self.drag_start_pos = None; self.picker_mode: Optional[PickerMode] = None
         self.last_mouse_coords: Optional[tuple[float, float]] = None
         self.thread_pool = QThreadPool(); self.is_busy_interpolating = False
         
@@ -88,41 +88,46 @@ class PlotWidget(QWidget):
         self.canvas.mpl_connect('button_press_event', self._on_button_press)
         self.canvas.mpl_connect('button_release_event', self._on_button_release)
 
+    def _get_platform_font(self) -> str:
+        if sys.platform == "win32":
+            return "Microsoft YaHei"
+        elif sys.platform == "darwin": # macOS
+            return "PingFang SC"
+        # Linux: 查找存在的字体
+        font_options = ["WenQuanYi Zen Hei", "Noto Sans CJK SC", "Source Han Sans SC"]
+        for font in font_options:
+            if fm.findfont(font, fallback_to_default=False):
+                return font
+        return "sans-serif" # Fallback
+
     def _setup_plot_style(self):
-        # 设置字体以支持中文
-        # 设置字体以支持中文，优先使用微软雅黑，其次是黑体
-        font_paths = fm.findfont('Microsoft YaHei', fontext='ttf')
-        if not font_paths:
-            font_paths = fm.findfont('SimHei', fontext='ttf')
+        font_name = self._get_platform_font()
+        plt.rcParams['font.sans-serif'] = [font_name]
+        plt.rcParams['axes.unicode_minus'] = False
+        logger.info(f"使用字体: {font_name}")
+        self.ax.grid(True, linestyle='--', alpha=0.5)
 
-        if font_paths:
-            plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei']  # 设置中文显示
-            plt.rcParams['axes.unicode_minus'] = False  # 解决负号'-'显示为方块的问题
-            logger.debug(f"使用字体: {plt.rcParams['font.sans-serif']}")
-        else:
-            logger.warning("未找到'Microsoft YaHei'或'SimHei'字体，中文可能无法正常显示。请确保系统安装了这些字体。")
-
-        self.ax.set_aspect('auto', adjustable='box'); self.ax.grid(True, linestyle='--', alpha=0.5)
+    def _update_plot_decorations(self):
+        """仅更新坐标轴标签、标题等，不重绘数据。"""
         self.ax.set_xlabel(self.x_axis_formula)
         self.ax.set_ylabel(self.y_axis_formula)
         
         final_title = self.chart_title
-        if not final_title: # 自动生成标题
+        if not final_title:
             parts = []
             if self.heatmap_config.get('enabled') and self.heatmap_config.get('formula'): parts.append(f"Heatmap of '{self.heatmap_config['formula']}'")
             if self.contour_config.get('enabled') and self.contour_config.get('formula'): parts.append(f"Contours of '{self.contour_config['formula']}'")
             if self.vector_config.get('enabled'): parts.append(f"{self.vector_config.get('type', 'Vector')} Plot")
             final_title = " and ".join(parts) if parts else "InterVis Plot"
         self.ax.set_title(final_title)
-
+        
         formatter = ticker.ScalarFormatter(useMathText=True); formatter.set_scientific(True); formatter.set_powerlimits((-3, 3))
         self.ax.xaxis.set_major_formatter(formatter); self.ax.yaxis.set_major_formatter(formatter)
-    
+
     def update_data(self, data: pd.DataFrame):
         if self.is_busy_interpolating: return
         self.current_data = data.copy(); self.is_busy_interpolating = True
         
-        # 构建传递给工作线程的配置
         worker_config = {
             'x_axis_formula': self.x_axis_formula, 'y_axis_formula': self.y_axis_formula,
             'heatmap_config': self.heatmap_config, 'contour_config': self.contour_config,
@@ -142,38 +147,42 @@ class PlotWidget(QWidget):
         self.interpolation_error.emit(error_message)
 
     def _on_interpolation_result(self, result: dict):
-        self.interpolated_results = result; self.redraw(); self.plot_rendered.emit()
+        is_initial_plot = not self.interpolated_results
+        self.interpolated_results = result
+        self.redraw(is_initial_plot)
+        self.plot_rendered.emit()
         if self.last_mouse_coords:
             self.get_probe_data_at_coords(self.last_mouse_coords[0], self.last_mouse_coords[1])
 
     def set_config(self, **kwargs):
-        self.x_axis_formula = kwargs.get('x_axis_formula', self.x_axis_formula)
-        self.y_axis_formula = kwargs.get('y_axis_formula', self.y_axis_formula)
-        self.chart_title = kwargs.get('chart_title', self.chart_title)
-        self.use_gpu = kwargs.get('use_gpu', self.use_gpu)
-        if 'heatmap_config' in kwargs: self.heatmap_config = kwargs['heatmap_config']
-        if 'contour_config' in kwargs: self.contour_config = kwargs['contour_config']
-        if 'vector_config' in kwargs: self.vector_config = kwargs['vector_config']
+        config_changed = False
+        for key, value in kwargs.items():
+            if getattr(self, key, None) != value:
+                setattr(self, key, value)
+                config_changed = True
+        return config_changed
 
-    def redraw(self):
-        if not self.ax: return
-        xlim, ylim = self.ax.get_xlim(), self.ax.get_ylim()
-        is_initial = (xlim == (0.0, 1.0) and ylim == (0.0, 1.0))
+    def redraw(self, is_initial: bool = False):
+        if not self.interpolated_results: return
         
-        self.figure.clear(); self.ax = self.figure.add_subplot(111); self._setup_plot_style()
-        self.colorbar_obj = None # 重置色条
-
-        if self.heatmap_config.get('enabled'): self._draw_heatmap()
-        if self.contour_config.get('enabled'): self._draw_contour()
-        if self.vector_config.get('enabled'): self._draw_vector_plot()
+        self._update_plot_decorations()
         
-        if not is_initial: self.ax.set_xlim(xlim); self.ax.set_ylim(ylim)
-        else: self.reset_view()
+        self._draw_heatmap()
+        self._draw_contour()
+        self._draw_vector_plot()
+        
+        if is_initial: self.reset_view()
             
-        self.canvas.draw()
+        self.canvas.draw_idle()
     
     def _draw_heatmap(self):
         data, gx, gy = self.interpolated_results.get('heatmap_data'), self.interpolated_results.get('grid_x'), self.interpolated_results.get('grid_y')
+        
+        if not self.heatmap_config.get('enabled'):
+            if self.heatmap_obj: self.heatmap_obj.remove(); self.heatmap_obj = None
+            if self.colorbar_obj: self.colorbar_obj.remove(); self.colorbar_obj = None
+            return
+
         if data is None or gx is None: return
         vmin_str, vmax_str = self.heatmap_config.get('vmin'), self.heatmap_config.get('vmax')
         vmin = float(vmin_str) if vmin_str is not None and str(vmin_str).strip() != '' else None
@@ -183,18 +192,39 @@ class PlotWidget(QWidget):
             if vmin is None: vmin = np.min(valid)
             if vmax is None: vmax = np.max(valid)
 
-        self.heatmap_obj = self.ax.pcolormesh(gx, gy, data, cmap=self.heatmap_config.get('colormap', 'viridis'), vmin=vmin, vmax=vmax, shading='gouraud')
-        self.colorbar_obj = self.figure.colorbar(self.heatmap_obj, ax=self.ax, format=ticker.ScalarFormatter(useMathText=True))
+        if self.heatmap_obj:
+            self.heatmap_obj.set_array(data)
+            self.heatmap_obj.set_cmap(self.heatmap_config.get('colormap', 'viridis'))
+            self.heatmap_obj.set_clim(vmin, vmax)
+        else:
+            self.heatmap_obj = self.ax.pcolormesh(gx, gy, data, cmap=self.heatmap_config.get('colormap', 'viridis'), vmin=vmin, vmax=vmax, shading='gouraud')
+        
+        if not self.colorbar_obj:
+            self.colorbar_obj = self.figure.colorbar(self.heatmap_obj, ax=self.ax, format=ticker.ScalarFormatter(useMathText=True))
         self.colorbar_obj.set_label(self.heatmap_config.get('formula', ''))
+        self.colorbar_obj.update_normal(self.heatmap_obj)
 
     def _draw_contour(self):
+        if self.contour_obj:
+            for coll in self.contour_obj.collections: coll.remove()
+            self.contour_obj = None
+
+        if not self.contour_config.get('enabled'): return
+        
         data, gx, gy = self.interpolated_results.get('contour_data'), self.interpolated_results.get('grid_x'), self.interpolated_results.get('grid_y')
         if data is None or gx is None or np.all(np.isnan(data)): return
+
         self.contour_obj = self.ax.contour(gx, gy, data, levels=self.contour_config.get('levels', 10), colors=self.contour_config.get('colors', 'black'), linewidths=self.contour_config.get('linewidths', 1.0))
         if self.contour_config.get('show_labels'): self.ax.clabel(self.contour_obj, inline=True, fontsize=8, fmt='%.2e')
 
     def _draw_vector_plot(self):
-        if self.vector_config.get('type', 'Quiver') == 'Quiver': self._draw_quiver()
+        if self.vector_quiver_obj: self.vector_quiver_obj.remove(); self.vector_quiver_obj = None
+        if self.vector_stream_obj: self.vector_stream_obj.lines.remove(); self.vector_stream_obj = None
+        
+        if not self.vector_config.get('enabled'): return
+            
+        plot_type = VectorPlotType.from_str(self.vector_config.get('type'))
+        if plot_type == VectorPlotType.QUIVER: self._draw_quiver()
         else: self._draw_streamlines()
 
     def _draw_quiver(self):
@@ -202,21 +232,25 @@ class PlotWidget(QWidget):
         if u is None or v is None or gx is None: return
         opts = self.vector_config.get('quiver_options', {}); density = opts.get('density', 10); scale = opts.get('scale', 1.0)
         sl = slice(None, None, density)
-        self.ax.quiver(gx[sl, sl], gy[sl, sl], u[sl, sl], v[sl, sl], scale=scale, scale_units='xy', angles='xy')
+        self.vector_quiver_obj = self.ax.quiver(gx[sl, sl], gy[sl, sl], u[sl, sl], v[sl, sl], scale=scale, scale_units='xy', angles='xy')
 
     def _draw_streamlines(self):
         u, v, gx, gy = (self.interpolated_results.get(k) for k in ['vector_u_data', 'vector_v_data', 'grid_x', 'grid_y'])
         if u is None or v is None or gx is None: return
-        opts = self.vector_config.get('streamline_options', {}); density = opts.get('density', 1.5); lw = opts.get('linewidth', 1.0); color_by = opts.get('color_by', '速度大小')
+        opts = self.vector_config.get('streamline_options', {}); density = opts.get('density', 1.5); lw = opts.get('linewidth', 1.0)
+        color_by = StreamlineColor.from_str(opts.get('color_by'))
         
         color_data = 'black'
-        if color_by == '速度大小': color_data = np.sqrt(u**2 + v**2)
-        elif color_by == 'U分量': color_data = u
-        elif color_by == 'V分量': color_data = v
+        if color_by == StreamlineColor.MAGNITUDE: color_data = np.sqrt(u**2 + v**2)
+        elif color_by == StreamlineColor.U_COMPONENT: color_data = u
+        elif color_by == StreamlineColor.V_COMPONENT: color_data = v
         
-        stream_plot = self.ax.streamplot(gx, gy, u, v, density=density, linewidth=lw, color=color_data, cmap='viridis' if isinstance(color_data, np.ndarray) else None)
+        self.vector_stream_obj = self.ax.streamplot(gx, gy, u, v, density=density, linewidth=lw, color=color_data, cmap='viridis' if isinstance(color_data, np.ndarray) else None)
         if isinstance(color_data, np.ndarray) and not self.colorbar_obj:
-            self.figure.colorbar(stream_plot.lines, ax=self.ax).set_label(f"流线 ({color_by})")
+            cbar = self.figure.colorbar(self.vector_stream_obj.lines, ax=self.ax)
+            cbar.set_label(f"流线 ({color_by.value})")
+            # This colorbar is temporary and not stored, which is a simplification.
+            # A more robust solution would manage multiple colorbars.
 
     def _on_mouse_move(self, event):
         if event.inaxes != self.ax or event.xdata is None: return
@@ -231,45 +265,54 @@ class PlotWidget(QWidget):
     
     def get_probe_data_at_coords(self, x: float, y: float):
         if self.current_data is None: return
-        processed_data = self.current_data.copy()
+        
+        results = {'x': x, 'y': y, 'variables': {}, 'interpolated': {}, 'evaluated_formulas': {}}
+        
+        # 1. 最近的原始数据点
         try:
-            x_probe_values = self.formula_engine.evaluate_formula(processed_data, self.x_axis_formula)
-            y_probe_values = self.formula_engine.evaluate_formula(processed_data, self.y_axis_formula)
+            x_probe_values = self.formula_engine.evaluate_formula(self.current_data, self.x_axis_formula)
+            y_probe_values = self.formula_engine.evaluate_formula(self.current_data, self.y_axis_formula)
             dist_sq = (x_probe_values - x)**2 + (y_probe_values - y)**2
             idx = dist_sq.idxmin()
-            original_x, original_y = self.current_data.get('x', [0])[idx], self.current_data.get('y', [0])[idx]
-            
-            # 获取并评估所有相关的公式
-            evaluated_formulas = {}
-            formulas_to_evaluate = {
-                self.x_axis_formula: self.x_axis_formula,
-                self.y_axis_formula: self.y_axis_formula,
-                self.heatmap_config.get('formula'): self.heatmap_config.get('formula'),
-                self.contour_config.get('formula'): self.contour_config.get('formula'),
-                self.vector_config.get('u_formula'): self.vector_config.get('u_formula'),
-                self.vector_config.get('v_formula'): self.vector_config.get('v_formula'),
-            }
-
-            for name, formula in formulas_to_evaluate.items():
-                if formula and formula.strip():
-                    try:
-                        # 确保只评估当前探测点的数据
-                        # 对于 evaluate_formula，我们传递整个 DataFrame，但结果是 Series，需要取特定索引的值
-                        evaluated_value = self.formula_engine.evaluate_formula(processed_data.loc[[idx]], formula).iloc[0]
-                        evaluated_formulas[name] = evaluated_value
-                    except Exception as e:
-                        evaluated_formulas[name] = f"评估失败: {e}"
-
-            self.probe_data_ready.emit({
-                'x': x,
-                'y': y,
-                'nearest_point': {'x': original_x, 'y': original_y},
-                'variables': self.current_data.loc[idx].to_dict(),
-                'evaluated_formulas': evaluated_formulas
-            })
+            results['variables'] = self.current_data.loc[idx].to_dict()
         except Exception as e:
-            logger.error(f"获取探测数据时出错: {e}")
-            return
+            logger.debug(f"获取原始探针数据时出错: {e}")
+
+        # 2. 鼠标位置的插值数据
+        try:
+            gx, gy = self.interpolated_results.get('grid_x'), self.interpolated_results.get('grid_y')
+            if gx is not None and gy is not None:
+                point = (y, x) # interpn expects (dim1, dim2, ...) which is (y, x) for us
+                grid_coords = (gy[:, 0], gx[0, :])
+                for key, data in self.interpolated_results.items():
+                    if 'data' in key and data is not None:
+                        val = interpn(grid_coords, data, point, method='linear', bounds_error=False, fill_value=np.nan)[0]
+                        results['interpolated'][key.replace('_data', '')] = val
+        except Exception as e:
+            logger.debug(f"获取插值探针数据时出错: {e}")
+
+        # 3. 评估公式 (在最近点上)
+        try:
+            formulas_to_evaluate = {
+                f"X轴 ({self.x_axis_formula})": self.x_axis_formula,
+                f"Y轴 ({self.y_axis_formula})": self.y_axis_formula,
+                f"热力图 ({self.heatmap_config.get('formula')})": self.heatmap_config.get('formula'),
+                f"等高线 ({self.contour_config.get('formula')})": self.contour_config.get('formula'),
+                f"矢量U ({self.vector_config.get('u_formula')})": self.vector_config.get('u_formula'),
+                f"矢量V ({self.vector_config.get('v_formula')})": self.vector_config.get('v_formula'),
+            }
+            if idx is not None:
+                for name, formula in formulas_to_evaluate.items():
+                    if formula and formula.strip():
+                        try:
+                            val = self.formula_engine.evaluate_formula(self.current_data.loc[[idx]], formula).iloc[0]
+                            results['evaluated_formulas'][name] = val
+                        except Exception:
+                            results['evaluated_formulas'][name] = "评估失败"
+        except Exception as e:
+            logger.debug(f"评估探针公式时出错: {e}")
+
+        self.probe_data_ready.emit(results)
 
     def _on_scroll(self, event):
         if event.inaxes != self.ax: return
@@ -290,21 +333,29 @@ class PlotWidget(QWidget):
         elif event.button == 3: self.reset_view()
 
     def _handle_picker_click(self, event):
-        data, gx, gy = (self.interpolated_results.get(k) for k in ['heatmap_data', 'grid_x', 'grid_y'])
-        if data is not None and gx is not None:
-            try:
-                from scipy.interpolate import interpn
-                val = interpn((gy[:, 0], gx[0, :]), data, (event.ydata, event.xdata), method='linear', bounds_error=False, fill_value=np.nan)
-                if not np.isnan(val): self.value_picked.emit(self.picker_mode, float(val))
-            except Exception as e: logger.warning(f"拾取数值失败: {e}")
+        data = self.interpolated_results.get('heatmap_data')
+        if data is not None:
+            val = self._get_interpolated_value_at_coord('heatmap_data', event.xdata, event.ydata)
+            if val is not None and not np.isnan(val): 
+                self.value_picked.emit(self.picker_mode, float(val))
         self.set_picker_mode(None)
+    
+    def _get_interpolated_value_at_coord(self, data_key: str, x: float, y: float) -> Optional[float]:
+        data, gx, gy = (self.interpolated_results.get(k) for k in [data_key, 'grid_x', 'grid_y'])
+        if data is None or gx is None: return None
+        try:
+            val = interpn((gy[:, 0], gx[0, :]), data, (y, x), method='linear', bounds_error=False, fill_value=np.nan)[0]
+            return val
+        except Exception as e:
+            logger.warning(f"拾取/插值数值失败: {e}")
+            return None
 
     def _on_button_release(self, event):
         if event.button == 1 and self.is_dragging: 
             self.is_dragging, self.drag_start_pos = False, None
             self.canvas.setCursor(Qt.CursorShape.ArrowCursor)
 
-    def set_picker_mode(self, mode: Optional[str]):
+    def set_picker_mode(self, mode: Optional[PickerMode]):
         self.picker_mode = mode
         self.canvas.setCursor(QCursor(Qt.CursorShape.CrossCursor) if mode else Qt.CursorShape.ArrowCursor)
         
@@ -315,7 +366,11 @@ class PlotWidget(QWidget):
     def reset_view(self):
         if self.interpolated_results and 'grid_x' in self.interpolated_results and self.interpolated_results['grid_x'] is not None:
             gx, gy = self.interpolated_results['grid_x'], self.interpolated_results['grid_y']
+            if np.all(np.isnan(gx)) or np.all(np.isnan(gy)): return
             x_min, x_max, y_min, y_max = np.nanmin(gx), np.nanmax(gx), np.nanmin(gy), np.nanmax(gy)
+            if np.isnan(x_min) or np.isnan(x_max) or np.isnan(y_min) or np.isnan(y_max): return
+            
             xr = x_max - x_min or 1; yr = y_max - y_min or 1; m = 0.05
             self.ax.set_xlim(x_min - m * xr, x_max + m * xr); self.ax.set_ylim(y_min - m * yr, y_max + m * yr)
+            self.ax.set_aspect('auto', adjustable='box')
             self.canvas.draw_idle()

@@ -6,16 +6,41 @@
 import numpy as np
 import pandas as pd
 import logging
+import sys
 from typing import Dict, Any, List
 
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 import matplotlib.ticker as ticker
+import matplotlib.font_manager as fm
+import matplotlib.pyplot as plt
 
 from src.core.rendering_core import prepare_gridded_data
 from src.core.formula_engine import FormulaEngine
+from src.core.constants import VectorPlotType, StreamlineColor
 
 logger = logging.getLogger(__name__)
+
+def _setup_headless_fonts():
+    """为无头渲染器配置跨平台字体。"""
+    font_name = None
+    if sys.platform == "win32":
+        font_name = "Microsoft YaHei"
+    elif sys.platform == "darwin": # macOS
+        font_name = "PingFang SC"
+    else: # Linux
+        font_name = "WenQuanYi Zen Hei"
+    
+    prop = fm.FontProperties(family=font_name)
+    if fm.findfont(prop, fallback_to_default=False):
+        plt.rcParams['font.sans-serif'] = [font_name]
+    else:
+        # 如果找不到特定字体，尝试一个通用列表
+        fallback_fonts = ['SimHei', 'Heiti TC', 'sans-serif']
+        plt.rcParams['font.sans-serif'] = fallback_fonts
+        logger.warning(f"无法找到 '{font_name}' 字体，将回退到 {fallback_fonts}。中文显示可能不正常。")
+    
+    plt.rcParams['axes.unicode_minus'] = False
 
 class HeadlessPlotter:
     """
@@ -26,18 +51,16 @@ class HeadlessPlotter:
         self.config = plot_config
         self.formula_engine = FormulaEngine()
         self.grid_resolution = self.config.get('grid_resolution', (150, 150))
-        # 将全局作用域更新到公式引擎中
         self.formula_engine.update_custom_global_variables(self.config.get('global_scope', {}))
+        _setup_headless_fonts()
 
     def render_frame(self, data: pd.DataFrame, all_vars: List[str]) -> np.ndarray:
         """
         接收单帧数据和配置，返回一个代表渲染图像的NumPy数组。
         """
-        # --- 1. 数据准备与插值 (调用核心模块) ---
         self.formula_engine.update_allowed_variables(all_vars)
 
         try:
-            # 构建传递给核心渲染模块的配置
             render_config = {
                 'x_axis_formula': self.config.get('x_axis_formula') or 'x',
                 'y_axis_formula': self.config.get('y_axis_formula') or 'y',
@@ -50,9 +73,8 @@ class HeadlessPlotter:
             interpolated_results = prepare_gridded_data(data, render_config, self.formula_engine)
         except Exception as e:
             logger.error(f"无头渲染器数据准备失败: {e}")
-            raise # 重新引发异常，让调用者处理
+            raise
 
-        # --- 2. Matplotlib绘图 ---
         gx = interpolated_results.get('grid_x')
         gy = interpolated_results.get('grid_y')
         if gx is None or gy is None:
@@ -63,12 +85,10 @@ class HeadlessPlotter:
         ax = fig.add_subplot(111)
         colorbar_obj = None
         
-        # 提取配置用于绘图
         heatmap_cfg = self.config.get('heatmap_config', {})
         contour_cfg = self.config.get('contour_config', {})
         vector_cfg = self.config.get('vector_config', {})
 
-        # 绘制热力图
         heatmap_data = interpolated_results.get('heatmap_data')
         if heatmap_cfg.get('enabled') and heatmap_data is not None and not np.all(np.isnan(heatmap_data)):
             vmin_str, vmax_str = heatmap_cfg.get('vmin'), heatmap_cfg.get('vmax')
@@ -86,7 +106,6 @@ class HeadlessPlotter:
             colorbar_obj = fig.colorbar(pcm, ax=ax, format=ticker.ScalarFormatter(useMathText=True))
             colorbar_obj.set_label(heatmap_cfg.get('formula', ''))
 
-        # 绘制等高线
         contour_data = interpolated_results.get('contour_data')
         if contour_cfg.get('enabled') and contour_data is not None and not np.all(np.isnan(contour_data)):
             cont = ax.contour(gx, gy, contour_data, 
@@ -96,26 +115,29 @@ class HeadlessPlotter:
             if contour_cfg.get('show_labels'):
                 ax.clabel(cont, inline=True, fontsize=8, fmt='%.2e')
         
-        # 绘制矢量/流线图
         vector_u_data, vector_v_data = interpolated_results.get('vector_u_data'), interpolated_results.get('vector_v_data')
         if vector_cfg.get('enabled') and vector_u_data is not None and vector_v_data is not None:
-            plot_type = vector_cfg.get('type', 'Quiver')
-            if plot_type == 'Quiver':
+            plot_type = VectorPlotType.from_str(vector_cfg.get('type', 'Quiver'))
+            if plot_type == VectorPlotType.QUIVER:
                 opts = vector_cfg.get('quiver_options', {}); density = opts.get('density', 10); scale = opts.get('scale', 1.0)
                 sl = slice(None, None, density)
                 ax.quiver(gx[sl, sl], gy[sl, sl], vector_u_data[sl, sl], vector_v_data[sl, sl], 
                           scale=scale, scale_units='xy', angles='xy', color='black')
-            elif plot_type == 'Streamline':
-                opts = vector_cfg.get('streamline_options', {}); density = opts.get('density', 1.0); linewidth = opts.get('linewidth', 1.0); color_by = opts.get('color_by', '速度大小')
+            elif plot_type == VectorPlotType.STREAMLINE:
+                opts = vector_cfg.get('streamline_options', {})
+                density = opts.get('density', 1.0)
+                linewidth = opts.get('linewidth', 1.0)
+                color_by = StreamlineColor.from_str(opts.get('color_by', StreamlineColor.MAGNITUDE.value))
+                
                 color_data = 'black'
-                if color_by == '速度大小': color_data = np.sqrt(vector_u_data**2 + vector_v_data**2)
-                elif color_by == 'U分量': color_data = vector_u_data
-                elif color_by == 'V分量': color_data = vector_v_data
+                if color_by == StreamlineColor.MAGNITUDE: color_data = np.sqrt(vector_u_data**2 + vector_v_data**2)
+                elif color_by == StreamlineColor.U_COMPONENT: color_data = vector_u_data
+                elif color_by == StreamlineColor.V_COMPONENT: color_data = vector_v_data
+                
                 stream_plot = ax.streamplot(gx, gy, vector_u_data, vector_v_data, density=density, linewidth=linewidth, color=color_data, cmap='viridis' if isinstance(color_data, np.ndarray) else None)
                 if isinstance(color_data, np.ndarray) and not colorbar_obj:
-                    fig.colorbar(stream_plot.lines, ax=ax).set_label(f"流线 ({color_by})")
+                    fig.colorbar(stream_plot.lines, ax=ax).set_label(f"流线 ({color_by.value})")
 
-        # --- 3. 格式化并渲染到NumPy数组 ---
         ax.set_aspect('auto', adjustable='box'); ax.grid(True, linestyle='--', alpha=0.5)
         ax.set_xlabel(self.config.get('x_axis_formula') or 'x'); ax.set_ylabel(self.config.get('y_axis_formula') or 'y')
         

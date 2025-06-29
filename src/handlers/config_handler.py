@@ -9,7 +9,9 @@ import logging
 from typing import Dict, Any, Optional
 
 from PyQt6.QtWidgets import QFileDialog, QMessageBox, QInputDialog, QWidget
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, Qt
+
+from src.core.constants import VectorPlotType, StreamlineColor
 
 logger = logging.getLogger(__name__)
 
@@ -39,20 +41,16 @@ class ConfigHandler:
         self.ui.save_config_action.triggered.connect(self.save_current_config)
         self.ui.save_config_as_action.triggered.connect(self.save_config_as)
 
-        # 连接所有会影响配置的控件
         widgets_to_mark_dirty = [
-            # Heatmap
             self.ui.heatmap_enabled, self.ui.heatmap_colormap, self.ui.contour_labels,
             self.ui.contour_levels, self.ui.contour_linewidth, self.ui.contour_colors,
             self.ui.chart_title_edit, self.ui.x_axis_formula, self.ui.y_axis_formula, 
             self.ui.heatmap_formula, self.ui.heatmap_vmin, self.ui.heatmap_vmax, 
             self.ui.contour_formula,
-            # Vector/Streamline
             self.ui.vector_enabled, self.ui.vector_plot_type, self.ui.quiver_density_spinbox,
             self.ui.quiver_scale_spinbox, self.ui.stream_density_spinbox,
             self.ui.stream_linewidth_spinbox, self.ui.stream_color_combo,
             self.ui.vector_u_formula, self.ui.vector_v_formula,
-            # Export & Performance
             self.ui.export_dpi, self.ui.video_fps, self.ui.video_start_frame, 
             self.ui.video_end_frame, self.ui.video_grid_w, self.ui.video_grid_h,
             self.ui.gpu_checkbox, self.ui.cache_size_spinbox,
@@ -165,19 +163,30 @@ class ConfigHandler:
             QMessageBox.critical(self.main_window, "保存失败", f"无法写入配置文件 '{self.current_config_file}':\n{e}")
 
     def save_config_as(self):
-        filename, _ = QFileDialog.getSaveFileName(self.main_window, "设置另存为", self.settings_dir, "JSON Files (*.json)")
-        if not filename: return
+        """使用 QInputDialog 让用户输入文件名进行另存为。"""
+        current_name = os.path.splitext(os.path.basename(self.current_config_file or "untitled"))[0]
+        text, ok = QInputDialog.getText(self.main_window, "设置另存为", "请输入新配置文件的名称:", text=f"{current_name}_copy")
+        if not (ok and text):
+            return
+
+        filename = f"{text}.json" if not text.endswith('.json') else text
+        filepath = os.path.join(self.settings_dir, filename)
         
-        self.current_config_file = filename
+        if os.path.exists(filepath):
+            reply = QMessageBox.question(self.main_window, "确认覆盖", f"文件 '{filename}' 已存在。您想覆盖它吗？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.No:
+                return
+
+        self.current_config_file = filepath
         self.save_current_config()
         
         self.ui.config_combo.blockSignals(True)
-        config_name = os.path.basename(filename)
+        config_name = os.path.basename(filepath)
         if self.ui.config_combo.findText(config_name) == -1:
             self.ui.config_combo.addItem(config_name)
         self.ui.config_combo.setCurrentText(config_name)
         self.ui.config_combo.blockSignals(False)
-        self.settings.setValue("last_config_file", filename)
+        self.settings.setValue("last_config_file", filepath)
 
     def create_new_config(self):
         text, ok = QInputDialog.getText(self.main_window, "新建设置", "请输入新配置文件的名称:")
@@ -188,40 +197,40 @@ class ConfigHandler:
                 if QMessageBox.question(self.main_window, "文件已存在", f"文件 '{new_filename}' 已存在。是否覆盖？") != QMessageBox.StandardButton.Yes: return
 
             self.current_config_file = new_filepath
+            # 应用一个空白配置并保存
+            self.apply_config({}) # 清空UI
             self.save_current_config()
+            
             self.populate_config_combobox()
             self.ui.config_combo.setCurrentText(new_filename)
 
     def get_current_config(self) -> Dict[str, Any]:
+        """从UI控件收集当前配置，并将其序列化为字典，同时清理文本输入。"""
+        vector_type_str = self.ui.vector_plot_type.currentData(Qt.ItemDataRole.UserRole).name
+        stream_color_str = self.ui.stream_color_combo.currentData(Qt.ItemDataRole.UserRole).value
+
         return {
-            "version": "1.7",
+            "version": "1.7.3",
             "axes": {
                 "title": self.ui.chart_title_edit.text().strip(),
                 "x_formula": self.ui.x_axis_formula.text().strip() or "x",
                 "y_formula": self.ui.y_axis_formula.text().strip() or "y"
             },
             "heatmap": {
-                'enabled': self.ui.heatmap_enabled.isChecked(), 
-                'formula': self.ui.heatmap_formula.text(), 
-                'colormap': self.ui.heatmap_colormap.currentText(), 
-                'vmin': self.ui.heatmap_vmin.text().strip() or None, 
+                'enabled': self.ui.heatmap_enabled.isChecked(), 'formula': self.ui.heatmap_formula.text().strip(), 
+                'colormap': self.ui.heatmap_colormap.currentText(), 'vmin': self.ui.heatmap_vmin.text().strip() or None, 
                 'vmax': self.ui.heatmap_vmax.text().strip() or None
             },
             "contour": {
-                'enabled': self.ui.contour_enabled.isChecked(), 
-                'formula': self.ui.contour_formula.text(), 
-                'levels': self.ui.contour_levels.value(), 
-                'colors': self.ui.contour_colors.currentText(), 
-                'linewidths': self.ui.contour_linewidth.value(), 
-                'show_labels': self.ui.contour_labels.isChecked()
+                'enabled': self.ui.contour_enabled.isChecked(), 'formula': self.ui.contour_formula.text().strip(), 
+                'levels': self.ui.contour_levels.value(), 'colors': self.ui.contour_colors.currentText(), 
+                'linewidths': self.ui.contour_linewidth.value(), 'show_labels': self.ui.contour_labels.isChecked()
             },
             "vector": {
-                'enabled': self.ui.vector_enabled.isChecked(),
-                'type': "Quiver" if self.ui.vector_plot_type.currentText().startswith("矢量图") else "Streamline",
-                'u_formula': self.ui.vector_u_formula.text(),
-                'v_formula': self.ui.vector_v_formula.text(),
+                'enabled': self.ui.vector_enabled.isChecked(), 'type': vector_type_str,
+                'u_formula': self.ui.vector_u_formula.text().strip(), 'v_formula': self.ui.vector_v_formula.text().strip(),
                 'quiver_options': {'density': self.ui.quiver_density_spinbox.value(), 'scale': self.ui.quiver_scale_spinbox.value()},
-                'streamline_options': {'density': self.ui.stream_density_spinbox.value(), 'linewidth': self.ui.stream_linewidth_spinbox.value(), 'color_by': self.ui.stream_color_combo.currentText()}
+                'streamline_options': {'density': self.ui.stream_density_spinbox.value(), 'linewidth': self.ui.stream_linewidth_spinbox.value(), 'color_by': stream_color_str}
             },
             "playback": {"frame_skip_step": self.ui.frame_skip_spinbox.value()},
             "export": {"dpi": self.ui.export_dpi.value(), "video_fps": self.ui.video_fps.value(), "video_start_frame": self.ui.video_start_frame.value(), "video_end_frame": self.ui.video_end_frame.value(), "video_grid_w": self.ui.video_grid_w.value(), "video_grid_h": self.ui.video_grid_h.value()},
@@ -229,6 +238,7 @@ class ConfigHandler:
         }
 
     def apply_config(self, config: Dict[str, Any]):
+        """将字典中的配置应用到UI控件。"""
         all_widgets = self.ui.control_panel.findChildren(QWidget)
         for widget in all_widgets: widget.blockSignals(True)
         
@@ -237,12 +247,19 @@ class ConfigHandler:
             vector = config.get("vector", {}); playback = config.get("playback", {}); export = config.get("export", {}); perf = config.get("performance", {})
             
             self.ui.chart_title_edit.setText(axes.get("title", "")); self.ui.x_axis_formula.setText(axes.get("x_formula", "x")); self.ui.y_axis_formula.setText(axes.get("y_formula", "y"))
-            self.ui.heatmap_enabled.setChecked(heatmap.get("enabled", True)); self.ui.heatmap_formula.setText(heatmap.get("formula", "")); self.ui.heatmap_colormap.setCurrentText(heatmap.get("colormap", "viridis")); self.ui.heatmap_vmin.setText(str(heatmap.get("vmin") or "")); self.ui.heatmap_vmax.setText(str(heatmap.get("vmax") or ""))
+            self.ui.heatmap_enabled.setChecked(heatmap.get("enabled", False)); self.ui.heatmap_formula.setText(heatmap.get("formula", "")); self.ui.heatmap_colormap.setCurrentText(heatmap.get("colormap", "viridis")); self.ui.heatmap_vmin.setText(str(heatmap.get("vmin") or "")); self.ui.heatmap_vmax.setText(str(heatmap.get("vmax") or ""))
             self.ui.contour_enabled.setChecked(contour.get("enabled", False)); self.ui.contour_formula.setText(contour.get("formula", "")); self.ui.contour_levels.setValue(contour.get("levels", 10)); self.ui.contour_colors.setCurrentText(contour.get("colors", "black")); self.ui.contour_linewidth.setValue(contour.get("linewidths", 1.0)); self.ui.contour_labels.setChecked(contour.get("show_labels", True))
             
-            q_opts = vector.get('quiver_options', {}); s_opts = vector.get('streamline_options', {})
-            self.ui.vector_enabled.setChecked(vector.get("enabled", False)); self.ui.vector_plot_type.setCurrentText("矢量图 (Quiver)" if vector.get("type") == "Quiver" else "流线图 (Streamline)"); self.ui.vector_u_formula.setText(vector.get("u_formula", "")); self.ui.vector_v_formula.setText(vector.get("v_formula", ""))
-            self.ui.quiver_density_spinbox.setValue(q_opts.get("density", 10)); self.ui.quiver_scale_spinbox.setValue(q_opts.get("scale", 1.0)); self.ui.stream_density_spinbox.setValue(s_opts.get("density", 1.5)); self.ui.stream_linewidth_spinbox.setValue(s_opts.get("linewidth", 1.0)); self.ui.stream_color_combo.setCurrentText(s_opts.get("color_by", "速度大小"))
+            vector_type = VectorPlotType[vector.get("type", "STREAMLINE")]
+            self.ui.vector_plot_type.setCurrentIndex(self.ui.vector_plot_type.findData(vector_type))
+            
+            s_opts = vector.get('streamline_options', {})
+            stream_color = StreamlineColor.from_str(s_opts.get("color_by", StreamlineColor.MAGNITUDE.value))
+            self.ui.stream_color_combo.setCurrentIndex(self.ui.stream_color_combo.findData(stream_color))
+            
+            q_opts = vector.get('quiver_options', {})
+            self.ui.vector_enabled.setChecked(vector.get("enabled", False)); self.ui.vector_u_formula.setText(vector.get("u_formula", "")); self.ui.vector_v_formula.setText(vector.get("v_formula", ""))
+            self.ui.quiver_density_spinbox.setValue(q_opts.get("density", 10)); self.ui.quiver_scale_spinbox.setValue(q_opts.get("scale", 1.0)); self.ui.stream_density_spinbox.setValue(s_opts.get("density", 1.5)); self.ui.stream_linewidth_spinbox.setValue(s_opts.get("linewidth", 1.0))
             
             self.ui.frame_skip_spinbox.setValue(playback.get("frame_skip_step", 1))
             self.ui.export_dpi.setValue(export.get("dpi", 300)); self.ui.video_fps.setValue(export.get("video_fps", 15)); self.ui.video_start_frame.setValue(export.get("video_start_frame", 0)); self.ui.video_end_frame.setValue(export.get("video_end_frame", 0)); self.ui.video_grid_w.setValue(export.get("video_grid_w", 300)); self.ui.video_grid_h.setValue(export.get("video_grid_h", 300))

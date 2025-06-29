@@ -12,10 +12,9 @@ logger = logging.getLogger(__name__)
 class DataManager(QObject):
     """
     负责数据文件的索引、加载和缓存。
-    不再负责统计计算。
+    初始化过程被拆分，以支持后台线程扫描文件。
     """
-    loading_finished = pyqtSignal(bool, str)
-    error_occurred = pyqtSignal(str)
+    error_occurred = pyqtSignal(str) # 移除了 scan_finished 信号
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -25,31 +24,30 @@ class DataManager(QObject):
         self.cache_max_size = 100
         self.variables: List[str] = []
         self.global_stats: Dict[str, float] = {}
-        self.custom_global_formulas: Dict[str, str] = {} # 新增：存储自定义常量的公式
+        self.custom_global_formulas: Dict[str, str] = {}
 
-    def initialize(self, directory: str):
+    def setup_directory(self, directory: str) -> bool:
+        """设置并验证数据目录，为后台扫描做准备。"""
         self.data_directory = directory
         if not os.path.isdir(self.data_directory):
-            msg = f"数据目录不存在: {self.data_directory}"; logger.error(msg); self.error_occurred.emit(msg); return
+            msg = f"数据目录不存在: {self.data_directory}"
+            logger.error(msg)
+            self.error_occurred.emit(msg)
+            return False
         
         self.clear_all()
-        logger.info(f"开始扫描数据目录: {self.data_directory}")
-        try:
-            csv_files = sorted([f for f in os.listdir(self.data_directory) if f.lower().endswith('.csv')])
-            if not csv_files:
-                logger.warning("目录中未找到CSV文件。"); self.loading_finished.emit(False, "目录中无CSV文件"); return
-            
-            for filename in csv_files:
-                self.file_index.append({'path': os.path.join(self.data_directory, filename), 'timestamp': len(self.file_index)})
-            
-            # 从第一个文件中读取数值列作为变量列表
-            df_sample = pd.read_csv(self.file_index[0]['path'], nrows=5)
-            self.variables = [col for col in df_sample.columns if pd.api.types.is_numeric_dtype(df_sample[col])]
-            
+        logger.info(f"数据目录已设置为: {self.data_directory}")
+        return True
+
+    def post_scan_setup(self, file_index: List[Dict[str, Any]], variables: List[str]):
+        """在后台扫描完成后，用扫描结果更新管理器状态。不再发射信号。"""
+        self.file_index = file_index
+        self.variables = variables
+        if self.file_index:
             logger.info(f"数据变量已识别 (仅数值类型): {self.variables}")
-            msg = f"成功加载 {len(self.file_index)} 帧索引"; logger.info(msg); self.loading_finished.emit(True, msg)
-        except Exception as e:
-            msg = f"扫描数据目录失败: {e}"; logger.error(msg, exc_info=True); self.error_occurred.emit(msg)
+            logger.info(f"成功索引 {len(self.file_index)} 帧数据")
+        else:
+            logger.warning("目录中未找到有效的CSV文件。")
 
     def get_frame_data(self, frame_index: int) -> Optional[pd.DataFrame]:
         if not (0 <= frame_index < len(self.file_index)): return None
@@ -62,23 +60,20 @@ class DataManager(QObject):
             self._enforce_cache_limit()
             return data
         except Exception as e:
-            msg = f"加载帧 {frame_index} 数据失败: {e}"; logger.error(msg, exc_info=True)
+            msg = f"加载帧 {frame_index} 数据失败: {e}"
+            logger.error(msg, exc_info=True)
             self.error_occurred.emit(f"加载文件失败: {os.path.basename(self.file_index[frame_index]['path'])}")
             return None
 
     def iter_dataframes(self, use_cols: Optional[List[str]] = None) -> Generator[pd.DataFrame, None, None]:
-        """
-        一个生成器，用于逐个迭代处理所有数据文件，避免一次性加载到内存。
-        主要由 StatisticsCalculator 使用。
-        """
-        if use_cols is None: use_cols = self.variables
+        """一个生成器，用于逐个迭代处理所有数据文件，避免一次性加载到内存。"""
+        cols_to_use = use_cols if use_cols is not None else self.variables
         for file_info in self.file_index:
             try:
-                # 为了性能，只读取需要的列
-                yield pd.read_csv(file_info['path'], usecols=use_cols)
+                yield pd.read_csv(file_info['path'], usecols=lambda c: c in cols_to_use)
             except Exception as e:
                 logger.error(f"迭代读取文件 {file_info['path']} 时出错: {e}")
-                continue # 跳过坏文件
+                continue
 
     def _enforce_cache_limit(self):
         while len(self.cache) > self.cache_max_size:
@@ -100,5 +95,5 @@ class DataManager(QObject):
     def clear_global_stats(self):
         """清空已计算的全局统计数据"""
         self.global_stats.clear()
-        self.custom_global_formulas.clear() # 清除自定义公式
+        self.custom_global_formulas.clear()
         logger.info("全局统计数据已清除。")

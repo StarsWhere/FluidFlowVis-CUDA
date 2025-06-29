@@ -6,7 +6,8 @@
 import os
 import json
 import logging
-from typing import List, Dict
+import pandas as pd
+from typing import List, Dict, Any
 from datetime import datetime
 
 from PyQt6.QtCore import QThread, pyqtSignal, QEventLoop
@@ -16,6 +17,47 @@ from src.core.statistics_calculator import StatisticsCalculator
 from src.visualization.video_exporter import VideoExportWorker
 
 logger = logging.getLogger(__name__)
+
+# --- 新增：数据扫描功能 ---
+
+class DataScanWorker(QThread):
+    """在后台线程中扫描数据目录，避免UI阻塞。"""
+    progress = pyqtSignal(int, int, str)
+    finished = pyqtSignal(list, list) # 返回 file_index 和 variables
+    error = pyqtSignal(str)
+
+    def __init__(self, directory: str, parent=None):
+        super().__init__(parent)
+        self.directory = directory
+    
+    def run(self):
+        try:
+            logger.info(f"后台扫描开始: {self.directory}")
+            csv_files = sorted([f for f in os.listdir(self.directory) if f.lower().endswith('.csv')])
+            
+            if not csv_files:
+                self.finished.emit([], [])
+                return
+            
+            self.progress.emit(0, len(csv_files), f"正在分析 {csv_files[0]}...")
+            
+            # 从第一个文件中读取数值列作为基准变量列表
+            first_file_path = os.path.join(self.directory, csv_files[0])
+            df_sample = pd.read_csv(first_file_path, nrows=10)
+            base_variables = {col for col in df_sample.columns if pd.api.types.is_numeric_dtype(df_sample[col])}
+
+            if not base_variables:
+                raise ValueError("第一个CSV文件中未找到任何数值类型的列。")
+
+            file_index = []
+            for i, filename in enumerate(csv_files):
+                self.progress.emit(i, len(csv_files), f"正在索引 {filename}...")
+                file_index.append({'path': os.path.join(self.directory, filename), 'timestamp': i})
+            
+            self.finished.emit(file_index, sorted(list(base_variables)))
+        except Exception as e:
+            logger.error(f"扫描数据目录失败: {e}", exc_info=True)
+            self.error.emit(str(e))
 
 # --- 批量导出功能 ---
 
@@ -35,13 +77,13 @@ class BatchExportWorker(QThread):
         successful, failed = 0, 0
         total = len(self.config_files)
 
-        current_video_worker = None # 用于跟踪当前正在运行的 video_worker
+        current_video_worker = None
 
         for i, filepath in enumerate(self.config_files):
             if self.is_cancelled:
                 if current_video_worker and current_video_worker.isRunning():
                     current_video_worker.cancel()
-                    current_video_worker.wait() # 等待当前视频导出线程结束
+                    current_video_worker.wait()
                 break
             
             filename = os.path.basename(filepath)
@@ -94,8 +136,8 @@ class BatchExportWorker(QThread):
         if current_video_worker and current_video_worker.isRunning():
             logger.warning("BatchExportWorker 结束时发现 video_worker 仍在运行，尝试取消并等待。")
             current_video_worker.cancel()
-            current_video_worker.wait(30000) # 增加等待时间
-            current_video_worker.deleteLater() # 确保清理
+            current_video_worker.wait(30000)
+            current_video_worker.deleteLater()
 
         self.finished.emit(f"成功导出 {successful} 个视频，失败 {failed} 个。")
 
@@ -110,20 +152,15 @@ class GlobalStatsWorker(QThread):
 
     def __init__(self, data_manager: DataManager, parent=None):
         super().__init__(parent)
-        self.data_manager = data_manager # 新增：存储 data_manager 实例
+        self.data_manager = data_manager
         self.calculator = StatisticsCalculator(data_manager)
 
     def run(self):
         try:
             calculated_data = self.calculator.calculate_global_stats(lambda c, t: self.progress.emit(c, t))
-            
             stats_results = calculated_data.get("stats", {})
             formula_descriptions = calculated_data.get("formulas", {})
-            
-            # 将基础常量的公式存储到 DataManager 的 custom_global_formulas 中
-            # 这样在导出时可以统一处理
             self.data_manager.custom_global_formulas.update(formula_descriptions)
-            
             self.finished.emit(stats_results)
         except Exception as e:
             logger.error(f"全局统计计算失败: {e}", exc_info=True)
@@ -142,7 +179,6 @@ class CustomGlobalStatsWorker(QThread):
 
     def run(self):
         try:
-            # 自定义统计需要基础统计作为输入
             base_stats = self.data_manager.global_stats
             if not base_stats:
                 raise RuntimeError("计算自定义常量前，必须先计算基础统计数据。")
@@ -153,10 +189,7 @@ class CustomGlobalStatsWorker(QThread):
             
             new_stats = calculated_data.get("stats", {})
             new_formulas = calculated_data.get("formulas", {})
-            
-            # 将新的自定义公式存储到 DataManager
             self.data_manager.custom_global_formulas.update(new_formulas)
-            
             self.finished.emit(new_stats)
         except Exception as e:
             logger.error(f"自定义全局常量计算失败: {e}", exc_info=True)

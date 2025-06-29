@@ -7,7 +7,6 @@ from PyQt6.QtCore import QThread, pyqtSignal, Qt
 
 logger = logging.getLogger(__name__)
 
-# 导入新的无头渲染器
 from src.visualization.headless_renderer import HeadlessPlotter
 
 class VideoExportWorker(QThread):
@@ -51,7 +50,7 @@ class VideoExportWorker(QThread):
             images = [frames[i] for i in range(self.s_f, self.e_f + 1) if i in frames]
             if not images: raise ValueError("没有成功渲染任何帧。请检查日志。")
 
-            if self.is_cancelled: # 在开始编码前再次检查
+            if self.is_cancelled:
                 self.export_finished.emit(False, "导出已取消"); return
 
             self.progress_updated.emit(total, total, "正在编码视频...")
@@ -70,26 +69,50 @@ class VideoExportWorker(QThread):
         data = self.dm.get_frame_data(idx)
         if data is None: raise ValueError(f"无法为帧 {idx} 加载数据")
 
-        # 无头渲染器现在在内部创建自己的公式引擎实例
         plotter = HeadlessPlotter(self.p_conf)
         return plotter.render_frame(data, self.dm.get_variables())
 
     def _create_video(self, images, fname, fps):
+        """
+        创建视频文件，实现从 moviepy 到 imageio 的自动降级。
+        """
+        # 方案一：尝试使用 moviepy (功能更全，首选)
         try:
             import moviepy.editor as mp
-            logger.info(f"使用 moviepy 编码视频: {fname}")
+            logger.info(f"使用 moviepy (首选) 编码视频: {fname}")
             clips = [mp.ImageClip(m, duration=1.0/fps) for m in images]
             final_clip = mp.concatenate_videoclips(clips, method="compose")
-            codec = 'libx264' if fname.lower().endswith('.mp4') else 'libvpx'
+            
             if fname.lower().endswith('.gif'): 
                 final_clip.write_gif(fname, fps=fps, logger=None)
             else: 
+                codec = 'libx264' if fname.lower().endswith('.mp4') else 'libvpx'
                 final_clip.write_videofile(fname, fps=fps, codec=codec, logger='bar', threads=os.cpu_count())
+            return # 成功，直接返回
         except ImportError:
-            logger.warning("moviepy 未安装，尝试使用 imageio")
+            logger.warning("moviepy 未安装，将尝试使用 imageio 作为备选方案。")
+        except Exception as e:
+            logger.error(f"使用 moviepy 导出失败: {e}，将尝试使用 imageio。")
+
+        # 方案二：如果 moviepy 失败，则降级到 imageio
+        try:
             import imageio
-            with imageio.get_writer(fname, fps=fps, codec='libx264', quality=8, pixelformat='yuv420p', macro_block_size=1) as writer:
-                for img in images: writer.append_data(img)
+            logger.info(f"使用 imageio (备选) 编码视频: {fname}")
+            
+            if fname.lower().endswith('.gif'):
+                imageio.mimsave(fname, images, fps=fps)
+            else:
+                # For MP4, specify codec and quality settings
+                with imageio.get_writer(fname, fps=fps, codec='libx264', quality=8, pixelformat='yuv420p', macro_block_size=1) as writer:
+                    for img in images:
+                        writer.append_data(img)
+            return # 成功，直接返回
+        except ImportError:
+            logger.error("视频导出失败：moviepy 和 imageio 均未安装。")
+            raise RuntimeError("必要的视频导出库（moviepy 或 imageio）未安装。")
+        except Exception as e:
+            logger.error(f"使用 imageio 导出也失败了: {e}", exc_info=True)
+            raise e # 将最终错误重新抛出
 
 class VideoExportDialog(QDialog):
     def __init__(self, parent, dm, p_conf, fname, s_f, e_f, fps):
@@ -134,6 +157,6 @@ class VideoExportDialog(QDialog):
     def closeEvent(self, event):
         if self.worker and self.worker.isRunning():
             reply = QMessageBox.question(self, "确认", "导出正在进行，确定关闭？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-            if reply == QMessageBox.StandardButton.Yes: self.worker.cancel(); self.worker.wait(30000); event.accept() # 增加等待时间
+            if reply == QMessageBox.StandardButton.Yes: self.worker.cancel(); self.worker.wait(30000); event.accept()
             else: event.ignore()
         else: event.accept()

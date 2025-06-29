@@ -8,25 +8,20 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QSplitter, QGroupBox, QLabel, QComboBox, QLineEdit, QPushButton,
     QSlider, QSpinBox, QDoubleSpinBox, QCheckBox, QTextEdit,
-    QStatusBar, QToolBar,
-    QScrollArea, QTabWidget, QMenu
+    QStatusBar, QToolBar, QScrollArea, QTabWidget
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QFont, QIcon
 
 from src.visualization.plot_widget import PlotWidget
+from src.core.constants import VectorPlotType, StreamlineColor, PickerMode
 
 class UiMainWindow:
-    """
-    此类负责创建和布局主窗口的所有UI组件。
-    """
+    """此类负责创建和布局主窗口的所有UI组件。"""
     def setup_ui(self, main_window: QMainWindow, formula_engine):
-        main_window.setWindowTitle("InterVis v1.7")
+        main_window.setWindowTitle("InterVis v1.7.1 Optimized")
         main_window.setGeometry(100, 100, 1600, 950)
         
-        # icon_path = os.path.join(os.path.dirname(__file__), '..', 'assets', 'icon.png')
-        # if os.path.exists(icon_path): main_window.setWindowIcon(QIcon(icon_path))
-
         central_widget = QWidget()
         main_window.setCentralWidget(central_widget)
         
@@ -84,8 +79,8 @@ class UiMainWindow:
         heat_label, heat_layout, self.heatmap_formula = self._create_formula_input("公式:", "例: sqrt(u**2 + v**2)", parent_window, parent_window._show_formula_help)
         h_layout.addWidget(heat_label, 0, 0); h_layout.addLayout(heat_layout, 0, 1)
         h_layout.addWidget(QLabel("颜色映射:"), 1, 0); self.heatmap_colormap = QComboBox(); self.heatmap_colormap.addItems(['viridis', 'plasma', 'inferno', 'magma', 'jet', 'coolwarm', 'RdBu_r']); h_layout.addWidget(self.heatmap_colormap, 1, 1)
-        min_layout = QHBoxLayout(); self.heatmap_vmin = QLineEdit(); self.pick_vmin_btn = QPushButton("拾取"); self.pick_vmin_btn.clicked.connect(lambda: self.plot_widget.set_picker_mode('vmin')); min_layout.addWidget(self.heatmap_vmin); min_layout.addWidget(self.pick_vmin_btn)
-        max_layout = QHBoxLayout(); self.heatmap_vmax = QLineEdit(); self.pick_vmax_btn = QPushButton("拾取"); self.pick_vmax_btn.clicked.connect(lambda: self.plot_widget.set_picker_mode('vmax')); max_layout.addWidget(self.heatmap_vmax); max_layout.addWidget(self.pick_vmax_btn)
+        min_layout = QHBoxLayout(); self.heatmap_vmin = QLineEdit(); self.pick_vmin_btn = QPushButton("拾取"); self.pick_vmin_btn.clicked.connect(lambda: self.plot_widget.set_picker_mode(PickerMode.VMIN)); min_layout.addWidget(self.heatmap_vmin); min_layout.addWidget(self.pick_vmin_btn)
+        max_layout = QHBoxLayout(); self.heatmap_vmax = QLineEdit(); self.pick_vmax_btn = QPushButton("拾取"); self.pick_vmax_btn.clicked.connect(lambda: self.plot_widget.set_picker_mode(PickerMode.VMAX)); max_layout.addWidget(self.heatmap_vmax); max_layout.addWidget(self.pick_vmax_btn)
         h_layout.addWidget(QLabel("最小值:"), 2, 0); h_layout.addLayout(min_layout, 2, 1); h_layout.addWidget(QLabel("最大值:"), 3, 0); h_layout.addLayout(max_layout, 3, 1)
         scroll_layout.addWidget(heatmap_group)
         
@@ -99,7 +94,9 @@ class UiMainWindow:
         scroll_layout.addWidget(contour_group)
 
         vector_group = QGroupBox("矢量/流线图"); vector_group.setCheckable(True); self.vector_enabled = vector_group; v_layout = QGridLayout(vector_group)
-        v_layout.addWidget(QLabel("绘图类型:"), 0, 0); self.vector_plot_type = QComboBox(); self.vector_plot_type.addItems(["流线图 (Streamline)", "矢量图 (Quiver)"]); v_layout.addWidget(self.vector_plot_type, 0, 1)
+        v_layout.addWidget(QLabel("绘图类型:"), 0, 0); self.vector_plot_type = QComboBox()
+        for item in VectorPlotType: self.vector_plot_type.addItem(item.value, item)
+        v_layout.addWidget(self.vector_plot_type, 0, 1)
         u_label, u_layout, self.vector_u_formula = self._create_formula_input("U分量公式:", "例: u - u_global_mean", parent_window, parent_window._show_formula_help)
         v_label, v_layout_input, self.vector_v_formula = self._create_formula_input("V分量公式:", "例: v - v_global_mean", parent_window, parent_window._show_formula_help)
         v_layout.addWidget(u_label, 1, 0); v_layout.addLayout(u_layout, 1, 1); v_layout.addWidget(v_label, 2, 0); v_layout.addLayout(v_layout_input, 2, 1)
@@ -112,7 +109,9 @@ class UiMainWindow:
         self.streamline_options_group = QGroupBox("流线图选项"); stream_layout = QGridLayout(self.streamline_options_group)
         stream_layout.addWidget(QLabel("流线密度:"), 0, 0); self.stream_density_spinbox = QDoubleSpinBox(); self.stream_density_spinbox.setRange(0.2, 10.0); self.stream_density_spinbox.setValue(1.5); stream_layout.addWidget(self.stream_density_spinbox, 0, 1)
         stream_layout.addWidget(QLabel("流线线宽:"), 1, 0); self.stream_linewidth_spinbox = QDoubleSpinBox(); self.stream_linewidth_spinbox.setRange(0.2, 10.0); self.stream_linewidth_spinbox.setValue(1.0); stream_layout.addWidget(self.stream_linewidth_spinbox, 1, 1)
-        stream_layout.addWidget(QLabel("流线颜色:"), 2, 0); self.stream_color_combo = QComboBox(); self.stream_color_combo.addItems(["速度大小", "U分量", "V分量", "黑色"]); stream_layout.addWidget(self.stream_color_combo, 2, 1)
+        stream_layout.addWidget(QLabel("流线颜色:"), 2, 0); self.stream_color_combo = QComboBox()
+        for item in StreamlineColor: self.stream_color_combo.addItem(item.value, item)
+        stream_layout.addWidget(self.stream_color_combo, 2, 1)
         v_layout.addWidget(self.streamline_options_group, 4, 0, 1, 2)
         scroll_layout.addWidget(vector_group)
         
@@ -126,8 +125,6 @@ class UiMainWindow:
         self.probe_text = QTextEdit(); self.probe_text.setReadOnly(True); self.probe_text.setFont(QFont("Courier New", 9)); self.probe_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         probe_layout.addWidget(self.probe_text)
         layout.addWidget(probe_group)
-        # 移除此处的 addStretch()，确保 probe_text 可以充分扩展
-        # layout.addStretch()
         return tab
         
     def _create_statistics_tab(self, parent_window) -> QWidget:
@@ -139,7 +136,7 @@ class UiMainWindow:
         
         custom_group = QGroupBox("自定义常量计算"); custom_layout = QVBoxLayout(custom_group)
         custom_header_layout = QHBoxLayout(); custom_info = QLabel("在此定义新的全局常量，每行一个。格式: <code>new_name = agg_func(expr)</code>"); custom_info.setTextFormat(Qt.TextFormat.RichText); custom_info.setWordWrap(True)
-        custom_header_layout.addWidget(custom_info, 1); custom_help_btn = QPushButton("?"); custom_help_btn.setFixedSize(25, 25); self.custom_stats_help_action = QAction(); custom_help_btn.clicked.connect(self.custom_stats_help_action.trigger) # 将按钮点击连接到QAction的trigger
+        custom_header_layout.addWidget(custom_info, 1); custom_help_btn = QPushButton("?"); custom_help_btn.setFixedSize(25, 25); self.custom_stats_help_action = QAction(); custom_help_btn.clicked.connect(self.custom_stats_help_action.trigger)
         custom_header_layout.addWidget(custom_help_btn); custom_layout.addLayout(custom_header_layout)
         self.custom_stats_input = QTextEdit(); self.custom_stats_input.setFont(QFont("Courier New", 9)); self.custom_stats_input.setPlaceholderText("示例:\ntke_global = mean(0.5 * (u**2 + v**2))")
         self.custom_stats_input.setFixedHeight(100); custom_layout.addWidget(self.custom_stats_input)
@@ -205,7 +202,7 @@ class UiMainWindow:
         view_menu.addAction(self.reset_view_action); view_menu.addSeparator(); view_menu.addAction(self.toggle_panel_action); view_menu.addAction(self.full_screen_action)
         
         help_menu = menubar.addMenu('帮助(&H)'); self.formula_help_action = QAction('公式指南', main_window); self.formula_help_action.setShortcut('F1')
-        self.about_action = QAction('关于 InterVis', main_window)
+        self.about_action = QAction('关于 InterVis', main_window); self.custom_stats_help_action = QAction("自定义统计指南", main_window)
         help_menu.addAction(self.formula_help_action); help_menu.addAction(self.custom_stats_help_action); help_menu.addSeparator(); help_menu.addAction(self.about_action)
 
     def _create_tool_bar(self, main_window: QMainWindow):
