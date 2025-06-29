@@ -95,6 +95,23 @@ class UiMainWindow:
         axis_layout.addWidget(x_label, 1, 0); axis_layout.addLayout(x_layout, 1, 1)
         y_label, y_layout, self.y_axis_formula = self._create_formula_input("Y轴公式:", "默认为 'y'", parent_window, lambda: parent_window._show_help("formula"))
         axis_layout.addWidget(y_label, 2, 0); axis_layout.addLayout(y_layout, 2, 1)
+        
+        axis_layout.addWidget(QLabel("拉伸比例:"), 3, 0)
+        aspect_layout = QHBoxLayout()
+        self.aspect_ratio_combo = QComboBox()
+        self.aspect_ratio_combo.addItems(["Auto", "Equal", "Custom"])
+        self.aspect_ratio_combo.setToolTip("设置图表的坐标轴数据比例。\n'Auto': 自动适应窗口。\n'Equal': X/Y轴等比例。\n'Custom': 自定义比例。")
+        aspect_layout.addWidget(self.aspect_ratio_combo, 1)
+        
+        self.aspect_ratio_spinbox = QDoubleSpinBox()
+        self.aspect_ratio_spinbox.setRange(0.01, 100.0)
+        self.aspect_ratio_spinbox.setSingleStep(0.1)
+        self.aspect_ratio_spinbox.setValue(1.0)
+        self.aspect_ratio_spinbox.setToolTip("设置 Y/X 轴的数据单位比例")
+        self.aspect_ratio_spinbox.setVisible(False)
+        aspect_layout.addWidget(self.aspect_ratio_spinbox)
+        axis_layout.addLayout(aspect_layout, 3, 1)
+
         scroll_layout.addWidget(axis_group)
 
         heatmap_group = QGroupBox("背景热力图"); heatmap_group.setCheckable(True); self.heatmap_enabled = heatmap_group; h_layout = QGridLayout(heatmap_group)
@@ -300,7 +317,7 @@ class UiMainWindow:
 
         export_group = QGroupBox("导出"); export_layout = QGridLayout(export_group)
         export_layout.addWidget(QLabel("分辨率(DPI):"), 0, 0); self.export_dpi = QSpinBox(); self.export_dpi.setRange(100, 1200); self.export_dpi.setValue(300); export_layout.addWidget(self.export_dpi, 0, 1)
-        self.export_img_btn = QPushButton("保存当前帧图片"); export_layout.addWidget(self.export_img_btn, 1, 0, 1, 2)
+        self.export_img_btn = QPushButton("保存当前渲染图表"); export_layout.addWidget(self.export_img_btn, 1, 0, 1, 2)
         export_layout.addWidget(QLabel("帧率(FPS):"), 2, 0); self.video_fps = QSpinBox(); self.video_fps.setRange(1, 60); self.video_fps.setValue(15); export_layout.addWidget(self.video_fps, 2, 1)
         export_layout.addWidget(QLabel("起始帧:"), 3, 0); self.video_start_frame = QSpinBox(); self.video_start_frame.setMinimum(0); export_layout.addWidget(self.video_start_frame, 3, 1)
         export_layout.addWidget(QLabel("结束帧:"), 4, 0); self.video_end_frame = QSpinBox(); self.video_end_frame.setMinimum(0); export_layout.addWidget(self.video_end_frame, 4, 1)
@@ -316,18 +333,46 @@ class UiMainWindow:
         self.apply_cache_btn = QPushButton("应用"); cache_layout.addWidget(self.apply_cache_btn); perf_layout.addLayout(cache_layout); layout.addWidget(perf_group); layout.addStretch(); return tab
 
     def _create_playback_group(self) -> QGroupBox:
-        group = QGroupBox("播放控制"); layout = QVBoxLayout(group); info_layout = QHBoxLayout(); self.frame_info_label = QLabel("帧: 0/0")
-        info_layout.addWidget(self.frame_info_label); info_layout.addStretch(); self.timestamp_label = QLabel("时间戳: 0.0"); info_layout.addWidget(self.timestamp_label); layout.addLayout(info_layout)
+        group = QGroupBox("播放控制")
+        layout = QVBoxLayout(group)
+        
+        info_layout = QHBoxLayout()
+        self.frame_info_label = QLabel("帧: 0/0")
+        info_layout.addWidget(self.frame_info_label)
+        info_layout.addStretch()
+        self.timestamp_label = QLabel("时间戳: 0.0")
+        info_layout.addWidget(self.timestamp_label)
+        layout.addLayout(info_layout)
         
         self.playback_widget = QWidget()
         playback_layout = QVBoxLayout(self.playback_widget)
         playback_layout.setContentsMargins(0,0,0,0)
-        self.time_slider = QSlider(Qt.Orientation.Horizontal); self.time_slider.setMinimum(0); playback_layout.addWidget(self.time_slider)
-        btns_layout = QHBoxLayout(); self.play_button = QPushButton("播放"); btns_layout.addWidget(self.play_button); self.prev_btn = QPushButton("<<"); btns_layout.addWidget(self.prev_btn)
-        self.next_btn = QPushButton(">>"); btns_layout.addWidget(self.next_btn); self.refresh_button = QPushButton("立即刷新"); btns_layout.addWidget(self.refresh_button); btns_layout.addSpacing(20)
-        btns_layout.addWidget(QLabel("跳帧:")); self.frame_skip_spinbox = QSpinBox(); self.frame_skip_spinbox.setRange(1, 100); self.frame_skip_spinbox.setValue(1); btns_layout.addWidget(self.frame_skip_spinbox)
+        self.time_slider = QSlider(Qt.Orientation.Horizontal)
+        self.time_slider.setMinimum(0)
+        playback_layout.addWidget(self.time_slider)
+        btns_layout = QHBoxLayout()
+        self.play_button = QPushButton("播放")
+        btns_layout.addWidget(self.play_button)
+        self.prev_btn = QPushButton("<<")
+        btns_layout.addWidget(self.prev_btn)
+        self.next_btn = QPushButton(">>")
+        btns_layout.addWidget(self.next_btn)
+        btns_layout.addSpacing(20)
+        btns_layout.addWidget(QLabel("跳帧:"))
+        self.frame_skip_spinbox = QSpinBox()
+        self.frame_skip_spinbox.setRange(1, 100)
+        self.frame_skip_spinbox.setValue(1)
+        btns_layout.addWidget(self.frame_skip_spinbox)
         playback_layout.addLayout(btns_layout)
         layout.addWidget(self.playback_widget)
+
+        # The refresh button is now at the bottom of the group, always visible.
+        refresh_layout = QHBoxLayout()
+        refresh_layout.addStretch()
+        self.refresh_button = QPushButton("立即刷新")
+        refresh_layout.addWidget(self.refresh_button)
+        layout.addLayout(refresh_layout)
+        
         return group
 
     def _create_path_group(self) -> QGroupBox:

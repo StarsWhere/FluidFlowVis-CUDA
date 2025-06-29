@@ -72,6 +72,7 @@ class PlotWidget(QWidget):
         self.use_gpu, self.heatmap_config, self.contour_config, self.vector_config = False, {}, {}, {}
         self.grid_resolution = (150, 150)
         self.analysis = {}
+        self.aspect_ratio_config = {'mode': 'auto', 'value': 1.0}
         
         self.heatmap_obj = self.contour_obj = self.colorbar_obj = self.vector_quiver_obj = self.vector_stream_obj = None
         
@@ -114,11 +115,11 @@ class PlotWidget(QWidget):
             if is_avg:
                 start = self.analysis['time_average']['start_frame']
                 end = self.analysis['time_average']['end_frame']
-                title = f"时间平均场 (帧 {start}-{end})"
+                title = f"Time-Averaged Field (Frames {start}-{end})"
             else:
                 parts = []
-                if self.heatmap_config.get('enabled'): parts.append(f"热力图: {self.heatmap_config['formula']}")
-                if self.contour_config.get('enabled'): parts.append(f"等高线: {self.contour_config['formula']}")
+                if self.heatmap_config.get('enabled'): parts.append(f"Heatmap: {self.heatmap_config['formula']}")
+                if self.contour_config.get('enabled'): parts.append(f"Contour: {self.contour_config['formula']}")
                 title = " | ".join(parts) if parts else "InterVis Plot"
         self.ax.set_title(title)
         
@@ -128,7 +129,7 @@ class PlotWidget(QWidget):
     def update_data(self, data: Optional[pd.DataFrame]):
         if self.is_busy_interpolating: return
         if data is None or data.empty:
-             self.ax.clear(); self._setup_plot_style(); self.ax.text(0.5, 0.5, "无有效数据点", ha='center', va='center', transform=self.ax.transAxes); self.canvas.draw_idle()
+             self.ax.clear(); self._setup_plot_style(); self.ax.text(0.5, 0.5, "No valid data points", ha='center', va='center', transform=self.ax.transAxes); self.canvas.draw_idle()
              return
 
         self.current_data = data.copy(); self.is_busy_interpolating = True
@@ -231,7 +232,7 @@ class PlotWidget(QWidget):
         self.vector_stream_obj = self.ax.streamplot(gx, gy, u, v, density=density, linewidth=lw, color=color_data, cmap='viridis' if isinstance(color_data, np.ndarray) else None)
         if isinstance(color_data, np.ndarray) and not self.colorbar_obj:
             self.colorbar_obj = self.figure.colorbar(self.vector_stream_obj.lines, ax=self.ax)
-            self.colorbar_obj.set_label(f"流线 ({color_by.value})")
+            self.colorbar_obj.set_label(f"Streamline ({color_by.value})")
 
     def _on_mouse_move(self, event):
         if event.inaxes != self.ax or event.xdata is None: return
@@ -252,12 +253,10 @@ class PlotWidget(QWidget):
         if self.current_data is None or self.current_data.empty: return
         results = {'x': x, 'y': y, 'variables': {}, 'interpolated': {}}
         try:
-            # --- FIX: Handle complex axis formulas for probing raw data ---
             x_vals_formula = self.x_axis_formula or 'x'
             y_vals_formula = self.y_axis_formula or 'y'
             x_vals = self.current_data[x_vals_formula] if x_vals_formula in self.current_data.columns else self.formula_engine.evaluate_formula(self.current_data, x_vals_formula)
             y_vals = self.current_data[y_vals_formula] if y_vals_formula in self.current_data.columns else self.formula_engine.evaluate_formula(self.current_data, y_vals_formula)
-            # --- END OF FIX ---
             dist_sq = (x_vals - x)**2 + (y_vals - y)**2
             if not dist_sq.empty:
                 idx = dist_sq.idxmin()
@@ -350,11 +349,12 @@ class PlotWidget(QWidget):
     def _remove_profile_preview(self):
         if self.profile_preview_line:
             try:
-                self.ax.lines.remove(self.profile_preview_line)
+                self.profile_preview_line.remove()
+            except (ValueError, AttributeError):
+                pass # Line may have already been removed or is None
+            finally:
                 self.profile_preview_line = None
-            except ValueError:
-                self.profile_preview_line = None
-        self.canvas.draw_idle()
+        # self.canvas.draw_idle() # Let the caller handle the redraw to avoid stuttering
 
     def save_figure(self, filename: str, dpi: int = 300):
         try: self.figure.savefig(filename, dpi=dpi, bbox_inches='tight'); return True
@@ -368,6 +368,19 @@ class PlotWidget(QWidget):
             if any(np.isnan(v) for v in [x_min, x_max, y_min, y_max]): return
             
             xr = x_max - x_min or 1; yr = y_max - y_min or 1; m = 0.05
-            self.ax.set_xlim(x_min - m * xr, x_max + m * xr); self.ax.set_ylim(y_min - m * yr, y_max + m * yr)
-            self.ax.set_aspect('auto', adjustable='box')
+            self.ax.set_xlim(x_min - m * xr, x_max + m * xr)
+            self.ax.set_ylim(y_min - m * yr, y_max + m * yr)
+
+            mode = self.aspect_ratio_config.get('mode', 'auto')
+            if mode == 'equal':
+                self.ax.set_aspect('equal', adjustable='datalim', anchor='C')
+            elif mode == 'custom':
+                value = self.aspect_ratio_config.get('value', 1.0)
+                self.ax.set_aspect(value, adjustable='datalim', anchor='C')
+            else: # 'auto'
+                self.ax.set_aspect('auto', adjustable='box')
+                # Re-apply limits for 'auto' to ensure it fills the space correctly after a mode change
+                self.ax.set_xlim(x_min - m * xr, x_max + m * xr)
+                self.ax.set_ylim(y_min - m * yr, y_max + m * yr)
+
             self.canvas.draw_idle()

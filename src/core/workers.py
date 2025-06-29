@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -161,13 +162,20 @@ class BatchExportWorker(QThread):
         super().__init__(parent); self.config_files, self.dm, self.output_dir = config_files, data_manager, output_dir; self.is_cancelled = False
 
     def run(self):
-        successful, failed, total = 0, 0, len(self.config_files)
+        successful, failed, skipped, total = 0, 0, 0, len(self.config_files)
         for i, filepath in enumerate(self.config_files):
             if self.is_cancelled: break
             filename = os.path.basename(filepath)
             self.progress.emit(i, total, filename); self.log_message.emit(f"读取配置: {filename}")
             try:
                 with open(filepath, 'r', encoding='utf-8') as f: config = json.load(f)
+
+                is_time_avg = config.get('analysis',{}).get('time_average',{}).get('enabled', False)
+                if is_time_avg:
+                    self.log_message.emit(f"跳过: {filename} (配置为时间平均场模式)")
+                    skipped += 1
+                    continue
+
                 export_cfg = config.get("export", {})
                 p_conf = {
                     'x_axis_formula': config.get('axes',{}).get('x_formula','x'), 'y_axis_formula': config.get('axes',{}).get('y_formula','y'),
@@ -191,7 +199,8 @@ class BatchExportWorker(QThread):
                 else: self.log_message.emit(f"失败: {filename}. 原因: {vid_worker.message}"); failed += 1
             except Exception as e: self.log_message.emit(f"处理 '{filename}' 时发生严重错误: {e}"); failed += 1
         
-        self.summary_ready.emit(f"成功导出 {successful} 个视频，失败 {failed} 个。")
+        summary_message = f"成功导出 {successful} 个视频，失败 {failed} 个，跳过 {skipped} 个。"
+        self.summary_ready.emit(summary_message)
 
     def cancel(self): self.is_cancelled = True
 

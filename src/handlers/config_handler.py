@@ -44,9 +44,6 @@ class ConfigHandler:
         self.ui.save_config_action.triggered.connect(self.save_current_config)
         self.ui.save_config_as_action.triggered.connect(self.save_config_as)
 
-        # Let main_window handle connecting widgets for auto-apply and dirty marking
-        # This simplifies the handler's responsibility.
-
     def mark_config_as_dirty(self, *args):
         if self._is_loading_config: return
         QTimer.singleShot(50, self._check_config_dirty_status)
@@ -169,8 +166,16 @@ class ConfigHandler:
         vt = self.ui.vector_plot_type.currentData(Qt.ItemDataRole.UserRole)
         sc = self.ui.stream_color_combo.currentData(Qt.ItemDataRole.UserRole)
         return {
-            "version": "2.0.0",
-            "axes": {"title": self.ui.chart_title_edit.text().strip(), "x_formula": self.ui.x_axis_formula.text().strip() or "x", "y_formula": self.ui.y_axis_formula.text().strip() or "y"},
+            "version": "2.2.0",
+            "axes": {
+                "title": self.ui.chart_title_edit.text().strip(), 
+                "x_formula": self.ui.x_axis_formula.text().strip() or "x", 
+                "y_formula": self.ui.y_axis_formula.text().strip() or "y",
+                "aspect_config": {
+                    "mode": self.ui.aspect_ratio_combo.currentText().lower(),
+                    "value": self.ui.aspect_ratio_spinbox.value()
+                }
+            },
             "heatmap": {'enabled': self.ui.heatmap_enabled.isChecked(), 'formula': self.ui.heatmap_formula.text().strip(), 'colormap': self.ui.heatmap_colormap.currentText(), 'vmin': self.ui.heatmap_vmin.text().strip() or None, 'vmax': self.ui.heatmap_vmax.text().strip() or None},
             "contour": {'enabled': self.ui.contour_enabled.isChecked(), 'formula': self.ui.contour_formula.text().strip(), 'levels': self.ui.contour_levels.value(), 'colors': self.ui.contour_colors.currentText(), 'linewidths': self.ui.contour_linewidth.value(), 'show_labels': self.ui.contour_labels.isChecked()},
             "vector": {'enabled': self.ui.vector_enabled.isChecked(), 'type': vt.name if vt else 'STREAMLINE', 'u_formula': self.ui.vector_u_formula.text().strip(), 'v_formula': self.ui.vector_v_formula.text().strip(), 'quiver_options': {'density': self.ui.quiver_density_spinbox.value(), 'scale': self.ui.quiver_scale_spinbox.value()}, 'streamline_options': {'density': self.ui.stream_density_spinbox.value(), 'linewidth': self.ui.stream_linewidth_spinbox.value(), 'color_by': sc.value if sc else 'Magnitude'}},
@@ -189,6 +194,12 @@ class ConfigHandler:
             axes, heatmap, contour, vector, playback, export, perf, analysis = (config.get(k, {}) for k in ["axes", "heatmap", "contour", "vector", "playback", "export", "performance", "analysis"])
             
             self.ui.chart_title_edit.setText(axes.get("title", "")); self.ui.x_axis_formula.setText(axes.get("x_formula", "x")); self.ui.y_axis_formula.setText(axes.get("y_formula", "y"))
+            
+            aspect_cfg = axes.get("aspect_config", {'mode': 'auto', 'value': 1.0})
+            mode_text = aspect_cfg.get('mode', 'auto').capitalize()
+            self.ui.aspect_ratio_combo.setCurrentText(mode_text)
+            self.ui.aspect_ratio_spinbox.setValue(aspect_cfg.get('value', 1.0))
+
             self.ui.heatmap_enabled.setChecked(heatmap.get("enabled", False)); self.ui.heatmap_formula.setText(heatmap.get("formula", "")); self.ui.heatmap_colormap.setCurrentText(heatmap.get("colormap", "viridis")); self.ui.heatmap_vmin.setText(str(heatmap.get("vmin") or "")); self.ui.heatmap_vmax.setText(str(heatmap.get("vmax") or ""))
             self.ui.contour_enabled.setChecked(contour.get("enabled", False)); self.ui.contour_formula.setText(contour.get("formula", "")); self.ui.contour_levels.setValue(contour.get("levels", 10)); self.ui.contour_colors.setCurrentText(contour.get("colors", "black")); self.ui.contour_linewidth.setValue(contour.get("linewidths", 1.0)); self.ui.contour_labels.setChecked(contour.get("show_labels", True))
             
@@ -210,5 +221,13 @@ class ConfigHandler:
             self.ui.cache_size_spinbox.setValue(perf.get("cache", 100)); self.main_window.data_manager.set_cache_size(self.ui.cache_size_spinbox.value())
         finally:
             [w.blockSignals(False) for w in all_widgets]
-            self.main_window._update_gpu_status_label(); self.main_window._on_vector_plot_type_changed(); self.main_window._on_time_analysis_mode_changed()
+            
+            # Manually trigger UI state updates that depend on other UI elements
+            is_custom = self.ui.aspect_ratio_combo.currentText() == "Custom"
+            self.ui.aspect_ratio_spinbox.setVisible(is_custom)
+
+            # Call main window handlers to update dependent states
+            self.main_window._update_gpu_status_label()
+            self.main_window._on_vector_plot_type_changed()
+            self.main_window._on_time_analysis_mode_changed()
             self.main_window._apply_global_filter()

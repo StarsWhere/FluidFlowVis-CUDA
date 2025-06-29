@@ -134,16 +134,19 @@ class HeadlessPlotter:
                 
                 stream_plot = ax.streamplot(gx, gy, vector_u_data, vector_v_data, density=density, linewidth=linewidth, color=color_data, cmap='viridis' if isinstance(color_data, np.ndarray) else None)
                 if isinstance(color_data, np.ndarray) and not colorbar_obj:
-                    fig.colorbar(stream_plot.lines, ax=ax).set_label(f"流线 ({color_by.value})")
+                    fig.colorbar(stream_plot.lines, ax=ax).set_label(f"Streamline ({color_by.value})")
 
         ax.set_aspect('auto', adjustable='box'); ax.grid(True, linestyle='--', alpha=0.5)
         ax.set_xlabel(self.config.get('x_axis_formula') or 'x'); ax.set_ylabel(self.config.get('y_axis_formula') or 'y')
         
         title = self.config.get('chart_title', '')
-        if not title:
-             # Find frame_index and time from the data if possible, for default title
-            frame_index = data['frame_index'].iloc[0] if 'frame_index' in data.columns and not data.empty else 'N/A'
-            timestamp = data['timestamp'].iloc[0] if 'timestamp' in data.columns and not data.empty else 'N/A'
+        # Check for frame_index in the original DataFrame, not just in the title string
+        frame_index_col = data.get('frame_index')
+        timestamp_col = data.get('timestamp')
+        
+        if not title and frame_index_col is not None and not frame_index_col.empty:
+            frame_index = frame_index_col.iloc[0]
+            timestamp = timestamp_col.iloc[0] if timestamp_col is not None and not timestamp_col.empty else 'N/A'
             try:
                 title = f"Frame: {frame_index}, Time: {timestamp:.3f}s"
             except (TypeError, ValueError):

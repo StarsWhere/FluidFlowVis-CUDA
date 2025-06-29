@@ -124,6 +124,7 @@ class MainWindow(QMainWindow):
         self.ui.apply_cache_btn.clicked.connect(self._apply_cache_settings)
         self.ui.gpu_checkbox.toggled.connect(self._on_gpu_toggle)
         self.ui.vector_plot_type.currentIndexChanged.connect(self._on_vector_plot_type_changed)
+        self.ui.aspect_ratio_combo.currentIndexChanged.connect(self._on_aspect_ratio_mode_changed)
         
         # Analysis/Data Management Controls
         self.ui.apply_filter_btn.clicked.connect(self._apply_global_filter)
@@ -167,7 +168,7 @@ class MainWindow(QMainWindow):
             self.ui.contour_linewidth, self.ui.contour_colors, self.ui.vector_enabled, 
             self.ui.vector_plot_type, self.ui.quiver_density_spinbox, self.ui.quiver_scale_spinbox, 
             self.ui.stream_density_spinbox, self.ui.stream_linewidth_spinbox, self.ui.stream_color_combo, 
-            self.ui.filter_enabled_checkbox
+            self.ui.filter_enabled_checkbox, self.ui.aspect_ratio_spinbox
         ]
         
         for editor in self._get_all_formula_editors():
@@ -183,7 +184,8 @@ class MainWindow(QMainWindow):
         if self.config_handler._is_loading_config: return
         self.config_handler.mark_config_as_dirty()
         if self.data_manager.get_frame_count() > 0:
-            self._should_reset_view_after_refresh = False
+            # Per user request, auto-apply now also resets the view.
+            self._should_reset_view_after_refresh = True
             self.redraw_debounce_timer.start()
 
     def _validate_all_formulas(self):
@@ -271,6 +273,20 @@ class MainWindow(QMainWindow):
         self.ui.playback_widget.setVisible(not is_time_avg)
         self.playback_handler.set_enabled(not is_time_avg)
         self.ui.time_average_range_widget.setVisible(is_time_avg)
+
+        if VIDEO_EXPORT_AVAILABLE:
+            self.ui.export_vid_btn.setEnabled(not is_time_avg)
+            self.ui.batch_export_btn.setEnabled(True) # Batch export is always available, it will skip configs
+            if is_time_avg:
+                self.ui.export_vid_btn.setToolTip("时间平均场模式下无法导出视频")
+            else:
+                self.ui.export_vid_btn.setToolTip("")
+
+        self._trigger_auto_apply()
+
+    def _on_aspect_ratio_mode_changed(self):
+        is_custom = self.ui.aspect_ratio_combo.currentText() == "Custom"
+        self.ui.aspect_ratio_spinbox.setVisible(is_custom)
         self._trigger_auto_apply()
         
     def _on_pick_timeseries_toggled(self, checked):
@@ -355,6 +371,7 @@ class MainWindow(QMainWindow):
             vector_config=config['vector'], analysis=config['analysis'],
             x_axis_formula=config['axes']['x_formula'], y_axis_formula=config['axes']['y_formula'],
             chart_title=config['axes']['title'],
+            aspect_ratio_config=config['axes']['aspect_config'],
             grid_resolution=(config['export']['video_grid_w'], config['export']['video_grid_h']),
             use_gpu=config['performance']['gpu']
         )
