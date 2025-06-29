@@ -31,7 +31,7 @@ class StatsHandler:
         self.ui.recalc_basic_stats_btn.clicked.connect(self.start_global_stats_calculation)
         self.ui.save_and_calc_custom_stats_btn.clicked.connect(self.start_custom_stats_calculation)
         self.ui.export_stats_btn.clicked.connect(self.export_global_stats)
-        self.ui.custom_stats_help_action.triggered.connect(self.show_custom_stats_help)
+        self.ui.custom_stats_help_action.triggered.connect(lambda: self.main_window._show_help("custom_stats"))
 
     def reset_global_stats(self):
         """当数据重载时调用，重置统计信息和UI状态。"""
@@ -126,8 +126,7 @@ class StatsHandler:
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f"global_stats_{timestamp}.csv"
-        filepath, _ = QFileDialog.getSaveFileName(self.main_window, "保存统计结果", os.path.join(self.output_dir, filename), "CSV 文件 (*.csv)")
-        if not filepath: return
+        filepath = os.path.join(self.output_dir, filename)
 
         try:
             with open(filepath, 'w', encoding='utf-8', newline='') as f:
@@ -135,7 +134,6 @@ class StatsHandler:
                 writer = csv.writer(f)
                 writer.writerow(["Name", "Value", "Definition (if custom)"])
                 
-                # 获取自定义公式的名称
                 custom_names = self.dm.custom_global_formulas.keys()
                 
                 for name, value in sorted(self.dm.global_stats.items()):
@@ -145,8 +143,3 @@ class StatsHandler:
             QMessageBox.information(self.main_window, "导出成功", f"统计结果已保存到:\n{filepath}")
         except Exception as e:
             QMessageBox.critical(self.main_window, "导出失败", f"无法保存文件: {e}")
-
-    def show_custom_stats_help(self):
-        from src.utils.help_dialog import HelpDialog
-        from src.utils.help_content import get_custom_stats_help_html
-        HelpDialog(get_custom_stats_help_html(), self.main_window).exec()

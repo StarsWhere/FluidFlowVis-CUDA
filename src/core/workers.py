@@ -216,7 +216,8 @@ class GlobalStatsWorker(QThread):
             for i, (var, query) in enumerate(queries.items()):
                 self.progress.emit(i + 1, total, f"变量: {var}")
                 res = conn.execute(query).fetchone()
-                mean, sum_val, min_val, max_val, var_val, std_val = res if res else (0,0,0,0,0,0)
+                # --- FIX: Handle case where query returns None (e.g., empty table) ---
+                mean, sum_val, min_val, max_val, var_val, std_val = res if res and all(r is not None for r in res) else (0,0,0,0,0,0)
                 stats_results.update({f"{var}_global_mean": mean, f"{var}_global_sum": sum_val, f"{var}_global_min": min_val, f"{var}_global_max": max_val, f"{var}_global_var": var_val, f"{var}_global_std": std_val})
 
             conn.close()

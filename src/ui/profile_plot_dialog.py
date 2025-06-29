@@ -4,14 +4,16 @@
 一维剖面图对话框
 """
 import logging
+import os
+from datetime import datetime
 import numpy as np
 import pandas as pd
 from typing import Tuple, Dict, Any
 from scipy.ndimage import map_coordinates
 
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog, QMessageBox,
-    QWidget, QLabel, QComboBox
+    QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QMessageBox,
+    QLabel, QComboBox
 )
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -22,12 +24,14 @@ logger = logging.getLogger(__name__)
 class ProfilePlotDialog(QDialog):
     """显示一维剖面图的对话框，支持多变量选择。"""
     
-    def __init__(self, start_point: Tuple, end_point: Tuple, interpolated_data: Dict, available_variables: Dict[str, str], parent=None):
+    def __init__(self, start_point: Tuple, end_point: Tuple, interpolated_data: Dict, 
+                 available_variables: Dict[str, str], output_dir: str, parent=None):
         super().__init__(parent)
         self.start_point = start_point
         self.end_point = end_point
         self.interp_data = interpolated_data
         self.available_variables = available_variables
+        self.output_dir = output_dir
         self.profile_data_cache = {}
 
         self.setWindowTitle("一维剖面图分析")
@@ -47,7 +51,8 @@ class ProfilePlotDialog(QDialog):
         self.variable_combo.currentIndexChanged.connect(self._update_plot)
         controls_layout.addWidget(self.variable_combo)
 
-        self.export_button = QPushButton("导出数据...")
+        self.export_button = QPushButton("一键导出数据")
+        self.export_button.setToolTip(f"将当前剖面数据导出到项目输出目录")
         self.export_button.clicked.connect(self.export_data)
         controls_layout.addWidget(self.export_button)
         main_layout.addLayout(controls_layout)
@@ -63,13 +68,10 @@ class ProfilePlotDialog(QDialog):
 
     def populate_variables(self):
         """用可用变量填充下拉菜单。"""
-        # The keys of available_variables are the internal keys like 'heatmap', 'vector_u'
-        # The values are the user-facing formulas.
         for key, formula in sorted(self.available_variables.items()):
             display_text = f"{key} ({formula})" if formula else key
             self.variable_combo.addItem(display_text, key)
         
-        # Try to select the heatmap variable by default
         if 'heatmap' in self.available_variables:
              self.variable_combo.setCurrentText(f"heatmap ({self.available_variables['heatmap']})")
 
@@ -116,7 +118,6 @@ class ProfilePlotDialog(QDialog):
             df = self._calculate_profile(selected_key)
             self.ax.plot(df['distance'], df['value'])
             
-            # Use the full display text for the title for clarity
             display_text = self.variable_combo.currentText()
             self.ax.set_title(f"变量剖面图: {display_text}")
             self.ax.set_xlabel("沿线的距离")
@@ -138,8 +139,9 @@ class ProfilePlotDialog(QDialog):
         if not selected_key or selected_key not in self.profile_data_cache:
             QMessageBox.warning(self, "无数据", "没有可导出的剖面数据。"); return
             
-        filepath, _ = QFileDialog.getSaveFileName(self, "保存剖面数据", f"profile_{selected_key}.csv", "CSV 文件 (*.csv)")
-        if not filepath: return
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"profile_{selected_key}_{timestamp}.csv"
+        filepath = os.path.join(self.output_dir, filename)
             
         try:
             df_to_export = self.profile_data_cache[selected_key]

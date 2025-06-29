@@ -57,9 +57,16 @@ class TimeSeriesDialog(QDialog):
 
         self.ax_time.clear(); self.ax_fft.clear()
         self.ax_fft.set_yticklabels([]); self.ax_fft.set_xticklabels([])
+        self.ax_fft.set_title("快速傅里叶变换 (FFT)")
+        self.ax_fft.set_xlabel("频率 (Hz)")
+        self.ax_fft.set_ylabel("振幅")
         
         try:
-            tolerance = max(abs(self.point_coords[0] * 0.025), abs(self.point_coords[1] * 0.025), 1e-6)
+            # Use a slightly larger tolerance for picking points
+            x_range = self.dm.global_stats.get('x_global_max', 1) - self.dm.global_stats.get('x_global_min', 0)
+            y_range = self.dm.global_stats.get('y_global_max', 1) - self.dm.global_stats.get('y_global_min', 0)
+            tolerance = max(x_range * 0.01, y_range * 0.01, 1e-6)
+
             self.current_df = self.dm.get_timeseries_at_point(selected_variable, self.point_coords, tolerance)
 
             if self.current_df is None or self.current_df.empty:
@@ -95,12 +102,13 @@ class TimeSeriesDialog(QDialog):
         N = len(signal)
         if N < 2: return
         
-        # 假设时间步长是均匀的
-        T = np.mean(np.diff(timestamps))
-        if T <= 0:
+        time_diffs = np.diff(timestamps)
+        if np.any(time_diffs <= 0):
             self.ax_fft.clear()
             self.ax_fft.text(0.5, 0.5, "时间戳不均匀或无效，无法计算FFT", ha='center', color='red')
             self.canvas.draw(); return
+            
+        T = np.mean(time_diffs)
 
         yf = np.fft.fft(signal - np.mean(signal)) # 减去均值
         xf = np.fft.fftfreq(N, T)[:N//2]

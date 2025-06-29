@@ -67,12 +67,15 @@ class UiMainWindow:
     
     def _create_visualization_tab(self, parent_window) -> QWidget:
         tab = QWidget(); layout = QVBoxLayout(tab); scroll_area = QScrollArea(); scroll_widget = QWidget(); scroll_layout = QVBoxLayout(scroll_widget)
-
+        
         time_group = QGroupBox("时间分析")
         time_layout = QGridLayout(time_group)
         time_layout.addWidget(QLabel("分析模式:"), 0, 0)
         self.time_analysis_mode_combo = QComboBox(); self.time_analysis_mode_combo.addItems(["瞬时场", "时间平均场"])
         time_layout.addWidget(self.time_analysis_mode_combo, 0, 1)
+        self.time_analysis_help_btn = QPushButton("?"); self.time_analysis_help_btn.setFixedSize(25, 25)
+        self.time_analysis_help_btn.setToolTip("打开时间分析功能帮助")
+        time_layout.addWidget(self.time_analysis_help_btn, 0, 2)
 
         self.time_average_range_widget = QWidget()
         range_layout = QGridLayout(self.time_average_range_widget)
@@ -82,7 +85,7 @@ class UiMainWindow:
         self.time_avg_start_spinbox.setMinimumWidth(60); self.time_avg_end_spinbox.setMinimumWidth(60)
         range_layout.addWidget(QLabel("起始帧:"), 0, 0); range_layout.addWidget(self.time_avg_start_slider, 0, 1); range_layout.addWidget(self.time_avg_start_spinbox, 0, 2)
         range_layout.addWidget(QLabel("结束帧:"), 1, 0); range_layout.addWidget(self.time_avg_end_slider, 1, 1); range_layout.addWidget(self.time_avg_end_spinbox, 1, 2)
-        time_layout.addWidget(self.time_average_range_widget, 1, 0, 1, 2)
+        time_layout.addWidget(self.time_average_range_widget, 1, 0, 1, 3)
         scroll_layout.addWidget(time_group)
 
         axis_group = QGroupBox("坐标轴与标题"); axis_layout = QGridLayout(axis_group)
@@ -169,20 +172,21 @@ class UiMainWindow:
         tools_layout.addWidget(self.pick_timeseries_btn, 0, 0)
         self.draw_profile_btn = QPushButton("绘制剖面图"); self.draw_profile_btn.setCheckable(True)
         tools_layout.addWidget(self.draw_profile_btn, 0, 1)
+        
         self.pick_by_coords_btn = QPushButton("按坐标拾取...")
         tools_layout.addWidget(self.pick_by_coords_btn, 1, 0)
+        self.draw_profile_by_coords_btn = QPushButton("按坐标绘制剖面...")
+        tools_layout.addWidget(self.draw_profile_by_coords_btn, 1, 1)
         
-        # --- FIX: Correctly create and assign the help button ---
         self.analysis_help_btn = QPushButton("帮助 (?)")
         self.analysis_help_btn.setToolTip("打开分析功能使用指南")
-        tools_layout.addWidget(self.analysis_help_btn, 1, 1)
-        # --- END OF FIX ---
+        tools_layout.addWidget(self.analysis_help_btn, 2, 0, 1, 2)
         
         tools_main_layout.addWidget(tools_group)
         tools_main_layout.addStretch()
         analysis_splitter.addWidget(tools_container)
 
-        analysis_splitter.setSizes([300, 100])
+        analysis_splitter.setSizes([300, 120])
         layout.addWidget(analysis_splitter)
         
         return tab
@@ -221,7 +225,7 @@ class UiMainWindow:
         info_label = QLabel("基础统计数据在数据导入时自动计算并存储在数据库中。"); info_label.setWordWrap(True); basic_layout.addWidget(info_label)
         self.recalc_basic_stats_btn = QPushButton("重新计算所有基础统计")
         self.recalc_basic_stats_btn.setToolTip("在数据损坏或需要强制刷新时使用。")
-        self.export_stats_btn = QPushButton("导出统计结果"); self.export_stats_btn.setEnabled(False)
+        self.export_stats_btn = QPushButton("一键导出统计结果"); self.export_stats_btn.setEnabled(False)
         h_layout = QHBoxLayout()
         h_layout.addWidget(self.recalc_basic_stats_btn)
         h_layout.addWidget(self.export_stats_btn)
@@ -230,8 +234,11 @@ class UiMainWindow:
         
         custom_group = QGroupBox("自定义常量计算"); custom_layout = QVBoxLayout(custom_group)
         custom_header_layout = QHBoxLayout(); custom_info = QLabel("在此定义新的全局常量，每行一个。定义将被永久保存。"); custom_info.setTextFormat(Qt.TextFormat.RichText); custom_info.setWordWrap(True)
-        custom_header_layout.addWidget(custom_info, 1); custom_help_btn = QPushButton("?"); custom_help_btn.setFixedSize(25, 25); self.custom_stats_help_action = QAction(); custom_help_btn.clicked.connect(lambda: parent_window._show_help("custom_stats"))
+        custom_header_layout.addWidget(custom_info, 1); 
+        self.custom_stats_help_action = QAction() # Action for menu/toolbar
+        custom_help_btn = QPushButton("?"); custom_help_btn.setFixedSize(25, 25); custom_help_btn.clicked.connect(lambda: parent_window._show_help("custom_stats"))
         custom_header_layout.addWidget(custom_help_btn); custom_layout.addLayout(custom_header_layout)
+        
         self.custom_stats_input = QTextEdit(); self.custom_stats_input.setFont(QFont("Courier New", 9)); self.custom_stats_input.setPlaceholderText("tke_global = mean(0.5 * (u**2 + v**2))\navg_vorticity = mean(curl(u, v))")
         self.custom_stats_input.setFixedHeight(120); custom_layout.addWidget(self.custom_stats_input)
         self.save_and_calc_custom_stats_btn = QPushButton("保存定义并重新计算"); self.save_and_calc_custom_stats_btn.setEnabled(False); custom_btn_layout = QHBoxLayout(); custom_btn_layout.addStretch(); custom_btn_layout.addWidget(self.save_and_calc_custom_stats_btn); custom_layout.addLayout(custom_btn_layout)

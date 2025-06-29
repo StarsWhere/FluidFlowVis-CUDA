@@ -82,7 +82,7 @@ class MainWindow(QMainWindow):
         self.ui.setup_ui(self, self.formula_engine)
         self.ui.gpu_checkbox.setEnabled(is_gpu_available())
         self.ui.data_dir_line_edit.setText(self.project_dir)
-        self.ui.output_dir_line_edit.setText(self.output_dir)
+        self.export_handler.set_output_dir(self.output_dir)
         
         if not VIDEO_EXPORT_AVAILABLE:
             tooltip = "功能不可用：请安装 moviepy 或 imageio"
@@ -131,7 +131,9 @@ class MainWindow(QMainWindow):
         self.ui.pick_timeseries_btn.toggled.connect(self._on_pick_timeseries_toggled)
         self.ui.pick_by_coords_btn.clicked.connect(self._pick_timeseries_by_coords)
         self.ui.draw_profile_btn.toggled.connect(self._on_draw_profile_toggled)
-        self.ui.analysis_help_btn.clicked.connect(lambda: self._show_help("analysis")) # FIX
+        self.ui.draw_profile_by_coords_btn.clicked.connect(self._draw_profile_by_coords)
+        self.ui.analysis_help_btn.clicked.connect(lambda: self._show_help("analysis"))
+        self.ui.time_analysis_help_btn.clicked.connect(lambda: self._show_help("analysis"))
         self.ui.time_avg_start_slider.valueChanged.connect(self.ui.time_avg_start_spinbox.setValue)
         self.ui.time_avg_start_spinbox.valueChanged.connect(self.ui.time_avg_start_slider.setValue)
         self.ui.time_avg_end_slider.valueChanged.connect(self.ui.time_avg_end_spinbox.setValue)
@@ -168,7 +170,6 @@ class MainWindow(QMainWindow):
             self.ui.filter_enabled_checkbox
         ]
         
-        # Connect formula editors to trigger validation timer
         for editor in self._get_all_formula_editors():
             editor.textChanged.connect(self.validation_timer.start)
             editor.editingFinished.connect(self._trigger_auto_apply)
@@ -248,12 +249,11 @@ class MainWindow(QMainWindow):
         frame_count = info.get("frame_count", 0)
         variables = info.get("variables", [])
 
-        # 计算数据库文件大小
         db_size_mb = 0
         if db_path != "N/A" and os.path.exists(db_path):
             db_size_mb = os.path.getsize(db_path) / (1024 * 1024)
 
-        db_info_text = f"数据库: {os.path.basename(db_path)} | 状态: {'就绪' if is_ready else '未就绪'} | 帧数: {frame_count} | 变量: {len(variables)} | 大小: {db_size_mb:.2f} MB"
+        db_info_text = f"路径: {os.path.basename(db_path)} | 帧: {frame_count} | 变量: {len(variables)} | 大小: {db_size_mb:.2f} MB"
         self.ui.db_info_label.setText(db_info_text)
         self.ui.db_info_label.setToolTip(db_path)
 
@@ -292,7 +292,7 @@ class MainWindow(QMainWindow):
             self.ui.status_bar.clearMessage()
 
     def _pick_timeseries_by_coords(self):
-        text, ok = QInputDialog.getText(self, "按坐标拾取", "请输入坐标 (x, y):", QLineEdit.EchoMode.Normal, "0.0, 0.0")
+        text, ok = QInputDialog.getText(self, "按坐标拾取时间序列点", "请输入坐标 (x, y):", QLineEdit.EchoMode.Normal, "0.0, 0.0")
         if ok and text:
             try:
                 x_str, y_str = text.split(',')
@@ -300,6 +300,24 @@ class MainWindow(QMainWindow):
                 self._on_timeseries_point_picked(coords)
             except (ValueError, IndexError):
                 QMessageBox.warning(self, "输入无效", "请输入格式为 'x, y' 的两个数值。")
+
+    def _draw_profile_by_coords(self):
+        start_text, ok1 = QInputDialog.getText(self, "绘制剖面图", "请输入起点坐标 (x1, y1):")
+        if not (ok1 and start_text): return
+
+        end_text, ok2 = QInputDialog.getText(self, "绘制剖面图", "请输入终点坐标 (x2, y2):")
+        if not (ok2 and end_text): return
+        
+        try:
+            x1_str, y1_str = start_text.split(',')
+            start_coords = (float(x1_str.strip()), float(y1_str.strip()))
+            
+            x2_str, y2_str = end_text.split(',')
+            end_coords = (float(x2_str.strip()), float(y2_str.strip()))
+            
+            self._on_profile_line_defined(start_coords, end_coords)
+        except (ValueError, IndexError):
+            QMessageBox.warning(self, "输入无效", "请输入格式为 'x, y' 的两个数值。")
 
     def _on_timeseries_point_picked(self, coords):
         self.ui.pick_timeseries_btn.setChecked(False)
@@ -315,7 +333,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "无数据", "无可用于剖面的插值数据。"); return
         if self.profile_dialog and self.profile_dialog.isVisible(): self.profile_dialog.close()
         
-        # Pass a dictionary of available interpolated data to the dialog
         available_data = {
             key.replace('_data', ''): self.config_handler.get_current_config().get(key.replace('_data',''),{}).get('formula', key.replace('_data',''))
             for key, data in self.ui.plot_widget.interpolated_results.items() 
@@ -324,7 +341,7 @@ class MainWindow(QMainWindow):
 
         self.profile_dialog = ProfilePlotDialog(
             start_point, end_point, self.ui.plot_widget.interpolated_results,
-            available_data, self
+            available_data, self.output_dir, self
         )
         self.profile_dialog.show()
 
@@ -381,10 +398,34 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "发生错误", message)
 
     def _on_mouse_moved(self, x, y): self.ui.probe_coord_label.setText(f"({x:.3e}, {y:.3e})")
+    
     def _on_probe_data(self, data):
         lines = []
-        if data.get('variables'): lines.extend([f"{'--- 最近原始数据点 ---':^30}"] + [f"{k:<16s} {v:12.6e}" for k, v in data['variables'].items()] + [""])
-        if data.get('interpolated'): lines.extend([f"{'--- 鼠标位置插值数据 ---':^30}"] + [f"{k:<16s} {v:12.6e}" if isinstance(v, (int,float)) and not np.isnan(v) else f"{k:<16s} {'N/A'}" for k, v in data['interpolated'].items()] + [""])
+        if data.get('variables'): 
+            lines.extend([f"{'--- 最近原始数据点 ---':^40}"] + [f"{k:<18s} {v:12.6e}" for k, v in data['variables'].items()] + [""])
+        
+        if data.get('interpolated'):
+            config = self.config_handler.get_current_config()
+            lines.append(f"{'--- 鼠标位置插值数据 ---':^40}")
+
+            x_formula = config['axes'].get('x_formula', 'x')
+            y_formula = config['axes'].get('y_formula', 'y')
+            lines.append(f"{f'X坐标 ({x_formula})':<25s} {data.get('x'):12.6e}")
+            lines.append(f"{f'Y坐标 ({y_formula})':<25s} {data.get('y'):12.6e}")
+            
+            probe_map = {
+                'heatmap': f"热力图 ({config['heatmap'].get('formula', 'N/A')})",
+                'contour': f"等高线 ({config['contour'].get('formula', 'N/A')})",
+                'vector_u': f"U分量 ({config['vector'].get('u_formula', 'N/A')})",
+                'vector_v': f"V分量 ({config['vector'].get('v_formula', 'N/A')})",
+            }
+            
+            for key, value in data['interpolated'].items():
+                if key in probe_map:
+                    display_name = probe_map[key]
+                    val_str = f"{value:12.6e}" if isinstance(value, (int,float)) and not np.isnan(value) else 'N/A'
+                    lines.append(f"{display_name:<25s} {val_str}")
+        
         self.ui.probe_text.setPlainText("\n".join(lines))
 
     def _on_value_picked(self, mode, value):
@@ -417,7 +458,7 @@ class MainWindow(QMainWindow):
         elif help_type == "analysis": content = get_analysis_help_html()
         if content: HelpDialog(content, self).exec()
 
-    def _show_about(self): QMessageBox.about(self, "关于 InterVis", "<h2>InterVis v3.3-ProFinal</h2><p>作者: StarsWhere</p><p>一个使用PyQt6和Matplotlib构建的交互式数据可视化工具。</p><p><b>v3.3 更新:</b></p><ul><li><b>实时公式验证:</b> 输入框在语法错误时会变色并提示。</li><li><b>数据库维护:</b> 新增数据库信息显示和一键压缩优化功能。</li><li><b>多变量剖面图:</b> 剖面图窗口支持切换不同变量进行分析。</li><li><b>并行批量导出:</b> 多个视频导出任务可并行处理，加快速度。</li></ul>")
+    def _show_about(self): QMessageBox.about(self, "关于 InterVis", "<h2>InterVis v3.3-ProFinal</h2><p>作者: StarsWhere</p><p>一个使用PyQt6和Matplotlib构建的交互式数据可视化工具。</p><p><b>v3.3 更新:</b></p><ul><li><b>一键导出:</b> 剖面图和全局统计数据可一键导出到输出目录。</li><li><b>公式探针:</b> 数据探针现在显示可视化所用的完整公式。</li><li><b>坐标剖面图:</b> 支持通过输入坐标来定义剖面线。</li><li><b>实时公式验证:</b> 输入框在语法错误时会变色并提示。</li><li><b>数据库维护:</b> 新增数据库信息显示和一键压缩优化功能。</li><li><b>多变量剖面图:</b> 剖面图窗口支持切换不同变量进行分析。</li><li><b>并行批量导出:</b> 多个视频导出任务可并行处理，加快速度。</li></ul>")
     def _force_reload_data(self):
         reply = QMessageBox.question(self, "确认重新导入", "这将删除现有数据库并从CSV文件重新导入所有数据。此操作不可撤销。\n\n是否继续？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
         if reply == QMessageBox.StandardButton.Yes:
@@ -443,11 +484,11 @@ class MainWindow(QMainWindow):
         self.restoreGeometry(self.settings.value("geometry", self.saveGeometry()))
         self.restoreState(self.settings.value("windowState", self.saveState()))
         self.ui.control_panel.setVisible(self.settings.value("panel_visible", True, type=bool)); self.ui.toggle_panel_action.setChecked(self.ui.control_panel.isVisible())
-        self.export_handler.set_output_dir(self.output_dir); self._update_gpu_status_label()
+        self.ui.output_dir_line_edit.setText(self.output_dir); self._update_gpu_status_label()
 
     def _save_settings(self):
         self.settings.setValue("geometry", self.saveGeometry()); self.settings.setValue("windowState", self.saveState())
-        self.settings.setValue("project_directory", self.project_dir); self.settings.setValue("output_directory", self.export_handler.output_dir)
+        self.settings.setValue("project_directory", self.project_dir); self.settings.setValue("output_directory", self.output_dir)
         self.settings.setValue("panel_visible", self.ui.control_panel.isVisible())
         if self.config_handler.current_config_file: self.settings.setValue("last_config_file", self.config_handler.current_config_file)
 

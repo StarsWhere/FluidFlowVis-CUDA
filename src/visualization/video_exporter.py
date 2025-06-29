@@ -20,7 +20,7 @@ class VideoExportWorker(QThread):
         self.dm, self.p_conf, self.fname, self.s_f, self.fps = dm, p_conf, fname, s_f, fps
         self.e_f = min(e_f, self.dm.get_frame_count() - 1)
         self.is_cancelled = False
-        self.executor = ThreadPoolExecutor(max_workers=max(1, os.cpu_count() // 2))
+        self.executor = ThreadPoolExecutor(max_workers=max(1, os.cpu_count()))
         self.temp_dir = None
         self.success = False
         self.message = ""
@@ -66,7 +66,8 @@ class VideoExportWorker(QThread):
             self.export_finished.emit(self.success, self.message)
         finally:
             self.executor.shutdown(wait=True)
-            if self.temp_dir: shutil.rmtree(self.temp_dir, ignore_errors=True)
+            if self.temp_dir and os.path.exists(self.temp_dir):
+                shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def _render_frame(self, idx, temp_dir):
         if self.is_cancelled: return None
@@ -74,20 +75,18 @@ class VideoExportWorker(QThread):
             data = self.dm.get_frame_data(idx)
             if data is None: raise ValueError(f"无法为帧 {idx} 加载数据")
 
-            # *** FIX: Evaluate dynamic title for each frame ***
             frame_conf = self.p_conf.copy()
             raw_title = frame_conf.get('chart_title', '')
-            if raw_title:
+            if raw_title and '{' in raw_title and '}' in raw_title:
                 try:
                     info = self.dm.get_frame_info(idx)
                     time_val = info.get('timestamp', float(idx)) if info else float(idx)
                     evaluated_title = raw_title.format(frame_index=idx, time=time_val)
                     frame_conf['chart_title'] = evaluated_title
-                except (KeyError, ValueError, IndexError):
-                    # Not an f-string or has invalid keys, use as is.
+                except (KeyError, ValueError, IndexError) as e:
+                    logger.warning(f"格式化标题失败: '{raw_title}' with index={idx}, error: {e}. 使用原始标题。")
                     frame_conf['chart_title'] = raw_title
-            # *** END OF FIX ***
-
+            
             plotter = HeadlessPlotter(frame_conf)
             image_array = plotter.render_frame(data, self.dm.get_variables())
             
@@ -120,7 +119,7 @@ class VideoExportWorker(QThread):
                     for i, fpath in enumerate(image_files):
                         if self.is_cancelled: break
                         self.progress_updated.emit(i+1, len(image_files), f"ImageIO 编码帧 {i+1}/{len(image_files)}")
-                        writer.append_data(imageio.imread(fpath))
+                        writer.append_data(imageio.v2.imread(fpath))
             except Exception as e2:
                 raise RuntimeError(f"Moviepy 和 ImageIO 均导出失败: {e2}")
 

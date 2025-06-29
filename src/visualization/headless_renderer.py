@@ -139,18 +139,16 @@ class HeadlessPlotter:
         ax.set_aspect('auto', adjustable='box'); ax.grid(True, linestyle='--', alpha=0.5)
         ax.set_xlabel(self.config.get('x_axis_formula') or 'x'); ax.set_ylabel(self.config.get('y_axis_formula') or 'y')
         
-        # --- FIX: Ensure title is always set, even if config is empty ---
         title = self.config.get('chart_title', '')
         if not title:
              # Find frame_index and time from the data if possible, for default title
-            frame_index = data['frame_index'].iloc[0] if 'frame_index' in data.columns else 'N/A'
-            timestamp = data['timestamp'].iloc[0] if 'timestamp' in data.columns else 'N/A'
+            frame_index = data['frame_index'].iloc[0] if 'frame_index' in data.columns and not data.empty else 'N/A'
+            timestamp = data['timestamp'].iloc[0] if 'timestamp' in data.columns and not data.empty else 'N/A'
             try:
                 title = f"Frame: {frame_index}, Time: {timestamp:.3f}s"
             except (TypeError, ValueError):
                 title = f"Frame: {frame_index}, Time: {timestamp}"
         ax.set_title(title)
-        # --- END OF FIX ---
 
         formatter = ticker.ScalarFormatter(useMathText=True); formatter.set_scientific(True); formatter.set_powerlimits((-3, 3))
         ax.xaxis.set_major_formatter(formatter); ax.yaxis.set_major_formatter(formatter)

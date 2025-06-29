@@ -54,7 +54,7 @@ class PlotWidget(QWidget):
     plot_rendered = pyqtSignal()
     value_picked = pyqtSignal(PickerMode, float)
     timeseries_point_picked = pyqtSignal(tuple)
-    profile_line_defined = pyqtSignal(tuple, tuple) # 新增: 剖面线定义完成
+    profile_line_defined = pyqtSignal(tuple, tuple)
     interpolation_error = pyqtSignal(str)
 
     def __init__(self, formula_engine, parent=None):
@@ -177,6 +177,7 @@ class PlotWidget(QWidget):
         if not self.heatmap_config.get('enabled') or data is None or gx is None: return
 
         vmin_str, vmax_str = self.heatmap_config.get('vmin'), self.heatmap_config.get('vmax')
+        
         vmin = float(vmin_str) if vmin_str is not None and str(vmin_str).strip() != '' else None
         vmax = float(vmax_str) if vmax_str is not None and str(vmax_str).strip() != '' else None
 
@@ -251,8 +252,12 @@ class PlotWidget(QWidget):
         if self.current_data is None or self.current_data.empty: return
         results = {'x': x, 'y': y, 'variables': {}, 'interpolated': {}}
         try:
-            x_vals = self.current_data[self.x_axis_formula if self.x_axis_formula in self.current_data else 'x']
-            y_vals = self.current_data[self.y_axis_formula if self.y_axis_formula in self.current_data else 'y']
+            # --- FIX: Handle complex axis formulas for probing raw data ---
+            x_vals_formula = self.x_axis_formula or 'x'
+            y_vals_formula = self.y_axis_formula or 'y'
+            x_vals = self.current_data[x_vals_formula] if x_vals_formula in self.current_data.columns else self.formula_engine.evaluate_formula(self.current_data, x_vals_formula)
+            y_vals = self.current_data[y_vals_formula] if y_vals_formula in self.current_data.columns else self.formula_engine.evaluate_formula(self.current_data, y_vals_formula)
+            # --- END OF FIX ---
             dist_sq = (x_vals - x)**2 + (y_vals - y)**2
             if not dist_sq.empty:
                 idx = dist_sq.idxmin()
@@ -345,11 +350,11 @@ class PlotWidget(QWidget):
     def _remove_profile_preview(self):
         if self.profile_preview_line:
             try:
-                self.profile_preview_line.remove()
-            except ValueError:
-                pass
-            finally:
+                self.ax.lines.remove(self.profile_preview_line)
                 self.profile_preview_line = None
+            except ValueError:
+                self.profile_preview_line = None
+        self.canvas.draw_idle()
 
     def save_figure(self, filename: str, dpi: int = 300):
         try: self.figure.savefig(filename, dpi=dpi, bbox_inches='tight'); return True

@@ -151,11 +151,14 @@ class DataManager(QObject):
         try:
             conn = self.get_db_connection()
             variables = self.get_variables()
-            avg_cols = ", ".join([f'AVG("{var}") as "{var}"' for var in variables])
             
-            # 我们需要x和y坐标来构建网格，所以也对它们进行平均（虽然它们可能不随时间变化）
+            # --- FIX: Exclude x and y from the main averaging to prevent duplicate columns ---
+            vars_to_avg = [var for var in variables if var not in ['x', 'y']]
+            avg_cols = ", ".join([f'AVG("{var}") as "{var}"' for var in vars_to_avg])
+            
+            # We still need the coordinate columns for grouping.
             query = f"""
-                SELECT AVG(x) as x, AVG(y) as y, {avg_cols}
+                SELECT x, y, {avg_cols}
                 FROM timeseries_data
                 WHERE frame_index BETWEEN ? AND ? {self.global_filter_clause}
                 GROUP BY x, y
@@ -170,14 +173,14 @@ class DataManager(QObject):
             self.error_occurred.emit(f"时间平均计算失败 (可能由于过滤器语法错误)。\n错误: {e}")
             return None
 
-    def get_timeseries_at_point(self, variable: str, point_coords: Tuple[float, float], tolerance: float = 0.05) -> Optional[pd.DataFrame]:
+    def get_timeseries_at_point(self, variable: str, point_coords: Tuple[float, float], tolerance: float) -> Optional[pd.DataFrame]:
         """使用'探针盒'方法获取一个点的时间序列数据。"""
         if variable not in self.get_variables():
             raise ValueError(f"变量 '{variable}' 不存在。")
         
         x, y = point_coords
-        x_min, x_max = x * (1 - tolerance), x * (1 + tolerance)
-        y_min, y_max = y * (1 - tolerance), y * (1 + tolerance)
+        x_min, x_max = x - tolerance, x + tolerance
+        y_min, y_max = y - tolerance, y + tolerance
 
         try:
             conn = self.get_db_connection()
