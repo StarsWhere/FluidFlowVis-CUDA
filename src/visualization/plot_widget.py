@@ -9,6 +9,8 @@ from typing import Optional, Dict, Any
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.ticker as ticker
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
 from PyQt6.QtCore import pyqtSignal, QObject, QRunnable, QThreadPool, Qt
 from PyQt6.QtGui import QCursor
@@ -87,6 +89,19 @@ class PlotWidget(QWidget):
         self.canvas.mpl_connect('button_release_event', self._on_button_release)
 
     def _setup_plot_style(self):
+        # 设置字体以支持中文
+        # 设置字体以支持中文，优先使用微软雅黑，其次是黑体
+        font_paths = fm.findfont('Microsoft YaHei', fontext='ttf')
+        if not font_paths:
+            font_paths = fm.findfont('SimHei', fontext='ttf')
+
+        if font_paths:
+            plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei']  # 设置中文显示
+            plt.rcParams['axes.unicode_minus'] = False  # 解决负号'-'显示为方块的问题
+            logger.info(f"使用字体: {plt.rcParams['font.sans-serif']}")
+        else:
+            logger.warning("未找到'Microsoft YaHei'或'SimHei'字体，中文可能无法正常显示。请确保系统安装了这些字体。")
+
         self.ax.set_aspect('auto', adjustable='box'); self.ax.grid(True, linestyle='--', alpha=0.5)
         self.ax.set_xlabel(self.x_axis_formula)
         self.ax.set_ylabel(self.y_axis_formula)
