@@ -25,7 +25,7 @@ class VideoExportWorker(QThread):
 
     def cancel(self):
         self.is_cancelled = True
-        self.executor.shutdown(wait=False, cancel_futures=True)
+        self.executor.shutdown(wait=True, cancel_futures=True) # 增加等待，确保子任务被取消或完成
     
     def run(self):
         try:
@@ -68,7 +68,7 @@ class VideoExportWorker(QThread):
             logger.error(f"视频导出失败: {e}", exc_info=True)
             self.export_finished.emit(False, f"导出失败: {e}")
         finally: 
-            self.executor.shutdown(wait=True)
+            self.executor.shutdown(wait=True, cancel_futures=True) # 确保所有子任务被关闭
 
     def _render_frame(self, idx):
         """
@@ -102,7 +102,7 @@ class VideoExportWorker(QThread):
             if fname.lower().endswith('.gif'): 
                 final_clip.write_gif(fname, fps=fps, logger=None)
             else: 
-                final_clip.write_videofile(fname, fps=fps, codec='libx264', logger='bar', threads=os.cpu_count())
+                final_clip.write_videofile(fname, fps=fps, codec='libx264', logger='bar', threads=1) # 降低线程数以减少潜在的线程问题
         except ImportError:
             logger.warning("moviepy 未安装，尝试使用 imageio")
             import imageio
@@ -181,7 +181,7 @@ class VideoExportDialog(QDialog):
                                      QMessageBox.StandardButton.No)
             if reply == QMessageBox.StandardButton.Yes:
                 self.worker.cancel()
-                self.worker.wait(5000) # 等待最多5秒让线程结束
+                self.worker.wait(10000) # 等待最多10秒让线程结束
                 event.accept()
             else: 
                 event.ignore()

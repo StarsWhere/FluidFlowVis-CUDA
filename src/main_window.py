@@ -5,15 +5,17 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QMessageBox, QFileDialog, QInputDialog, QComboBox, QCheckBox
+    QMainWindow, QWidget, QMessageBox, QFileDialog, QInputDialog, QComboBox, 
+    QCheckBox, QLineEdit, QMenu, QSpinBox, QDoubleSpinBox, QGroupBox
 )
-from PyQt6.QtCore import Qt, QTimer, QSettings
+from PyQt6.QtCore import Qt, QTimer, QSettings, QPoint
 from PyQt6.QtGui import QAction
 
 from src.core.data_manager import DataManager
 from src.core.formula_validator import FormulaValidator
 from src.utils.help_dialog import HelpDialog
 from src.utils.gpu_utils import is_gpu_available
+from src.utils.help_content import get_formula_help_html, get_custom_stats_help_html
 from src.visualization.video_exporter import VideoExportDialog
 from src.ui.ui_setup import UiMainWindow
 from src.ui.dialogs import BatchExportDialog, StatsProgressDialog
@@ -84,10 +86,19 @@ class MainWindow(QMainWindow):
         self.ui.plot_widget.interpolation_error.connect(self._on_interpolation_error)
         
         # Menu actions
+        self.ui.open_data_dir_action.triggered.connect(self._change_data_directory)
+        self.ui.set_output_dir_action.triggered.connect(self._change_output_directory)
         self.ui.reload_action.triggered.connect(self._reload_data)
+        self.ui.save_config_action.triggered.connect(self._save_current_config)
+        self.ui.save_config_as_action.triggered.connect(self._save_config_as)
         self.ui.exit_action.triggered.connect(self.close)
+        
         self.ui.reset_view_action.triggered.connect(self.ui.plot_widget.reset_view)
+        self.ui.toggle_panel_action.triggered.connect(self._toggle_control_panel)
+        self.ui.full_screen_action.triggered.connect(self._toggle_full_screen)
+        
         self.ui.formula_help_action.triggered.connect(self._show_formula_help)
+        self.ui.custom_stats_help_action.triggered.connect(self._show_custom_stats_help)
         self.ui.about_action.triggered.connect(self._show_about)
 
         # Playback controls
@@ -101,36 +112,33 @@ class MainWindow(QMainWindow):
         self.ui.change_data_dir_btn.clicked.connect(self._change_data_directory)
         self.ui.change_output_dir_btn.clicked.connect(self._change_output_directory)
 
-        # Visualization tab controls (Heatmap & Contour)
-        for widget in [self.ui.x_axis_combo, self.ui.y_axis_combo, self.ui.heatmap_variable, 
-                       self.ui.heatmap_colormap, self.ui.contour_variable, self.ui.contour_colors,
-                       self.ui.heatmap_enabled, self.ui.contour_enabled, self.ui.contour_labels,
-                       self.ui.contour_levels, self.ui.contour_linewidth]:
-            if isinstance(widget, QComboBox):
-                widget.currentIndexChanged.connect(self._trigger_auto_apply)
-            elif isinstance(widget, QCheckBox):
-                widget.toggled.connect(self._trigger_auto_apply)
-            else: # SpinBox, DoubleSpinBox
-                widget.valueChanged.connect(self._trigger_auto_apply)
-        
-        for widget in [self.ui.x_axis_formula, self.ui.y_axis_formula, self.ui.heatmap_formula,
-                       self.ui.heatmap_vmin, self.ui.heatmap_vmax, self.ui.contour_formula]:
-            widget.editingFinished.connect(self._trigger_auto_apply)
+        # --- 统一的可视化设置信号连接 ---
+        # 凡是修改后需要自动重绘和标记为“脏”的控件
+        widgets_to_connect = [
+            # Heatmap
+            self.ui.heatmap_enabled, self.ui.heatmap_colormap, self.ui.contour_labels,
+            self.ui.contour_levels, self.ui.contour_linewidth, self.ui.contour_colors,
+            # Vector/Streamline
+            self.ui.vector_enabled, self.ui.vector_plot_type, self.ui.quiver_density_spinbox,
+            self.ui.quiver_scale_spinbox, self.ui.stream_density_spinbox,
+            self.ui.stream_linewidth_spinbox, self.ui.stream_color_combo,
+            # Formula line edits (editingFinished triggers update)
+            self.ui.chart_title_edit, self.ui.x_axis_formula, self.ui.y_axis_formula, 
+            self.ui.heatmap_formula, self.ui.heatmap_vmin, self.ui.heatmap_vmax, 
+            self.ui.contour_formula, self.ui.vector_u_formula, self.ui.vector_v_formula
+        ]
 
-        # Visualization tab controls (Vector/Streamline)
-        self.ui.vector_plot_type.currentIndexChanged.connect(self._on_vector_plot_type_changed)
-        for widget in [self.ui.vector_enabled, self.ui.vector_u_variable, self.ui.vector_v_variable,
-                       self.ui.vector_plot_type, self.ui.quiver_density_spinbox, self.ui.quiver_scale_spinbox,
-                       self.ui.stream_density_spinbox, self.ui.stream_linewidth_spinbox, self.ui.stream_color_combo]:
-            if isinstance(widget, QCheckBox):
+        for widget in widgets_to_connect:
+            if isinstance(widget, (QCheckBox, QGroupBox)):
                 widget.toggled.connect(self._trigger_auto_apply)
             elif isinstance(widget, QComboBox):
                 widget.currentIndexChanged.connect(self._trigger_auto_apply)
-            else: # SpinBox, DoubleSpinBox
+            elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
                 widget.valueChanged.connect(self._trigger_auto_apply)
-
-        for widget in [self.ui.vector_u_formula, self.ui.vector_v_formula]:
-             widget.editingFinished.connect(self._trigger_auto_apply)
+            elif isinstance(widget, QLineEdit):
+                widget.editingFinished.connect(self._trigger_auto_apply)
+        
+        self.ui.vector_plot_type.currentIndexChanged.connect(self._on_vector_plot_type_changed)
         
         # Statistics tab controls
         self.ui.calc_basic_stats_btn.clicked.connect(self._start_global_stats_calculation)
@@ -147,16 +155,16 @@ class MainWindow(QMainWindow):
         # Config management
         self.ui.config_combo.currentIndexChanged.connect(self._on_config_selected)
         self.ui.save_config_btn.clicked.connect(self._save_current_config)
-        self.ui.new_config_btn.clicked.connect(self._create_new_config)
+        self.ui.save_config_as_btn.clicked.connect(self._save_config_as)
+        self.ui.new_config_action.triggered.connect(self._create_new_config)
 
-        # Connect settings that mark config as dirty
-        for widget in [self.ui.gpu_checkbox, self.ui.cache_size_spinbox, self.ui.frame_skip_spinbox,
-                       self.ui.export_dpi, self.ui.video_fps, self.ui.video_start_frame, 
-                       self.ui.video_end_frame, self.ui.video_grid_w, self.ui.video_grid_h]:
-            if isinstance(widget, QCheckBox):
-                widget.toggled.connect(self._mark_config_as_dirty)
-            else: # Spinboxes
-                widget.valueChanged.connect(self._mark_config_as_dirty)
+        # Connect settings that mark config as dirty but don't require redraw
+        other_dirty_widgets = [
+            self.ui.export_dpi, self.ui.video_fps, self.ui.video_start_frame, 
+            self.ui.video_end_frame, self.ui.video_grid_w, self.ui.video_grid_h
+        ]
+        for widget in other_dirty_widgets:
+             widget.valueChanged.connect(self._mark_config_as_dirty)
 
     def _trigger_auto_apply(self, *args):
         if self._is_loading_config: return
@@ -172,7 +180,6 @@ class MainWindow(QMainWindow):
             frame_count = self.data_manager.get_frame_count()
             if frame_count > 0:
                 self.formula_validator.update_allowed_variables(self.data_manager.get_variables())
-                self._populate_variable_combos()
                 self.ui.time_slider.setMaximum(frame_count - 1)
                 self.ui.video_start_frame.setMaximum(frame_count - 1)
                 self.ui.video_end_frame.setMaximum(frame_count - 1)
@@ -192,12 +199,18 @@ class MainWindow(QMainWindow):
         msg_box.setWindowTitle("可视化错误")
         msg_box.setTextFormat(Qt.TextFormat.RichText)
         msg_box.setText(f"无法渲染图形，公式可能存在问题。<br><br><b>错误详情:</b><br>{message}")
-        if "X轴" in message: self.ui.x_axis_formula.clear()
-        if "Y轴" in message: self.ui.y_axis_formula.clear()
-        if self.ui.heatmap_formula.text() and not self.formula_validator.validate(self.ui.heatmap_formula.text()): self.ui.heatmap_formula.clear()
-        if self.ui.contour_formula.text() and not self.formula_validator.validate(self.ui.contour_formula.text()): self.ui.contour_formula.clear()
-        if self.ui.vector_u_formula.text() and not self.formula_validator.validate(self.ui.vector_u_formula.text()): self.ui.vector_u_formula.clear()
-        if self.ui.vector_v_formula.text() and not self.formula_validator.validate(self.ui.vector_v_formula.text()): self.ui.vector_v_formula.clear()
+        
+        # 尝试智能地清除可能有问题的公式
+        def clear_if_invalid(widget):
+            if widget.text() and not self.formula_validator.validate(widget.text()):
+                widget.clear()
+
+        if "X轴" in message: clear_if_invalid(self.ui.x_axis_formula)
+        if "Y轴" in message: clear_if_invalid(self.ui.y_axis_formula)
+        clear_if_invalid(self.ui.heatmap_formula)
+        clear_if_invalid(self.ui.contour_formula)
+        clear_if_invalid(self.ui.vector_u_formula)
+        clear_if_invalid(self.ui.vector_v_formula)
         msg_box.exec()
 
     def _on_error(self, message: str):
@@ -232,8 +245,9 @@ class MainWindow(QMainWindow):
             self.play_timer.start(0)
             self.ui.status_bar.showMessage("播放中...")
             if self.ui.plot_widget.last_mouse_coords is None and self.ui.plot_widget.current_data is not None and not self.ui.plot_widget.current_data.empty:
-                x_min, x_max = self.ui.plot_widget.current_data[self.ui.plot_widget.x_axis].min(), self.ui.plot_widget.current_data[self.ui.plot_widget.x_axis].max()
-                y_min, y_max = self.ui.plot_widget.current_data[self.ui.plot_widget.y_axis].min(), self.ui.plot_widget.current_data[self.ui.plot_widget.y_axis].max()
+                # 自动将探针定位到中心
+                x_min, x_max = self.ui.plot_widget.ax.get_xlim()
+                y_min, y_max = self.ui.plot_widget.ax.get_ylim()
                 center_x, center_y = (x_min + x_max) / 2, (y_min + y_max) / 2
                 self.ui.plot_widget.last_mouse_coords = (center_x, center_y)
                 self.ui.plot_widget.get_probe_data_at_coords(center_x, center_y)
@@ -256,7 +270,8 @@ class MainWindow(QMainWindow):
         if self.current_frame_index > 0: self.ui.time_slider.setValue(self.current_frame_index - 1)
     
     def _next_frame(self):
-        if self.current_frame_index < self.data_manager.get_frame_count() - 1: self.ui.time_slider.setValue(self.current_frame_index + 1)
+        if self.data_manager.get_frame_count() > 0 and self.current_frame_index < self.data_manager.get_frame_count() - 1:
+            self.ui.time_slider.setValue(self.current_frame_index + 1)
     
     def _on_slider_changed(self, value: int):
         if value != self.current_frame_index: self._load_frame(value)
@@ -284,38 +299,6 @@ class MainWindow(QMainWindow):
         self.ui.status_bar.showMessage(f"扫描目录: {self.data_dir}...")
         self.data_manager.initialize(self.data_dir)
 
-    def _populate_variable_combos(self):
-        variables = self.data_manager.get_variables()
-        if not variables: return
-        
-        combos = [self.ui.x_axis_combo, self.ui.y_axis_combo, self.ui.heatmap_variable, 
-                  self.ui.contour_variable, self.ui.vector_u_variable, self.ui.vector_v_variable]
-        for combo in combos:
-            current_text = combo.currentText()
-            combo.blockSignals(True)
-            combo.clear()
-        
-        self.ui.heatmap_variable.addItem("无", None)
-        self.ui.contour_variable.addItem("无", None)
-        self.ui.vector_u_variable.addItem("无", None)
-        self.ui.vector_v_variable.addItem("无", None)
-        
-        for var in variables:
-            for combo in combos: combo.addItem(var, var)
-        
-        for combo in combos:
-            if combo.findText(current_text) != -1: combo.setCurrentText(current_text)
-        
-        # Sensible defaults
-        if 'x' in variables: self.ui.x_axis_combo.setCurrentText('x')
-        if 'y' in variables: self.ui.y_axis_combo.setCurrentText('y')
-        if 'p' in variables: self.ui.heatmap_variable.setCurrentText('p')
-        if 'u' in variables: self.ui.vector_u_variable.setCurrentText('u')
-        if 'v' in variables: self.ui.vector_v_variable.setCurrentText('v')
-
-        for combo in combos:
-            combo.blockSignals(False)
-
     def _load_frame(self, frame_index: int):
         if not (0 <= frame_index < self.data_manager.get_frame_count()): return
         data = self.data_manager.get_frame_data(frame_index)
@@ -341,11 +324,14 @@ class MainWindow(QMainWindow):
         def check_formula(widget, name):
             formula = widget.text().strip()
             if formula and not self.formula_validator.validate(formula):
-                widget.clear()
-                QMessageBox.warning(self, "公式错误", f"{name}公式无效")
+                widget.setStyleSheet("border: 1px solid red;")
+                QMessageBox.warning(self, "公式错误", f"{name}公式无效: '{formula}'")
                 return False, None
+            widget.setStyleSheet("")
             return True, formula
         
+        valid, chart_title = check_formula(self.ui.chart_title_edit, "图表标题")
+        if not valid: return
         valid, x_formula = check_formula(self.ui.x_axis_formula, "X轴")
         if not valid: return
         valid, y_formula = check_formula(self.ui.y_axis_formula, "Y轴")
@@ -366,30 +352,23 @@ class MainWindow(QMainWindow):
             vmin, vmax = None, None
             self.ui.heatmap_vmin.clear(); self.ui.heatmap_vmax.clear()
 
-        heat_cfg = {'enabled': self.ui.heatmap_enabled.isChecked(), 'variable': self.ui.heatmap_variable.currentData(), 'formula': heat_formula, 'colormap': self.ui.heatmap_colormap.currentText(), 'vmin': vmin, 'vmax': vmax}
+        heat_cfg = {'enabled': self.ui.heatmap_enabled.isChecked(), 'formula': heat_formula, 'colormap': self.ui.heatmap_colormap.currentText(), 'vmin': vmin, 'vmax': vmax}
             
-        contour_cfg = {'enabled': self.ui.contour_enabled.isChecked(), 'variable': self.ui.contour_variable.currentData(), 'formula': contour_formula, 'levels': self.ui.contour_levels.value(), 'colors': self.ui.contour_colors.currentText(), 'linewidths': self.ui.contour_linewidth.value(), 'show_labels': self.ui.contour_labels.isChecked()}
+        contour_cfg = {'enabled': self.ui.contour_enabled.isChecked(), 'formula': contour_formula, 'levels': self.ui.contour_levels.value(), 'colors': self.ui.contour_colors.currentText(), 'linewidths': self.ui.contour_linewidth.value(), 'show_labels': self.ui.contour_labels.isChecked()}
 
         vector_cfg = {
             'enabled': self.ui.vector_enabled.isChecked(),
             'type': "Quiver" if self.ui.vector_plot_type.currentText().startswith("矢量图") else "Streamline",
-            'u_variable': self.ui.vector_u_variable.currentData(), 'u_formula': u_formula,
-            'v_variable': self.ui.vector_v_variable.currentData(), 'v_formula': v_formula,
-            'quiver_options': {
-                'density': self.ui.quiver_density_spinbox.value(),
-                'scale': self.ui.quiver_scale_spinbox.value()
-            },
-            'streamline_options': {
-                'density': self.ui.stream_density_spinbox.value(),
-                'linewidth': self.ui.stream_linewidth_spinbox.value(),
-                'color_by': self.ui.stream_color_combo.currentText()
-            }
+            'u_formula': u_formula,
+            'v_formula': v_formula,
+            'quiver_options': {'density': self.ui.quiver_density_spinbox.value(), 'scale': self.ui.quiver_scale_spinbox.value()},
+            'streamline_options': {'density': self.ui.stream_density_spinbox.value(), 'linewidth': self.ui.stream_linewidth_spinbox.value(), 'color_by': self.ui.stream_color_combo.currentText()}
         }
         
         self.ui.plot_widget.set_config(
             heatmap_config=heat_cfg, contour_config=contour_cfg, vector_config=vector_cfg,
-            x_axis=self.ui.x_axis_combo.currentText(), y_axis=self.ui.y_axis_combo.currentText(),
-            x_axis_formula=x_formula, y_axis_formula=y_formula
+            x_axis_formula=x_formula or 'x', y_axis_formula=y_formula or 'y', # 默认值为'x'/'y'
+            chart_title=chart_title
         )
         self._load_frame(self.current_frame_index)
         self.ui.status_bar.showMessage("可视化设置已更新", 2000)
@@ -398,32 +377,62 @@ class MainWindow(QMainWindow):
 
     # region 菜单与文件操作
     def _show_formula_help(self):
-        base_vars = self.data_manager.get_variables()
-        HelpDialog(self.formula_validator.get_formula_help_html(base_vars), self).exec()
+        html_content = get_formula_help_html(
+            base_variables=self.data_manager.get_variables(),
+            custom_global_variables=self.formula_validator.custom_global_variables,
+            science_constants=self.formula_validator.science_constants
+        )
+        HelpDialog(html_content, self).exec()
 
     def _show_custom_stats_help(self):
-        help_text = "<html>...</html>" # Omitted for brevity, content is the same as original
-        HelpDialog(help_text, self).exec()
+        HelpDialog(get_custom_stats_help_html(), self).exec()
         
-    def _show_about(self): QMessageBox.about(self, "关于", "<h2>InterVis v1.5</h2><p>作者: StarsWhere</p><p>一个使用PyQt6和Matplotlib构建的数据可视化工具。</p><p>此版本经过重构，UI代码与逻辑代码已分离，并新增矢量图与流线图支持。</p>")
+    def _show_about(self): 
+        QMessageBox.about(self, "关于 InterVis", 
+                          "<h2>InterVis v1.6</h2>"
+                          "<p>作者: StarsWhere</p>"
+                          "<p>一个使用PyQt6和Matplotlib构建的交互式数据可视化工具。</p>"
+                          "<p><b>v1.6 更新:</b></p>"
+                          "<ul>"
+                          "<li>统一的公式输入，简化操作</li>"
+                          "<li>动态图表标题与自定义支持</li>"
+                          "<li>增强的菜单栏与工具栏</li>"
+                          "<li>完善的帮助系统 (公式与自定义统计)</li>"
+                          "<li>多项UI/UX细节优化和Bug修复</li>"
+                          "</ul>")
     
     def _reload_data(self):
         if self.is_playing: self._toggle_play()
         self._reset_global_stats()
-        self.data_manager.clear_all(); self._initialize_data()
+        self.data_manager.clear_all()
+        self._initialize_data()
 
     def _change_data_directory(self):
         new_dir = QFileDialog.getExistingDirectory(self, "选择数据目录", self.data_dir)
         if new_dir and new_dir != self.data_dir:
-            self.data_dir = new_dir; self.ui.data_dir_line_edit.setText(self.data_dir); self._reload_data()
+            self.data_dir = new_dir
+            self.ui.data_dir_line_edit.setText(self.data_dir)
+            self._reload_data()
             
     def _change_output_directory(self):
         new_dir = QFileDialog.getExistingDirectory(self, "选择输出目录", self.output_dir)
         if new_dir and new_dir != self.output_dir:
-            self.output_dir = new_dir; self.ui.output_dir_line_edit.setText(self.output_dir)
+            self.output_dir = new_dir
+            self.ui.output_dir_line_edit.setText(self.output_dir)
+
+    def _toggle_control_panel(self, checked):
+        self.ui.control_panel.setVisible(checked)
+
+    def _toggle_full_screen(self, checked):
+        if checked:
+            self.showFullScreen()
+        else:
+            self.showNormal()
             
     def _apply_cache_settings(self): 
-        self.data_manager.set_cache_size(self.ui.cache_size_spinbox.value()); self._update_frame_info(); self._mark_config_as_dirty()
+        self.data_manager.set_cache_size(self.ui.cache_size_spinbox.value())
+        self._update_frame_info()
+        self._mark_config_as_dirty()
 
     def _export_image(self):
         fname = os.path.join(self.output_dir, f"frame_{self.current_frame_index:05d}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
@@ -437,16 +446,16 @@ class MainWindow(QMainWindow):
         fname = os.path.join(self.output_dir, f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
         
         current_config = self._get_current_config()
-        axes_cfg = current_config['axes']
         
         p_conf = {
-            'x_axis': axes_cfg['x'], 'y_axis': axes_cfg['y'], 
-            'x_axis_formula': axes_cfg['x_formula'], 'y_axis_formula': axes_cfg['y_formula'],
+            'x_axis_formula': current_config['axes']['x_formula'], 
+            'y_axis_formula': current_config['axes']['y_formula'],
+            'chart_title': current_config['axes']['title'],
             'use_gpu': self.ui.gpu_checkbox.isChecked(), 
             'heatmap_config': current_config['heatmap'], 'contour_config': current_config['contour'],
-            'vector_config': current_config.get('vector', {}), # 新增
-            'export_dpi': self.ui.export_dpi.value(), # 传递DPI
-            'grid_resolution': (self.ui.video_grid_w.value(), self.ui.video_grid_h.value()), # 新增
+            'vector_config': current_config.get('vector', {}),
+            'export_dpi': self.ui.export_dpi.value(),
+            'grid_resolution': (self.ui.video_grid_w.value(), self.ui.video_grid_h.value()),
             'global_scope': self.data_manager.global_stats
         }
         VideoExportDialog(self, self.data_manager, p_conf, fname, s_f, e_f, self.ui.video_fps.value()).exec()
@@ -544,12 +553,14 @@ class MainWindow(QMainWindow):
         if not all_stats:
             self.ui.stats_results_text.setText("无统计结果。"); return
         
-        text = "...\n".join([f"{k}: {v:.6e}" for k, v in all_stats.items()]) # Simplified display
+        text = "\n".join([f"{k}: {v:.6e}" for k, v in all_stats.items()])
         self.ui.stats_results_text.setText(text)
 
     def _export_global_stats(self):
         if not self.data_manager.global_stats: return
-        filepath = os.path.join(self.output_dir, f"global_stats_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+        filepath, _ = QFileDialog.getSaveFileName(self, "导出统计结果", self.output_dir, "Text Files (*.txt)")
+        if not filepath: return
+
         try:
             with open(filepath, 'w', encoding='utf-8') as f: f.write(self.ui.stats_results_text.toPlainText())
             QMessageBox.information(self, "导出成功", f"统计结果已保存到:\n{filepath}")
@@ -560,46 +571,69 @@ class MainWindow(QMainWindow):
     # region 设置管理逻辑
     def _mark_config_as_dirty(self, *args):
         if self._is_loading_config: return
+        # 使用QTimer延迟检查，确保所有事件都处理完毕
         QTimer.singleShot(50, self._check_config_dirty_status)
     
     def _check_config_dirty_status(self):
-        if self._loaded_config != self._get_current_config():
-            self.config_is_dirty = True; self.ui.config_status_label.setText("存在未保存的修改")
+        current_config = self._get_current_config()
+        if self._loaded_config != current_config:
+            self.config_is_dirty = True
+            current_file = os.path.basename(self.current_config_file) if self.current_config_file else "新设置"
+            self.ui.config_status_label.setText(f"{current_file} (未保存)")
+            self.ui.config_status_label.setStyleSheet("color: orange;")
         else:
-            self.config_is_dirty = False; self.ui.config_status_label.setText("")
+            self.config_is_dirty = False
+            current_file = os.path.basename(self.current_config_file) if self.current_config_file else "新设置"
+            self.ui.config_status_label.setText(f"{current_file} (已保存)")
+            self.ui.config_status_label.setStyleSheet("color: green;")
 
     def _populate_config_combobox(self):
         self.ui.config_combo.blockSignals(True)
+        current_selection = self.ui.config_combo.currentText()
         self.ui.config_combo.clear()
+        
         default_config_path = os.path.join(self.settings_dir, "default.json")
         if not os.path.exists(default_config_path):
             with open(default_config_path, 'w', encoding='utf-8') as f:
-                self._populate_variable_combos(); json.dump(self._get_current_config(), f, indent=4)
+                json.dump(self._get_current_config(), f, indent=4)
 
         config_files = sorted([f for f in os.listdir(self.settings_dir) if f.endswith('.json')])
         self.ui.config_combo.addItems(config_files)
+        
         last_config = os.path.basename(self.settings.value("last_config_file", default_config_path))
-        if last_config in config_files: self.ui.config_combo.setCurrentText(last_config)
+        if last_config in config_files:
+            self.ui.config_combo.setCurrentText(last_config)
+        elif current_selection in config_files:
+            self.ui.config_combo.setCurrentText(current_selection)
+
         self.ui.config_combo.blockSignals(False)
         self._load_config_by_name(self.ui.config_combo.currentText())
 
     def _on_config_selected(self, index: int):
+        if index < 0: return # Ignore clear() signal
         if self.config_is_dirty:
             reply = QMessageBox.question(self, '未保存的修改', "切换前是否保存当前修改？", QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
             if reply == QMessageBox.StandardButton.Save: self._save_current_config()
             elif reply == QMessageBox.StandardButton.Cancel:
-                self.ui.config_combo.blockSignals(True); self.ui.config_combo.setCurrentText(os.path.basename(self.current_config_file)); self.ui.config_combo.blockSignals(False)
+                self.ui.config_combo.blockSignals(True)
+                if self.current_config_file:
+                    self.ui.config_combo.setCurrentText(os.path.basename(self.current_config_file))
+                self.ui.config_combo.blockSignals(False)
                 return
         self._load_config_by_name(self.ui.config_combo.currentText())
 
     def _load_config_by_name(self, filename: str):
         if not filename: return
         filepath = os.path.join(self.settings_dir, filename)
-        if not os.path.exists(filepath): return
+        if not os.path.exists(filepath): 
+            logger.warning(f"尝试加载但配置文件不存在: {filepath}")
+            return
         
         self._is_loading_config = True
         try:
-            with open(filepath, 'r', encoding='utf-8') as f: self._apply_config(json.load(f))
+            with open(filepath, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                self._apply_config(config)
             self.current_config_file = filepath
             self.settings.setValue("last_config_file", filepath)
             QTimer.singleShot(100, self._finalize_config_load)
@@ -609,21 +643,45 @@ class MainWindow(QMainWindow):
 
     def _finalize_config_load(self):
         self._loaded_config = self._get_current_config()
-        self.config_is_dirty = False; self.ui.config_status_label.setText("")
+        self.config_is_dirty = False
+        self._check_config_dirty_status() # 更新状态标签
         self.ui.status_bar.showMessage(f"已加载设置: {os.path.basename(self.current_config_file)}", 3000)
         self._is_loading_config = False
         self._trigger_auto_apply()
 
     def _save_current_config(self):
-        if not self.current_config_file: return
+        if not self.current_config_file: 
+            self._save_config_as()
+            return
+        
         try:
             with open(self.current_config_file, 'w', encoding='utf-8') as f:
                 current_config = self._get_current_config()
                 json.dump(current_config, f, indent=4)
             self._loaded_config = current_config
-            self.config_is_dirty = False; self.ui.config_status_label.setText("设置已保存")
+            self.config_is_dirty = False
+            self._check_config_dirty_status()
+            self.ui.status_bar.showMessage(f"设置已保存到 {os.path.basename(self.current_config_file)}", 3000)
         except Exception as e:
             QMessageBox.critical(self, "保存失败", f"无法写入配置文件 '{self.current_config_file}':\n{e}")
+
+    def _save_config_as(self):
+        filename, _ = QFileDialog.getSaveFileName(self, "设置另存为", self.settings_dir, "JSON Files (*.json)")
+        if not filename:
+            return
+        
+        self.current_config_file = filename
+        self._save_current_config()
+        
+        # 更新下拉列表
+        self.ui.config_combo.blockSignals(True)
+        config_name = os.path.basename(filename)
+        if self.ui.config_combo.findText(config_name) == -1:
+            self.ui.config_combo.addItem(config_name)
+        self.ui.config_combo.setCurrentText(config_name)
+        self.ui.config_combo.blockSignals(False)
+        self.settings.setValue("last_config_file", filename)
+
 
     def _create_new_config(self):
         text, ok = QInputDialog.getText(self, "新建设置", "请输入新配置文件的名称:")
@@ -634,24 +692,39 @@ class MainWindow(QMainWindow):
                 if QMessageBox.question(self, "文件已存在", f"文件 '{new_filename}' 已存在。是否覆盖？") != QMessageBox.StandardButton.Yes: return
 
             self.current_config_file = new_filepath
-            self._save_current_config()
-            self.ui.config_combo.blockSignals(True)
-            if self.ui.config_combo.findText(new_filename) == -1: self.ui.config_combo.addItem(new_filename)
+            self._save_current_config() # 这会保存当前UI状态为新文件
+            self._populate_config_combobox() # 重新填充以保证顺序和选中
             self.ui.config_combo.setCurrentText(new_filename)
-            self.ui.config_combo.blockSignals(False)
-            self.settings.setValue("last_config_file", new_filepath)
+
 
     def _get_current_config(self) -> Dict[str, Any]:
         return {
-            "version": "1.5",
-            "axes": {"x": self.ui.x_axis_combo.currentText(), "x_formula": self.ui.x_axis_formula.text(), "y": self.ui.y_axis_combo.currentText(), "y_formula": self.ui.y_axis_formula.text()},
-            "heatmap": {'enabled': self.ui.heatmap_enabled.isChecked(), 'variable': self.ui.heatmap_variable.currentData(), 'formula': self.ui.heatmap_formula.text(), 'colormap': self.ui.heatmap_colormap.currentText(), 'vmin': self.ui.heatmap_vmin.text().strip() or None, 'vmax': self.ui.heatmap_vmax.text().strip() or None},
-            "contour": {'enabled': self.ui.contour_enabled.isChecked(), 'variable': self.ui.contour_variable.currentData(), 'formula': self.ui.contour_formula.text(), 'levels': self.ui.contour_levels.value(), 'colors': self.ui.contour_colors.currentText(), 'linewidths': self.ui.contour_linewidth.value(), 'show_labels': self.ui.contour_labels.isChecked()},
+            "version": "1.6",
+            "axes": {
+                "title": self.ui.chart_title_edit.text(),
+                "x_formula": self.ui.x_axis_formula.text(), 
+                "y_formula": self.ui.y_axis_formula.text()
+            },
+            "heatmap": {
+                'enabled': self.ui.heatmap_enabled.isChecked(), 
+                'formula': self.ui.heatmap_formula.text(), 
+                'colormap': self.ui.heatmap_colormap.currentText(), 
+                'vmin': self.ui.heatmap_vmin.text().strip() or None, 
+                'vmax': self.ui.heatmap_vmax.text().strip() or None
+            },
+            "contour": {
+                'enabled': self.ui.contour_enabled.isChecked(), 
+                'formula': self.ui.contour_formula.text(), 
+                'levels': self.ui.contour_levels.value(), 
+                'colors': self.ui.contour_colors.currentText(), 
+                'linewidths': self.ui.contour_linewidth.value(), 
+                'show_labels': self.ui.contour_labels.isChecked()
+            },
             "vector": {
                 'enabled': self.ui.vector_enabled.isChecked(),
                 'type': "Quiver" if self.ui.vector_plot_type.currentText().startswith("矢量图") else "Streamline",
-                'u_variable': self.ui.vector_u_variable.currentData(), 'u_formula': self.ui.vector_u_formula.text(),
-                'v_variable': self.ui.vector_v_variable.currentData(), 'v_formula': self.ui.vector_v_formula.text(),
+                'u_formula': self.ui.vector_u_formula.text(),
+                'v_formula': self.ui.vector_v_formula.text(),
                 'quiver_options': {'density': self.ui.quiver_density_spinbox.value(), 'scale': self.ui.quiver_scale_spinbox.value()},
                 'streamline_options': {'density': self.ui.stream_density_spinbox.value(), 'linewidth': self.ui.stream_linewidth_spinbox.value(), 'color_by': self.ui.stream_color_combo.currentText()}
             },
@@ -661,53 +734,80 @@ class MainWindow(QMainWindow):
         }
     
     def _apply_config(self, config: Dict[str, Any]):
-        for widget in self.findChildren(QWidget): widget.blockSignals(True)
+        # Block signals on all relevant widgets to prevent premature updates
+        all_widgets = self.ui.control_panel.findChildren(QWidget)
+        for widget in all_widgets: widget.blockSignals(True)
+        
         try:
-            perf = config.get("performance", {}); axes = config.get("axes", {}); heatmap = config.get("heatmap", {}); contour = config.get("contour", {}); vector = config.get("vector", {}); playback = config.get("playback", {}); export = config.get("export", {})
+            # Get sections with defaults
+            axes = config.get("axes", {})
+            heatmap = config.get("heatmap", {})
+            contour = config.get("contour", {})
+            vector = config.get("vector", {})
+            playback = config.get("playback", {})
+            export = config.get("export", {})
+            perf = config.get("performance", {})
             
-            if self.ui.gpu_checkbox.isEnabled(): self.ui.gpu_checkbox.setChecked(perf.get("gpu", False))
-            self.ui.cache_size_spinbox.setValue(perf.get("cache", 100)); self.data_manager.set_cache_size(self.ui.cache_size_spinbox.value())
+            # Axes and Title
+            self.ui.chart_title_edit.setText(axes.get("title", ""))
+            self.ui.x_axis_formula.setText(axes.get("x_formula", "x"))
+            self.ui.y_axis_formula.setText(axes.get("y_formula", "y"))
+
+            # Heatmap
+            self.ui.heatmap_enabled.setChecked(heatmap.get("enabled", True))
+            self.ui.heatmap_formula.setText(heatmap.get("formula", ""))
+            self.ui.heatmap_colormap.setCurrentText(heatmap.get("colormap", "viridis"))
+            self.ui.heatmap_vmin.setText(str(heatmap.get("vmin") or ""))
+            self.ui.heatmap_vmax.setText(str(heatmap.get("vmax") or ""))
             
-            if axes.get("x"): self.ui.x_axis_combo.setCurrentText(axes["x"]); self.ui.x_axis_formula.setText(axes.get("x_formula", ""))
-            if axes.get("y"): self.ui.y_axis_combo.setCurrentText(axes["y"]); self.ui.y_axis_formula.setText(axes.get("y_formula", ""))
+            # Contour
+            self.ui.contour_enabled.setChecked(contour.get("enabled", False))
+            self.ui.contour_formula.setText(contour.get("formula", ""))
+            self.ui.contour_levels.setValue(contour.get("levels", 10))
+            self.ui.contour_colors.setCurrentText(contour.get("colors", "black"))
+            self.ui.contour_linewidth.setValue(contour.get("linewidths", 1.0))
+            self.ui.contour_labels.setChecked(contour.get("show_labels", True))
             
-            self.ui.heatmap_enabled.setChecked(heatmap.get("enabled", True)); self.ui.heatmap_variable.setCurrentText(heatmap.get("variable") or "无"); self.ui.heatmap_formula.setText(heatmap.get("formula", "")); self.ui.heatmap_colormap.setCurrentText(heatmap.get("colormap", "viridis")); self.ui.heatmap_vmin.setText(str(heatmap.get("vmin") or "")); self.ui.heatmap_vmax.setText(str(heatmap.get("vmax") or ""))
-            
-            self.ui.contour_enabled.setChecked(contour.get("enabled", False)); self.ui.contour_variable.setCurrentText(contour.get("variable") or "无"); self.ui.contour_formula.setText(contour.get("formula", "")); self.ui.contour_levels.setValue(contour.get("levels", 10)); self.ui.contour_colors.setCurrentText(contour.get("colors", "black")); self.ui.contour_linewidth.setValue(contour.get("linewidths", 1.0)); self.ui.contour_labels.setChecked(contour.get("show_labels", True))
-            
-            # New vector config
-            q_opts = vector.get('quiver_options', {}); s_opts = vector.get('streamline_options', {})
+            # Vector
+            q_opts = vector.get('quiver_options', {})
+            s_opts = vector.get('streamline_options', {})
             self.ui.vector_enabled.setChecked(vector.get("enabled", False))
             self.ui.vector_plot_type.setCurrentText("矢量图 (Quiver)" if vector.get("type") == "Quiver" else "流线图 (Streamline)")
-            self.ui.vector_u_variable.setCurrentText(vector.get("u_variable") or "无"); self.ui.vector_u_formula.setText(vector.get("u_formula", ""))
-            self.ui.vector_v_variable.setCurrentText(vector.get("v_variable") or "无"); self.ui.vector_v_formula.setText(vector.get("v_formula", ""))
-            self.ui.quiver_density_spinbox.setValue(q_opts.get("density", 10)); self.ui.quiver_scale_spinbox.setValue(q_opts.get("scale", 1.0))
-            self.ui.stream_density_spinbox.setValue(s_opts.get("density", 1.0)); self.ui.stream_linewidth_spinbox.setValue(s_opts.get("linewidth", 1.0)); self.ui.stream_color_combo.setCurrentText(s_opts.get("color_by", "速度大小"))
+            self.ui.vector_u_formula.setText(vector.get("u_formula", ""))
+            self.ui.vector_v_formula.setText(vector.get("v_formula", ""))
+            self.ui.quiver_density_spinbox.setValue(q_opts.get("density", 10))
+            self.ui.quiver_scale_spinbox.setValue(q_opts.get("scale", 1.0))
+            self.ui.stream_density_spinbox.setValue(s_opts.get("density", 1.5))
+            self.ui.stream_linewidth_spinbox.setValue(s_opts.get("linewidth", 1.0))
+            self.ui.stream_color_combo.setCurrentText(s_opts.get("color_by", "速度大小"))
 
+            # Playback, Export, Performance
             self.ui.frame_skip_spinbox.setValue(playback.get("frame_skip_step", 1))
-
-            self.ui.export_dpi.setValue(export.get("dpi", 300)); self.ui.video_fps.setValue(export.get("video_fps", 15)); self.ui.video_start_frame.setValue(export.get("video_start_frame", 0)); self.ui.video_end_frame.setValue(export.get("video_end_frame", 0))
-            self.ui.video_grid_w.setValue(export.get("video_grid_w", 150)); self.ui.video_grid_h.setValue(export.get("video_grid_h", 150))
+            self.ui.export_dpi.setValue(export.get("dpi", 300))
+            self.ui.video_fps.setValue(export.get("video_fps", 15))
+            self.ui.video_start_frame.setValue(export.get("video_start_frame", 0))
+            self.ui.video_end_frame.setValue(export.get("video_end_frame", 0))
+            self.ui.video_grid_w.setValue(export.get("video_grid_w", 300))
+            self.ui.video_grid_h.setValue(export.get("video_grid_h", 300))
+            if self.ui.gpu_checkbox.isEnabled(): self.ui.gpu_checkbox.setChecked(perf.get("gpu", False))
+            self.ui.cache_size_spinbox.setValue(perf.get("cache", 100))
+            self.data_manager.set_cache_size(self.ui.cache_size_spinbox.value())
 
         finally:
-            for widget in self.findChildren(QWidget): widget.blockSignals(False)
-            self._connect_signals_for_config()
+            for widget in all_widgets: widget.blockSignals(False)
+            # <-- FIX: The problematic call to self._connect_signals() is REMOVED from here.
             self._update_gpu_status_label()
-            self._on_vector_plot_type_changed() # Ensure correct options are visible after load
+            self._on_vector_plot_type_changed()
 
-    def _connect_signals_for_config(self):
-        # Reconnect signals that might have been disconnected
-        for combo in [self.ui.x_axis_combo, self.ui.y_axis_combo, self.ui.heatmap_variable, 
-                      self.ui.contour_variable, self.ui.vector_u_variable, self.ui.vector_v_variable,
-                      self.ui.vector_plot_type]:
-            combo.currentIndexChanged.connect(self._trigger_auto_apply)
-        self.ui.config_combo.currentIndexChanged.connect(self._on_config_selected)
     # endregion
     
     # region 程序设置与关闭
     def _load_settings(self):
         self.restoreGeometry(self.settings.value("geometry", self.saveGeometry()))
         self.restoreState(self.settings.value("windowState", self.saveState()))
+        panel_visible = self.settings.value("panel_visible", True, type=bool)
+        self.ui.control_panel.setVisible(panel_visible)
+        self.ui.toggle_panel_action.setChecked(panel_visible)
         self._update_gpu_status_label()
 
     def _save_settings(self):
@@ -715,13 +815,19 @@ class MainWindow(QMainWindow):
         self.settings.setValue("windowState", self.saveState())
         self.settings.setValue("data_directory", self.data_dir)
         self.settings.setValue("output_directory", self.output_dir)
+        self.settings.setValue("panel_visible", self.ui.control_panel.isVisible())
         if self.current_config_file:
             self.settings.setValue("last_config_file", self.current_config_file)
 
     def closeEvent(self, event):
         if self.batch_export_worker and self.batch_export_worker.isRunning():
             if QMessageBox.question(self, "确认", "批量导出正在进行，确定退出吗？") == QMessageBox.StandardButton.Yes:
-                self.batch_export_worker.cancel(); self.batch_export_worker.wait()
+                self.batch_export_worker.cancel()
+                self.batch_export_worker.progress.disconnect()
+                self.batch_export_worker.log_message.disconnect()
+                self.batch_export_worker.finished.disconnect()
+                self.batch_export_worker.wait()
+                self.batch_export_worker.deleteLater() # 确保对象被正确删除
             else: event.ignore(); return
 
         if self.config_is_dirty:
@@ -731,7 +837,9 @@ class MainWindow(QMainWindow):
 
         self._save_settings()
         self.play_timer.stop()
-        self.ui.plot_widget.thread_pool.clear(); self.ui.plot_widget.thread_pool.waitForDone()
+        if self.ui.plot_widget.thread_pool:
+            self.ui.plot_widget.thread_pool.clear()
+            self.ui.plot_widget.thread_pool.waitForDone()
         logger.info("应用程序正常关闭")
         super().closeEvent(event)
     # endregion
@@ -744,4 +852,37 @@ class MainWindow(QMainWindow):
             status, color = ("GPU: 不可用", "red")
         self.ui.gpu_status_label.setText(status)
         self.ui.gpu_status_label.setStyleSheet(f"color: {color};")
+
+    def _show_variable_menu(self, line_edit: QLineEdit, position: QPoint):
+        """为指定的QLineEdit创建并显示一个包含变量和常量的菜单"""
+        menu = QMenu(self)
+
+        # 数据变量
+        data_vars = self.data_manager.get_variables()
+        if data_vars:
+            var_menu = menu.addMenu("数据变量")
+            for var in sorted(data_vars):
+                action = var_menu.addAction(var)
+                action.triggered.connect(lambda checked=False, v=var: line_edit.insert(f" {v} "))
+        
+        # 全局统计
+        global_vars = self.formula_validator.custom_global_variables
+        if global_vars:
+            global_menu = menu.addMenu("全局常量")
+            for g_var in sorted(global_vars.keys()):
+                action = global_menu.addAction(g_var)
+                action.triggered.connect(lambda checked=False, v=g_var: line_edit.insert(f" {v} "))
+
+        # 科学常数
+        consts = self.formula_validator.science_constants
+        if consts:
+            const_menu = menu.addMenu("科学常数")
+            for const in sorted(consts.keys()):
+                action = const_menu.addAction(const)
+                action.triggered.connect(lambda checked=False, v=const: line_edit.insert(f" {v} "))
+        
+        if not menu.actions():
+            menu.addAction("无可用变量").setEnabled(False)
+
+        menu.exec(position)
     # endregion

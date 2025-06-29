@@ -48,18 +48,20 @@ class BatchExportWorker(QThread):
                 with open(filepath, 'r', encoding='utf-8') as f:
                     config = json.load(f)
                 
-                # 从配置文件中提取所有需要的参数
+                # 从配置文件中提取所有需要的参数 (v1.6+)
                 axes_cfg = config.get('axes', {})
                 export_cfg = config.get("export", {})
                 
                 p_conf = {
-                    'x_axis': axes_cfg.get('x', 'x'),
-                    'y_axis': axes_cfg.get('y', 'y'),
-                    'x_axis_formula': axes_cfg.get('x_formula', ''),
-                    'y_axis_formula': axes_cfg.get('y_formula', ''),
+                    'x_axis_formula': axes_cfg.get('x_formula', 'x'),
+                    'y_axis_formula': axes_cfg.get('y_formula', 'y'),
+                    'chart_title': axes_cfg.get('title', ''),
                     'use_gpu': config.get('performance', {}).get('gpu', False),
                     'heatmap_config': config.get('heatmap', {}),
                     'contour_config': config.get('contour', {}),
+                    'vector_config': config.get('vector', {}),
+                    'grid_resolution': (export_cfg.get("video_grid_w", 300), export_cfg.get("video_grid_h", 300)),
+                    'export_dpi': export_cfg.get("dpi", 300),
                     'global_scope': self.data_manager.global_stats
                 }
                 
@@ -92,7 +94,10 @@ class BatchExportWorker(QThread):
                 video_worker.progress_updated.connect(lambda cur, tot, msg: self.log_message.emit(f"  └ {msg}"))
                 
                 video_worker.start()
-                loop.exec()
+                loop.exec() # 等待视频导出工作线程完成
+
+                # 清理工作线程，防止内存泄漏
+                video_worker.deleteLater()
 
                 if export_success:
                     self.log_message.emit(f"成功: {filename} -> {os.path.basename(out_fname)}")
@@ -110,6 +115,11 @@ class BatchExportWorker(QThread):
 
     def cancel(self):
         self.is_cancelled = True
+        # 尝试取消并等待当前正在进行的视频导出工作线程
+        if hasattr(self, 'video_worker') and self.video_worker.isRunning():
+            self.video_worker.cancel()
+            self.video_worker.wait()
+            self.video_worker.deleteLater()
 
 # --- 全局统计功能 ---
 
