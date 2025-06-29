@@ -12,6 +12,7 @@ from datetime import datetime
 from PyQt6.QtCore import QThread, pyqtSignal, QEventLoop
 
 from src.core.data_manager import DataManager
+from src.core.statistics_calculator import StatisticsCalculator
 from src.visualization.video_exporter import VideoExportWorker
 
 logger = logging.getLogger(__name__)
@@ -19,10 +20,9 @@ logger = logging.getLogger(__name__)
 # --- 批量导出功能 ---
 
 class BatchExportWorker(QThread):
-    """在后台执行批量视频导出任务的工作线程。"""
-    progress = pyqtSignal(int, int, str)  # current_index, total, filename
+    progress = pyqtSignal(int, int, str)
     log_message = pyqtSignal(str)
-    finished = pyqtSignal(str)  # summary_message
+    finished = pyqtSignal(str)
 
     def __init__(self, config_files: List[str], data_manager: DataManager, output_dir: str, parent=None):
         super().__init__(parent)
@@ -32,135 +32,132 @@ class BatchExportWorker(QThread):
         self.is_cancelled = False
 
     def run(self):
-        successful_exports = 0
-        failed_exports = 0
-        total_files = len(self.config_files)
+        successful, failed = 0, 0
+        total = len(self.config_files)
+
+        current_video_worker = None # 用于跟踪当前正在运行的 video_worker
 
         for i, filepath in enumerate(self.config_files):
             if self.is_cancelled:
+                if current_video_worker and current_video_worker.isRunning():
+                    current_video_worker.cancel()
+                    current_video_worker.wait() # 等待当前视频导出线程结束
                 break
             
             filename = os.path.basename(filepath)
-            self.progress.emit(i, total_files, filename)
+            self.progress.emit(i, total, filename)
             self.log_message.emit(f"正在读取配置文件: {filename}")
 
             try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
+                with open(filepath, 'r', encoding='utf-8') as f: config = json.load(f)
                 
-                # 从配置文件中提取所有需要的参数 (v1.6+)
-                axes_cfg = config.get('axes', {})
-                export_cfg = config.get("export", {})
+                axes_cfg, export_cfg = config.get('axes', {}), config.get("export", {})
                 
                 p_conf = {
-                    'x_axis_formula': axes_cfg.get('x_formula', 'x'),
-                    'y_axis_formula': axes_cfg.get('y_formula', 'y'),
-                    'chart_title': axes_cfg.get('title', ''),
-                    'use_gpu': config.get('performance', {}).get('gpu', False),
-                    'heatmap_config': config.get('heatmap', {}),
-                    'contour_config': config.get('contour', {}),
+                    'x_axis_formula': axes_cfg.get('x_formula', 'x'), 'y_axis_formula': axes_cfg.get('y_formula', 'y'),
+                    'chart_title': axes_cfg.get('title', ''), 'use_gpu': config.get('performance', {}).get('gpu', False),
+                    'heatmap_config': config.get('heatmap', {}), 'contour_config': config.get('contour', {}),
                     'vector_config': config.get('vector', {}),
                     'grid_resolution': (export_cfg.get("video_grid_w", 300), export_cfg.get("video_grid_h", 300)),
-                    'export_dpi': export_cfg.get("dpi", 300),
-                    'global_scope': self.data_manager.global_stats
+                    'export_dpi': export_cfg.get("dpi", 300), 'global_scope': self.data_manager.global_stats
                 }
                 
                 s_f = export_cfg.get("video_start_frame", 0)
                 e_f = export_cfg.get("video_end_frame", self.data_manager.get_frame_count() - 1)
                 fps = export_cfg.get("video_fps", 15)
 
-                if s_f >= e_f:
-                    raise ValueError("起始帧必须小于结束帧")
+                if s_f >= e_f: raise ValueError("起始帧必须小于结束帧")
 
                 config_name = os.path.splitext(filename)[0]
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                out_fname = os.path.join(self.output_dir, f"batch_{config_name}_{timestamp}.mp4")
-
+                out_fname = os.path.join(self.output_dir, f"batch_{config_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
                 self.log_message.emit(f"准备导出视频: {os.path.basename(out_fname)}")
                 
-                video_worker = VideoExportWorker(self.data_manager, p_conf, out_fname, s_f, e_f, fps)
-                
+                current_video_worker = VideoExportWorker(self.data_manager, p_conf, out_fname, s_f, e_f, fps)
                 loop = QEventLoop()
-                export_success = False
-                export_message = ""
+                export_success, export_message = False, ""
 
                 def on_video_finished(success, msg):
                     nonlocal export_success, export_message
-                    export_success = success
-                    export_message = msg
+                    export_success, export_message = success, msg
                     loop.quit()
 
-                video_worker.export_finished.connect(on_video_finished)
-                video_worker.progress_updated.connect(lambda cur, tot, msg: self.log_message.emit(f"  └ {msg}"))
-                
-                video_worker.start()
-                loop.exec() # 等待视频导出工作线程完成
+                current_video_worker.export_finished.connect(on_video_finished)
+                current_video_worker.progress_updated.connect(lambda cur, tot, msg: self.log_message.emit(f"  └ {msg}"))
+                current_video_worker.start(); loop.exec(); current_video_worker.deleteLater()
 
-                # 清理工作线程，防止内存泄漏
-                video_worker.deleteLater()
-
-                if export_success:
-                    self.log_message.emit(f"成功: {filename} -> {os.path.basename(out_fname)}")
-                    successful_exports += 1
-                else:
-                    self.log_message.emit(f"失败: {filename}. 原因: {export_message}")
-                    failed_exports += 1
+                if export_success: self.log_message.emit(f"成功: {filename}"); successful += 1
+                else: self.log_message.emit(f"失败: {filename}. 原因: {export_message}"); failed += 1
 
             except Exception as e:
-                self.log_message.emit(f"处理配置文件 '{filename}' 时发生严重错误: {e}")
-                failed_exports += 1
+                self.log_message.emit(f"处理 '{filename}' 时发生严重错误: {e}"); failed += 1
         
-        summary = f"成功导出 {successful_exports} 个视频，失败 {failed_exports} 个。"
-        self.finished.emit(summary)
+        if current_video_worker and current_video_worker.isRunning():
+            logger.warning("BatchExportWorker 结束时发现 video_worker 仍在运行，尝试取消并等待。")
+            current_video_worker.cancel()
+            current_video_worker.wait(30000) # 增加等待时间
+            current_video_worker.deleteLater() # 确保清理
 
-    def cancel(self):
-        self.is_cancelled = True
-        # 尝试取消并等待当前正在进行的视频导出工作线程
-        if hasattr(self, 'video_worker') and self.video_worker.isRunning():
-            self.video_worker.cancel()
-            self.video_worker.wait()
-            self.video_worker.deleteLater()
+        self.finished.emit(f"成功导出 {successful} 个视频，失败 {failed} 个。")
+
+    def cancel(self): self.is_cancelled = True
 
 # --- 全局统计功能 ---
 
 class GlobalStatsWorker(QThread):
-    """在后台计算全局统计数据"""
     progress = pyqtSignal(int, int)
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
 
     def __init__(self, data_manager: DataManager, parent=None):
         super().__init__(parent)
-        self.data_manager = data_manager
+        self.data_manager = data_manager # 新增：存储 data_manager 实例
+        self.calculator = StatisticsCalculator(data_manager)
 
     def run(self):
         try:
-            results = self.data_manager.calculate_global_stats(
-                lambda current, total: self.progress.emit(current, total)
-            )
-            self.finished.emit(results)
+            calculated_data = self.calculator.calculate_global_stats(lambda c, t: self.progress.emit(c, t))
+            
+            stats_results = calculated_data.get("stats", {})
+            formula_descriptions = calculated_data.get("formulas", {})
+            
+            # 将基础常量的公式存储到 DataManager 的 custom_global_formulas 中
+            # 这样在导出时可以统一处理
+            self.data_manager.custom_global_formulas.update(formula_descriptions)
+            
+            self.finished.emit(stats_results)
         except Exception as e:
             logger.error(f"全局统计计算失败: {e}", exc_info=True)
             self.error.emit(str(e))
 
 class CustomGlobalStatsWorker(QThread):
-    """在后台计算自定义全局常量"""
     progress = pyqtSignal(int, int, str)
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
 
     def __init__(self, data_manager: DataManager, definitions: List[str], parent=None):
         super().__init__(parent)
-        self.data_manager = data_manager
+        self.calculator = StatisticsCalculator(data_manager)
         self.definitions = definitions
-    
+        self.data_manager = data_manager
+
     def run(self):
         try:
-            results = self.data_manager.calculate_custom_global_stats(
-                self.definitions,
-                lambda current, total, msg: self.progress.emit(current, total, msg)
+            # 自定义统计需要基础统计作为输入
+            base_stats = self.data_manager.global_stats
+            if not base_stats:
+                raise RuntimeError("计算自定义常量前，必须先计算基础统计数据。")
+            
+            calculated_data = self.calculator.calculate_custom_global_stats(
+                self.definitions, base_stats, lambda c, t, m: self.progress.emit(c, t, m)
             )
-            self.finished.emit(results)
+            
+            new_stats = calculated_data.get("stats", {})
+            new_formulas = calculated_data.get("formulas", {})
+            
+            # 将新的自定义公式存储到 DataManager
+            self.data_manager.custom_global_formulas.update(new_formulas)
+            
+            self.finished.emit(new_stats)
         except Exception as e:
             logger.error(f"自定义全局常量计算失败: {e}", exc_info=True)
             self.error.emit(str(e))
