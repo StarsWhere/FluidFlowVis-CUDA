@@ -108,9 +108,8 @@ class ExportHandler:
         if self.dm.get_frame_count() == 0:
             QMessageBox.warning(self.main_window, "无数据", "请先加载数据再导出。"); return
         
-        default_name = f"filtered_data_{datetime.now().strftime('%Y%m%d')}.csv"
-        filepath, _ = QFileDialog.getSaveFileName(self.main_window, "导出数据到CSV", os.path.join(self.output_dir, default_name), "CSV 文件 (*.csv)")
-        if not filepath: return
+        default_name = f"filtered_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        filepath = os.path.join(self.output_dir, default_name)
         
         progress = ProgressDialog(self.main_window, "正在导出数据...")
         filter_clause = self.dm.global_filter_clause if self.ui.filter_enabled_checkbox.isChecked() else ""

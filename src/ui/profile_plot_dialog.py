@@ -41,7 +41,8 @@ class ProfilePlotDialog(QDialog):
 
         # --- Controls Layout ---
         controls_layout = QHBoxLayout()
-        title = f"从 ({start_point[0]:.2f}, {start_point[1]:.2f}) 到 ({end_point[0]:.2f}, {end_point[1]:.2f})"
+        # 使用科学计数法格式化坐标
+        title = f"从 (X: {start_point[0]:.2e}, Y: {start_point[1]:.2e}) 到 (X: {end_point[0]:.2e}, Y: {end_point[1]:.2e})"
         controls_layout.addWidget(QLabel(title))
         controls_layout.addStretch()
         
@@ -140,12 +141,19 @@ class ProfilePlotDialog(QDialog):
             QMessageBox.warning(self, "无数据", "没有可导出的剖面数据。"); return
             
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"profile_{selected_key}_{timestamp}.csv"
+        
+        # 将坐标添加到文件名中，使用科学计数法
+        start_x, start_y = self.start_point
+        end_x, end_y = self.end_point
+        filename = f"profile_{selected_key}_from_x{start_x:.2e}_y{start_y:.2e}_to_x{end_x:.2e}_y{end_y:.2e}_{timestamp}.csv"
         filepath = os.path.join(self.output_dir, filename)
             
         try:
-            df_to_export = self.profile_data_cache[selected_key]
+            df_to_export = self.profile_data_cache[selected_key].copy()
+            # 更改列头为英文
+            df_to_export.rename(columns={'distance': 'Distance', 'value': 'Value'}, inplace=True)
             df_to_export.to_csv(filepath, index=False)
             QMessageBox.information(self, "成功", f"剖面数据已保存到:\n{filepath}")
         except Exception as e:
+            logger.error(f"保存剖面数据失败: {e}", exc_info=True)
             QMessageBox.critical(self, "保存失败", f"无法保存文件: {e}")
