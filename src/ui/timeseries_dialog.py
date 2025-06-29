@@ -25,7 +25,7 @@ class TimeSeriesDialog(QDialog):
         self.filter_clause = filter_clause
         self.current_df = None
         
-        self.setWindowTitle(f"时间序列分析 @ ({point_coords[0]:.2f}, {point_coords[1]:.2f})")
+        self.setWindowTitle(f"时间序列分析 @ (X: {point_coords[0]:.2e}, Y: {point_coords[1]:.2e})")
         self.setMinimumSize(800, 700)
 
         main_layout = QVBoxLayout(self)
@@ -146,8 +146,11 @@ class TimeSeriesDialog(QDialog):
         output_dir = getattr(self.dm, 'output_dir', os.path.join(os.getcwd(), 'output'))
         os.makedirs(output_dir, exist_ok=True) # 确保目录存在
 
-        # 生成默认文件名，包含时间戳以确保唯一性
-        default_filename = f"fft_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        selected_variable = self.variable_combo.currentText()
+        x_coord, y_coord = self.point_coords
+        
+        # 生成默认文件名，包含坐标、变量和时间戳 (使用科学计数法)
+        default_filename = f"fft_results_x{x_coord:.2e}_y{y_coord:.2e}_{selected_variable}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         file_name = os.path.join(output_dir, default_filename)
         
         try:
@@ -155,8 +158,8 @@ class TimeSeriesDialog(QDialog):
             amplitudes = 2.0/len(self.yf) * np.abs(self.yf[0:len(self.yf)//2])
             
             df_fft = pd.DataFrame({
-                '频率 (Hz)': self.xf,
-                '振幅': amplitudes
+                'Frequency (Hz)': self.xf, # 列头改为英文
+                'Amplitude': amplitudes    # 列头改为英文
             })
             df_fft.to_csv(file_name, index=False)
             logger.info(f"FFT 结果已成功导出到 {file_name}")
