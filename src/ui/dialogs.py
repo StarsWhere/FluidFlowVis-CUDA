@@ -11,12 +11,13 @@ from PyQt6.QtWidgets import (
     QPushButton, QTextEdit, QListWidget, QDialogButtonBox, QMessageBox
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 
 class ImportDialog(QDialog):
     """显示数据导入到数据库进度的对话框"""
     def __init__(self, parent=None, title="正在导入数据"):
         super().__init__(parent)
+        self.setWindowIcon(QIcon("png/icon.png")) # 设置窗口图标
         self.setWindowTitle(title)
         self.setModal(True)
         self.setFixedSize(450, 150)
@@ -46,6 +47,7 @@ class ConfigSelectionDialog(QDialog):
     """一个自定义对话框，用于从特定目录选择一个或多个配置文件。"""
     def __init__(self, settings_dir: str, parent=None):
         super().__init__(parent)
+        self.setWindowIcon(QIcon("png/icon.png")) # 设置窗口图标
         self.setWindowTitle("选择批量导出配置")
         self.setMinimumSize(450, 350)
         self.settings_dir = settings_dir
@@ -94,6 +96,7 @@ class BatchExportDialog(QDialog):
     """用于显示批量导出进度的对话框。"""
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setWindowIcon(QIcon("png/icon.png")) # 设置窗口图标
         self.setWindowTitle("批量视频导出")
         self.setMinimumSize(500, 400)
         self.setModal(False) # 非模态，不阻塞主窗口
@@ -145,6 +148,7 @@ class StatsProgressDialog(QDialog):
     """显示全局统计计算进度的对话框"""
     def __init__(self, parent=None, title="正在计算统计数据"):
         super().__init__(parent)
+        self.setWindowIcon(QIcon("png/icon.png")) # 设置窗口图标
         self.setWindowTitle(title)
         self.setModal(True)
         self.setFixedSize(450, 120)

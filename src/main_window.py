@@ -5,6 +5,7 @@ import logging
 from typing import Optional
 import numpy as np
 from PyQt6.QtWidgets import QMainWindow, QMessageBox, QFileDialog, QLineEdit, QMenu, QInputDialog
+from PyQt6.QtGui import QIcon
 from PyQt6.QtCore import Qt, QSettings, QPoint, QTimer
 
 from src.core.data_manager import DataManager
@@ -84,6 +85,7 @@ class MainWindow(QMainWindow):
         self._initialize_project()
 
     def _init_ui(self):
+        self.setWindowIcon(QIcon("png/icon.png")) # 设置窗口图标
         self.ui.setup_ui(self, self.formula_engine)
         self.ui.gpu_checkbox.setEnabled(is_gpu_available())
         self.ui.data_dir_line_edit.setText(self.project_dir)

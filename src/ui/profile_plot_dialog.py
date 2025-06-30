@@ -18,15 +18,17 @@ from PyQt6.QtWidgets import (
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.ticker as ticker
+from PyQt6.QtGui import QIcon # 导入QIcon
 
 logger = logging.getLogger(__name__)
 
 class ProfilePlotDialog(QDialog):
     """显示一维剖面图的对话框，支持多变量选择。"""
     
-    def __init__(self, start_point: Tuple, end_point: Tuple, interpolated_data: Dict, 
+    def __init__(self, start_point: Tuple, end_point: Tuple, interpolated_data: Dict,
                  available_variables: Dict[str, str], output_dir: str, parent=None):
         super().__init__(parent)
+        self.setWindowIcon(QIcon("png/icon.png")) # 设置窗口图标
         self.start_point = start_point
         self.end_point = end_point
         self.interp_data = interpolated_data

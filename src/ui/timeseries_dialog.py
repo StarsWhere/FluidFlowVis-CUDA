@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QComboBox, QPushB
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.ticker as ticker
+from PyQt6.QtGui import QIcon # 导入QIcon
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ class TimeSeriesDialog(QDialog):
     
     def __init__(self, point_coords: Tuple[float, float], data_manager, filter_clause: str, parent=None):
         super().__init__(parent)
+        self.setWindowIcon(QIcon("png/icon.png")) # 设置窗口图标
         self.dm = data_manager
         self.point_coords = point_coords
         self.filter_clause = filter_clause
