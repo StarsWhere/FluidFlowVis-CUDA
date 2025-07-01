@@ -1,4 +1,3 @@
-
 from PyQt6.QtGui import QIcon
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -6,7 +5,7 @@ import os
 import logging
 from typing import Optional
 import numpy as np
-from PyQt6.QtWidgets import QMainWindow, QMessageBox, QFileDialog, QLineEdit, QMenu, QInputDialog, QToolTip
+from PyQt6.QtWidgets import QMainWindow, QMessageBox, QFileDialog, QLineEdit, QMenu, QInputDialog, QToolTip, QListWidgetItem
 from PyQt6.QtCore import Qt, QSettings, QPoint, QTimer
 from PyQt6.QtGui import QCursor
 
@@ -16,8 +15,8 @@ from src.core.constants import PickerMode
 from src.utils.help_dialog import HelpDialog
 from src.utils.gpu_utils import is_gpu_available
 from src.utils.help_content import (
-    get_formula_help_html, get_axis_title_help_html, 
-    get_data_processing_help_html, get_analysis_help_html, 
+    get_formula_help_html, get_axis_title_help_html,
+    get_data_processing_help_html, get_analysis_help_html,
     get_template_help_html, get_theme_help_html
 )
 from src.ui.ui_setup import UiMainWindow
@@ -180,11 +179,11 @@ class MainWindow(QMainWindow):
 
     def _connect_auto_apply_widgets(self):
         widgets = [
-            self.ui.heatmap_enabled, self.ui.heatmap_colormap, 
-            self.ui.contour_enabled, self.ui.contour_labels, self.ui.contour_levels, 
-            self.ui.contour_linewidth, self.ui.contour_colors, self.ui.vector_enabled, 
-            self.ui.vector_plot_type, self.ui.quiver_density_spinbox, self.ui.quiver_scale_spinbox, 
-            self.ui.stream_density_spinbox, self.ui.stream_linewidth_spinbox, self.ui.stream_color_combo, 
+            self.ui.heatmap_enabled, self.ui.heatmap_colormap,
+            self.ui.contour_enabled, self.ui.contour_labels, self.ui.contour_levels,
+            self.ui.contour_linewidth, self.ui.contour_colors, self.ui.vector_enabled,
+            self.ui.vector_plot_type, self.ui.quiver_density_spinbox, self.ui.quiver_scale_spinbox,
+            self.ui.stream_density_spinbox, self.ui.stream_linewidth_spinbox, self.ui.stream_color_combo,
             self.ui.filter_enabled_checkbox, self.ui.aspect_ratio_spinbox
         ]
         
@@ -245,9 +244,13 @@ class MainWindow(QMainWindow):
             self.playback_handler.update_time_axis_candidates()
             self.formula_engine.update_allowed_variables(all_vars)
             
-            # Populate floating probe list
+            # --- FIX: Populate floating probe list with checkable items ---
             self.ui.floating_probe_vars_list.clear()
-            self.ui.floating_probe_vars_list.addItems(sorted(all_vars))
+            for var in sorted(all_vars):
+                item = QListWidgetItem(var)
+                item.setCheckState(Qt.CheckState.Unchecked) # Make item checkable
+                self.ui.floating_probe_vars_list.addItem(item)
+            # --- END FIX ---
 
             self.ui.time_slider.setMaximum(frame_count - 1)
             self.ui.video_start_frame.setMaximum(frame_count - 1); self.ui.video_end_frame.setMaximum(frame_count - 1); self.ui.video_end_frame.setValue(frame_count - 1)

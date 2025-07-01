@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import numpy as np
@@ -93,8 +92,10 @@ class PlotWidget(QWidget):
         self.canvas.mpl_connect('scroll_event', self._on_scroll)
         self.canvas.mpl_connect('button_press_event', self._on_button_press)
         self.canvas.mpl_connect('button_release_event', self._on_button_release)
-        self.canvas.mpl_connect('figure_leave_event', self.mouse_left_plot.emit)
-
+        # --- FIX ---
+        # The 'figure_leave_event' passes an event argument.
+        # Use a lambda function to consume this argument and emit the argument-less signal.
+        self.canvas.mpl_connect('figure_leave_event', lambda event: self.mouse_left_plot.emit())
 
     def _get_platform_font(self) -> str:
         if sys.platform == "win32": return "Microsoft YaHei"
