@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -288,11 +287,30 @@ class UiMainWindow:
         info_label = QLabel("将当前数据集（可应用全局过滤器）导出为单个CSV文件。"); info_label.setWordWrap(True); export_layout.addWidget(info_label)
         self.export_data_csv_btn = QPushButton("导出数据到 CSV..."); export_layout.addWidget(self.export_data_csv_btn)
         layout.addWidget(export_group)
+
+        # NEW: Variable Management Group
+        var_management_group = QGroupBox("变量管理")
+        vm_layout = QVBoxLayout(var_management_group)
+        vm_layout.addWidget(QLabel("从数据库中选择一个变量进行操作："))
         
+        self.variables_list = QListWidget()
+        self.variables_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        vm_layout.addWidget(self.variables_list)
+        
+        vm_buttons_layout = QHBoxLayout()
+        vm_buttons_layout.addStretch()
+        self.rename_variable_btn = QPushButton("重命名选中项...")
+        self.delete_variable_btn = QPushButton("删除选中项")
+        vm_buttons_layout.addWidget(self.rename_variable_btn)
+        vm_buttons_layout.addWidget(self.delete_variable_btn)
+        vm_layout.addLayout(vm_buttons_layout)
+        layout.addWidget(var_management_group)
+
         db_group = QGroupBox("数据库维护"); db_layout = QVBoxLayout(db_group)
         self.db_info_label = QLabel("路径: N/A\n大小: 0.00 MB"); db_layout.addWidget(self.db_info_label)
         self.compact_db_btn = QPushButton("压缩优化数据库"); self.compact_db_btn.setToolTip("执行VACUUM命令，可减小文件体积并提升性能。"); db_layout.addWidget(self.compact_db_btn)
         layout.addWidget(db_group)
+
         layout.addStretch(); return tab
 
     def _create_export_tab(self, parent_window) -> QWidget:

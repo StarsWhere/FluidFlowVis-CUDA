@@ -144,6 +144,8 @@ class MainWindow(QMainWindow):
         
         # Analysis/Data Management Controls
         self.ui.apply_filter_btn.clicked.connect(self._apply_global_filter)
+        self.ui.rename_variable_btn.clicked.connect(self._rename_variable)
+        self.ui.delete_variable_btn.clicked.connect(self._delete_variable)
         self.ui.time_analysis_mode_combo.currentIndexChanged.connect(self._on_time_analysis_mode_changed)
         self.ui.pick_timeseries_btn.toggled.connect(self._on_pick_timeseries_toggled)
         self.ui.pick_by_coords_btn.clicked.connect(self._pick_timeseries_by_coords)
@@ -240,6 +242,7 @@ class MainWindow(QMainWindow):
         frame_count = self.data_manager.get_frame_count()
         if frame_count > 0:
             all_vars = self.data_manager.get_variables()
+            self._update_variables_list()
             self.stats_handler.load_definitions_and_stats()
             self.playback_handler.update_time_axis_candidates()
             self.formula_engine.update_allowed_variables(all_vars)
@@ -582,3 +585,74 @@ class MainWindow(QMainWindow):
             const_menu = menu.addMenu("科学常数"); [const_menu.addAction(c).triggered.connect(lambda ch, v=c: insert_text(v)) for c in sorted(self.formula_engine.science_constants.keys())]
         if not menu.actions(): menu.addAction("无可用变量").setEnabled(False)
         menu.exec(position)
+
+    def _update_variables_list(self):
+        """填充“数据管理”选项卡中的变量列表。"""
+        self.ui.variables_list.clear()
+        all_vars = self.data_manager.get_variables()
+        # 排除用户不应管理的核心/特殊列
+        managed_vars = [v for v in all_vars if v not in ['id', 'frame_index', 'source_file', 'x', 'y']]
+        self.ui.variables_list.addItems(sorted(managed_vars))
+
+    def _delete_variable(self):
+        """处理删除所选变量的逻辑。"""
+        selected_items = self.ui.variables_list.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "未选择", "请在列表中选择一个要删除的变量。")
+            return
+        
+        var_to_delete = selected_items[0].text()
+        
+        reply = QMessageBox.question(self, "确认删除", 
+            f"您确定要永久删除变量 <b>'{var_to_delete}'</b> 吗？<br><br>"
+            "此操作将从数据库中移除该列及其所有关联的统计数据，且<b>无法撤销</b>。<br>"
+            "任何依赖此变量的公式、模板或设置文件都将失效。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                self.data_manager.delete_variable(var_to_delete)
+                QMessageBox.information(self, "成功", f"变量 '{var_to_delete}' 已成功删除。正在刷新应用...")
+                self._load_project_data() # 完全刷新以更新所有UI部分
+            except Exception as e:
+                logger.error(f"从UI删除变量时出错: {e}", exc_info=True)
+                QMessageBox.critical(self, "删除失败", f"删除变量 '{var_to_delete}' 时发生错误:\n{e}")
+
+    def _rename_variable(self):
+        """处理重命名所选变量的逻辑。"""
+        selected_items = self.ui.variables_list.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "未选择", "请在列表中选择一个要重命名的变量。")
+            return
+
+        old_name = selected_items[0].text()
+        
+        new_name, ok = QInputDialog.getText(self, "重命名变量", 
+                                            f"请输入 '{old_name}' 的新名称:", 
+                                            QLineEdit.EchoMode.Normal, old_name)
+
+        if ok and new_name and new_name != old_name:
+            new_name = new_name.strip()
+            
+            if not new_name.isidentifier():
+                QMessageBox.warning(self, "名称无效", "变量名只能包含字母、数字和下划线，且不能以数字开头。")
+                return
+            if new_name in self.data_manager.get_variables():
+                QMessageBox.warning(self, "名称冲突", f"变量名 '{new_name}' 已存在。")
+                return
+
+            reply = QMessageBox.question(self, "确认重命名",
+                f"您确定要将变量 <b>'{old_name}'</b> 重命名为 <b>'{new_name}'</b> 吗？<br><br>"
+                "任何依赖此变量的公式、模板或设置文件都需要手动更新，否则将失效。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+
+            if reply == QMessageBox.StandardButton.Yes:
+                try:
+                    self.data_manager.rename_variable(old_name, new_name)
+                    QMessageBox.information(self, "成功", f"变量已成功重命名为 '{new_name}'。正在刷新应用...")
+                    self._load_project_data() # 完全刷新
+                except Exception as e:
+                    logger.error(f"从UI重命名变量时出错: {e}", exc_info=True)
+                    QMessageBox.critical(self, "重命名失败", f"重命名变量时发生错误:\n{e}")

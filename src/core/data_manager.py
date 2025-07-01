@@ -355,3 +355,82 @@ class DataManager(QObject):
     def clear_global_stats(self):
         self.global_stats.clear(); self.custom_global_formulas.clear()
         logger.info("内存中的全局统计数据已清除。")
+        
+    def delete_variable(self, var_name: str):
+        """从数据库中删除一个变量列及其关联的统计数据。"""
+        core_vars = {'x', 'y', 'id', 'frame_index', 'source_file'}
+        if var_name in core_vars:
+            raise ValueError(f"无法删除核心变量 '{var_name}'。")
+
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        try:
+            # 1. Drop the column from the main data table
+            logger.info(f"正在从 timeseries_data 表中删除列: {var_name}")
+            cursor.execute(f'ALTER TABLE timeseries_data DROP COLUMN "{var_name}";')
+
+            # 2. Delete associated global stats from metadata table
+            stats_pattern_to_delete = f"{var_name}_global_%"
+            logger.info(f"正在从 {METADATA_TABLE_NAME} 表中删除键匹配 '{stats_pattern_to_delete}' 的统计数据")
+            cursor.execute(f"DELETE FROM {METADATA_TABLE_NAME} WHERE key LIKE ?", (stats_pattern_to_delete,))
+            
+            conn.commit()
+            logger.info(f"成功删除变量 '{var_name}' 及其关联数据。")
+
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"删除变量 '{var_name}' 失败: {e}", exc_info=True)
+            raise RuntimeError(f"数据库操作失败: {e}")
+        finally:
+            conn.close()
+        
+        # 3. Invalidate internal caches so the next query re-reads the schema
+        self.refresh_schema_info()
+        self.load_global_stats()
+
+    def rename_variable(self, old_name: str, new_name: str):
+        """在数据库中重命名一个变量列及其关联的统计数据。"""
+        core_vars = {'x', 'y', 'id', 'frame_index', 'source_file'}
+        if old_name in core_vars:
+            raise ValueError(f"无法重命名核心变量 '{old_name}'。")
+        if not new_name.isidentifier():
+            raise ValueError(f"新名称 '{new_name}' 不是一个有效的标识符。")
+        current_vars = self.get_variables()
+        if new_name in current_vars:
+            raise ValueError(f"变量名 '{new_name}' 已存在。")
+
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        try:
+            # 1. Rename the column in the main data table
+            logger.info(f"正在重命名列 '{old_name}' 为 '{new_name}'")
+            cursor.execute(f'ALTER TABLE timeseries_data RENAME COLUMN "{old_name}" TO "{new_name}";')
+            
+            # 2. Update associated global stats keys in metadata table
+            stats_pattern = f"{old_name}_global_%"
+            logger.info(f"正在更新匹配 '{stats_pattern}' 的统计数据键")
+            cursor.execute(f"SELECT key FROM {METADATA_TABLE_NAME} WHERE key LIKE ?", (stats_pattern,))
+            keys_to_update = [row[0] for row in cursor.fetchall()]
+            
+            updates = []
+            for old_key in keys_to_update:
+                new_key = old_key.replace(f"{old_name}_global_", f"{new_name}_global_", 1)
+                updates.append((new_key, old_key))
+            
+            if updates:
+                cursor.executemany(f"UPDATE {METADATA_TABLE_NAME} SET key = ? WHERE key = ?", updates)
+                logger.info(f"已更新 {len(updates)} 个统计数据键。")
+
+            conn.commit()
+            logger.info(f"成功重命名变量 '{old_name}' 为 '{new_name}'。")
+
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"重命名变量 '{old_name}' 失败: {e}", exc_info=True)
+            raise RuntimeError(f"数据库操作失败: {e}")
+        finally:
+            conn.close()
+
+        # 3. Invalidate internal caches and reload stats
+        self.refresh_schema_info()
+        self.load_global_stats()
