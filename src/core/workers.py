@@ -12,7 +12,8 @@ import re
 import numpy as np
 from typing import List, Dict, Any, Tuple
 from datetime import datetime
-from concurrent.futures import ProcessPoolExecutor, as_completed, BrokenProcessPool
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from scipy.interpolate import interpn
 
 from PyQt6.QtCore import QThread, pyqtSignal
