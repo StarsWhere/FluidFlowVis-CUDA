@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -5,7 +6,7 @@
 """
 from typing import List, Dict
 
-# ... [保留 get_formula_help_html, get_custom_stats_help_html, get_axis_title_help_html, get_analysis_help_html 的完整代码]
+# ... [保留 get_formula_help_html, get_axis_title_help_html, get_analysis_help_html 的完整代码]
 
 def get_formula_help_html(base_variables: List[str], custom_global_variables: Dict[str, float], science_constants: Dict[str, float]) -> str:
     """生成公式帮助的HTML内容"""
@@ -18,8 +19,8 @@ def get_formula_help_html(base_variables: List[str], custom_global_variables: Di
     global_section = ""
     if custom_globals_html:
         global_section += f"""
-        <h3>全局变量与常量</h3>
-        <p>这些是在“全局统计”标签页中自动计算或由用户定义的常量，它们在所有计算中可用:</p>
+        <h3>全局常量</h3>
+        <p>这些是在“数据处理”标签页中计算或由用户定义的常量，它们在所有计算中可用:</p>
         <ul>{custom_globals_html}</ul>
         """
 
@@ -39,7 +40,7 @@ def get_formula_help_html(base_variables: List[str], custom_global_variables: Di
         <h4>数据变量 (逐点变化)</h4>
         <p>以下变量来自您的数据，代表每个数据点的属性:</p>
         <ul>{var_list_html or "<li>(无可用数据)</li>"}</ul>
-        {global_section or "<h4>全局变量与常量</h4><p>(请先在“全局统计”标签页中进行计算)</p>"}
+        {global_section or "<h4>全局常量</h4><p>(请先在“数据处理”标签页中进行计算)</p>"}
         <h4>科学常量</h4><ul>{const_list_html}</ul>
 
         <h3>函数列表</h3>
@@ -80,8 +81,8 @@ def get_formula_help_html(base_variables: List[str], custom_global_variables: Di
         </ul>
     </body></html>"""
 
-def get_custom_stats_help_html() -> str:
-    """生成自定义全局统计帮助的HTML内容"""
+def get_data_processing_help_html() -> str:
+    """为“数据处理”选项卡生成统一的帮助文档"""
     return """
     <html><head><style>
         body { font-family: sans-serif; line-height: 1.6; }
@@ -91,54 +92,75 @@ def get_custom_stats_help_html() -> str:
         ul { list-style-type: circle; padding-left: 20px; }
         .note { border-left: 3px solid #f0ad4e; padding-left: 15px; background-color: #fcf8e3; margin-top:10px; }
         .new { color: red; font-weight: bold; }
+        .section-box { border: 1px solid #ccc; border-radius: 5px; padding: 15px; margin-top: 20px; }
     </style></head><body>
-        <h2>自定义常量计算指南</h2>
-        <p>此功能允许您基于<b>整个数据集</b>计算新的<b>全局常量</b>。这些定义会<span class="new">永久保存在数据库中</span>，并可在所有可视化公式中使用。</p>
+        <h2>数据处理指南</h2>
+        <p>此选项卡是InterVis的数据计算中心，允许您从现有数据派生出新的变量和常量，以供后续分析和可视化使用。</p>
 
-        <h3>基本格式</h3>
-        <p>每行定义一个常量: <code>new_constant_name = aggregate_function(expression)</code></p>
-
-        <h3>计算模式</h3>
-        <p>引擎会自动选择最高效的计算路径：</p>
-        <ul>
-            <li><b>标准公式 (无空间运算):</b> 使用<b>超快SQL查询</b>在数据库中直接完成。</li>
-            <li><b>含空间运算的公式 (如 <code>curl</code>, <code>grad_x</code>等):</b> 自动切换到<span class="new">并行的逐帧迭代</span>模式。这会充分利用您的CPU多核性能，但仍可能需要一些时间。</li>
-        </ul>
-
-        <h3>组件说明</h3>
-        <ul>
-            <li><b><code>new_constant_name</code></b>: 新常量的名称 (字母、数字、下划线)。</li>
-            <li><b><code>aggregate_function</code></b>: 聚合函数，对所有帧或所有点生效。支持 <code>mean</code>, <code>sum</code>, <code>std</code>, <code>var</code>。</li>
-            <li><b><code>expression</code></b>: 数学表达式，支持:
-                <ul>
-                    <li>原始数据变量 (如 <code>u</code>, <code>p</code>)。</li>
-                    <li>任何已计算的全局常量 (包括之前定义的)。</li>
-                    <li>标准数学函数 (<code>sqrt</code>, <code>sin</code>等)。</li>
-                    <li>新增的空间函数 (<code>grad_x</code>, <code>div</code>, <code>curl</code> 等)。</li>
-                </ul>
-            </li>
-        </ul>
-
-        <h3>工作流程</h3>
-        <ol>
-            <li>在文本框中添加或编辑您的定义。</li>
-            <li>点击“<b>保存定义并重新计算</b>”按钮。</li>
-            <li>您的定义会被保存到数据库，然后程序会开始计算。</li>
-            <li>计算完成后，新的常量即可在任何地方使用。</li>
-        </ol>
-
-        <h3>示例</h3>
-        <h4>1. 计算平均湍动能 (TKE) - <span style="color:green;">快速SQL模式</span></h4>
-        <code>tke_global_mean = mean(0.5 * (u**2 + v**2))</code>
-
-        <h4>2. 计算雷诺应力 - <span style="color:green;">快速SQL模式</span></h4>
-        <code>reynolds_stress_uv = mean((u - u_global_mean) * (v - v_global_mean))</code>
-
-        <h4>3. <span class="new">计算全场平均涡量 - 并行迭代模式</span></h4>
-        <div class="note">
-            <p>因为包含 <code>curl()</code>，此计算会并行地遍历所有帧，对每一帧计算涡量场，然后取所有帧涡量均值的均值。</p>
+        <div class="section-box">
+            <h3>1. 派生变量 (新数据列)</h3>
+            <p>此功能用于在数据库中创建<b>新的数据列</b>。新列中的每个值都是基于同一行（即同一个数据点）的其他值计算得出的。</p>
+            <ul>
+                <li><b>用途:</b> 计算像动量 (<code>rho*u</code>)、动能 (<code>0.5*rho*(u*u+v*v)</code>) 等逐点变化的物理量。</li>
+                <li><b>工作方式:</b> 在数据库层面执行高效的SQL更新，为数据集中的<b>每一行</b>计算一个新值。</li>
+                <li><b>语法:</b>
+                    <ul>
+                        <li><b>新变量名:</b> 字母、数字、下划线的组合 (例如: <code>momentum_x</code>)。</li>
+                        <li><b>公式:</b> 必须是<b>SQLite兼容</b>的数学表达式。您可以使用任何已存在的变量名。</li>
+                    </ul>
+                </li>
+                <li><b>示例:</b>
+                    <ul>
+                        <li>新变量名: <code>tke</code></li>
+                        <li>公式: <code>0.5 * (u*u + v*v)</code></li>
+                    </ul>
+                </li>
+            </ul>
+            <div class="note"><p><b>重要:</b> 此处创建的变量是<b>永久性</b>的，会保存在数据库中，直到您重新导入数据。</p></div>
         </div>
-        <code>mean_vorticity = mean(curl(u, v))</code>
+
+        <div class="section-box">
+            <h3>2. 全局常量 (标量值)</h3>
+            <p>此功能用于计算代表<b>整个数据集</b>特征的<b>单个标量值</b> (常量)。这些常量可以在任何地方 (包括可视化公式、派生变量公式和其他常量定义中) 使用。</p>
+            
+            <h4>基本格式</h4>
+            <p>每行定义一个常量: <code>new_constant_name = aggregate_function(expression)</code></p>
+
+            <h4>计算模式</h4>
+            <p>引擎会自动选择最高效的计算路径：</p>
+            <ul>
+                <li><b>标准公式 (无空间运算):</b> 使用<b>超快SQL查询</b>在数据库中直接完成聚合。</li>
+                <li><b>含空间运算的公式 (如 <code>curl</code>, <code>grad_x</code>等):</b> 自动切换到<span class="new">并行的逐帧迭代</span>模式。这会充分利用您的CPU多核性能，但仍可能需要一些时间。</li>
+            </ul>
+
+            <h4>组件说明</h4>
+            <ul>
+                <li><b><code>new_constant_name</code></b>: 新常量的名称 (例如: <code>tke_global_mean</code>)。</li>
+                <li><b><code>aggregate_function</code></b>: 聚合函数，对所有帧或所有点生效。支持 <code>mean</code>, <code>sum</code>, <code>std</code>, <code>var</code>。</li>
+                <li><b><code>expression</code></b>: 可以参与聚合的数学表达式。支持:
+                    <ul>
+                        <li>原始数据变量 (如 <code>u</code>, <code>p</code>)。</li>
+                        <li>任何已计算的全局常量 (包括在此文本框中、位于当前行之前的常量)。</li>
+                        <li>标准数学函数 (<code>sqrt</code>, <code>sin</code>等)。</li>
+                        <li>空间运算函数 (<code>grad_x</code>, <code>div</code>, <code>curl</code> 等)。</li>
+                    </ul>
+                </li>
+            </ul>
+
+            <h4>示例</h4>
+            <ul>
+                <li><b>计算平均湍动能 (TKE) - <span style="color:green;">快速SQL模式</span></b><br>
+                <code>tke_global_mean = mean(0.5 * (u**2 + v**2))</code></li>
+
+                <li><b>计算雷诺应力 - <span style="color:green;">快速SQL模式</span></b> (假设`u_global_mean`已在上一步计算好)<br>
+                <code>reynolds_stress_uv = mean((u - u_global_mean) * (v - v_global_mean))</code></li>
+
+                <li><b><span class="new">计算全场平均涡量 - 并行迭代模式</span></b><br>
+                <div class="note"><p>因为包含 <code>curl()</code>，此计算会并行地遍历所有帧，对每一帧计算涡量场，然后取所有帧涡量均值的均值。</p></div>
+                <code>mean_vorticity = mean(curl(u, v))</code></li>
+            </ul>
+        </div>
+        
     </body></html>
     """
 
@@ -162,7 +184,7 @@ def get_axis_title_help_html() -> str:
                 <p>可用占位符:</p>
                 <ul>
                     <li><code>{frame_index}</code> - 当前帧的索引。</li>
-                    <li><code>{time}</code> - 当前帧的时间戳。您可以进行格式化，例如 <code>{time:.3f}</code> 会将时间戳显示为三位小数。</li>
+                    <li><code>{time}</code> - 当前帧的时间戳 (由“播放控制”中的时间轴变量决定)。您可以进行格式化，例如 <code>{time:.3f}</code> 会将时间戳显示为三位小数。</li>
                 </ul>
                 <p><b>示例:</b> <code>Frame: {frame_index}, Time: {time:.4f}s</code></p>
             </li>
@@ -208,6 +230,20 @@ def get_analysis_help_html() -> str:
             <li><b>瞬时场:</b> 默认模式，显示单个时间步（帧）的数据。</li>
             <li><b>时间平均场:</b> 计算并显示一个指定时间范围（从起始帧到结束帧）内所有数据点的<b>平均值</b>。这对于观察稳态特征、消除瞬时波动非常有用。</li>
         </ul>
+        
+        <h3><span class="new">时间轴变量</span> (位于主窗口下方“播放控制”面板)</h3>
+        <p>此功能允许您指定数据中的<b>哪一列</b>作为时间演化的依据。</p>
+        <ul>
+            <li><b>默认:</b> <code>frame_index</code> (文件导入的顺序)。</li>
+            <li><b>选择:</b> 您可以从下拉菜单中选择任何数值型变量 (如 `timestamp`, `cycle`) 作为时间轴。</li>
+            <li><b>影响:</b>
+                <ul>
+                    <li>播放滑块将按照所选变量的数值顺序进行播放。</li>
+                    <li>时间序列分析将以所选变量为X轴。</li>
+                    <li>图表标题中的 <code>{time}</code> 占位符将显示所选变量的当前值。</li>
+                </ul>
+            </li>
+        </ul>
 
         <h2 style="margin-top:20px;">交互式分析工具</h2>
 
@@ -231,7 +267,7 @@ def get_analysis_help_html() -> str:
         <p>此功能用于查看图上某一个固定点，其物理量随时间的变化情况。</p>
         <ol>
             <li>点击“<b>拾取时间序列点</b>”按钮，或点击“<b>按坐标拾取...</b>”按钮并输入精确坐标。</li>
-            <li>一个新窗口会弹出。您可以在此窗口的下拉菜单中选择不同的变量，查看它们在该点的时间序列图。</li>
+            <li>一个新窗口会弹出。您可以在此窗口的下拉菜单中选择不同的变量，查看它们在该点的时间序列图 (X轴为当前选定的时间轴变量)。</li>
             <li>点击“<b>计算FFT</b>”按钮，可以对当前的时间序列进行快速傅里叶变换，分析其频域特性。</li>
         </ol>
     </body></html>

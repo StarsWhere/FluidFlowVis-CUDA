@@ -26,37 +26,39 @@ from src.core.computation_core import compute_gridded_field
 logger = logging.getLogger(__name__)
 
 # --- Helper function for parallel processing (must be at top level) ---
-def _parallel_spatial_calc(args: Tuple) -> Tuple[int, float]:
+def _parallel_spatial_calc(args: Tuple) -> Tuple[Any, float]:
     """
     可被序列化并由子进程执行的函数。
     """
-    frame_idx, db_path, inner_expr, agg_func, base_globals = args
+    time_value, db_path, time_variable, inner_expr, agg_func, base_globals = args
     # 每个子进程创建自己的 DataManager 和 FormulaEngine 实例
     dm = DataManager()
     dm.setup_project_directory(os.path.dirname(db_path))
+    dm.set_time_variable(time_variable) # Ensure correct time axis
     formula_engine = FormulaEngine()
     formula_engine.update_allowed_variables(dm.get_variables())
     formula_engine.update_custom_global_variables(base_globals)
     
     try:
-        frame_data = dm.get_frame_data(frame_idx)
+        # Fetch data for a specific time value
+        frame_data = dm.get_frame_data(dm._get_sorted_time_values().index(time_value))
         if frame_data is None or frame_data.empty:
-            return frame_idx, np.nan
+            return time_value, np.nan
         
         grid_comp = compute_gridded_field(frame_data, inner_expr, 'x', 'y', formula_engine, (100,100))
         result_grid = grid_comp.get('result_data')
         if result_grid is None:
-            return frame_idx, np.nan
+            return time_value, np.nan
         
         with np.errstate(invalid='ignore'):
-            if agg_func == 'mean': return frame_idx, np.nanmean(result_grid)
-            if agg_func == 'sum': return frame_idx, np.nansum(result_grid)
-            if agg_func == 'std': return frame_idx, np.nanstd(result_grid)
-            if agg_func == 'var': return frame_idx, np.nanvar(result_grid)
-            return frame_idx, np.nan
+            if agg_func == 'mean': return time_value, np.nanmean(result_grid)
+            if agg_func == 'sum': return time_value, np.nansum(result_grid)
+            if agg_func == 'std': return time_value, np.nanstd(result_grid)
+            if agg_func == 'var': return time_value, np.nanvar(result_grid)
+            return time_value, np.nan
     except Exception as e:
-        logger.error(f"子进程(帧 {frame_idx}) 计算失败: {e}")
-        return frame_idx, np.nan
+        logger.error(f"子进程(时间值 {time_value}) 计算失败: {e}")
+        return time_value, np.nan
 
 # --- End of helper function ---
 
@@ -83,18 +85,33 @@ class DatabaseImportWorker(QThread):
             df_sample = pd.read_csv(os.path.join(self.dm.project_directory, csv_files[0]), nrows=10)
             numeric_cols = df_sample.select_dtypes(include=np.number).columns.tolist()
             if not numeric_cols: raise ValueError("第一个CSV文件中未找到数值列。")
+            all_cols = df_sample.columns.tolist()
 
             conn = self.dm.get_db_connection()
-            self.dm.create_database_tables(conn) # 创建元数据表
-            cols_def = ", ".join([f'"{col}" REAL' for col in numeric_cols])
-            conn.execute(f"CREATE TABLE timeseries_data (id INTEGER PRIMARY KEY, frame_index INTEGER NOT NULL, timestamp REAL, {cols_def});")
+            self.dm.create_database_tables(conn)
+            
+            # Add frame_index and source_file columns to the definition
+            cols_def_parts = [f'"{col}" REAL' for col in all_cols]
+            table_def = f"""
+                CREATE TABLE timeseries_data (
+                    id INTEGER PRIMARY KEY,
+                    frame_index INTEGER NOT NULL,
+                    source_file TEXT,
+                    {", ".join(cols_def_parts)}
+                );
+            """
+            conn.execute(table_def)
             conn.commit()
 
             for i, filename in enumerate(csv_files):
                 if self.is_cancelled: break
                 self.progress.emit(i + 1, len(csv_files) + 2, f"正在导入: {filename}")
-                df = pd.read_csv(os.path.join(self.dm.project_directory, filename), usecols=numeric_cols, dtype=float)
-                df['frame_index'] = i; df['timestamp'] = float(i)
+                # Load all original columns
+                df = pd.read_csv(os.path.join(self.dm.project_directory, filename), dtype={col: float for col in numeric_cols})
+                df['frame_index'] = i
+                df['source_file'] = filename
+                # Ensure columns match the table schema order
+                df = df[['frame_index', 'source_file'] + all_cols]
                 df.to_sql('timeseries_data', conn, if_exists='append', index=False)
             
             if self.is_cancelled: conn.close(); os.remove(self.dm.db_path); return
@@ -105,7 +122,8 @@ class DatabaseImportWorker(QThread):
             
             self.log_message.emit("导入完成，正在计算基础统计数据...")
             self.dm.refresh_schema_info()
-            stats_worker = GlobalStatsWorker(self.dm, self.dm.get_variables())
+            # Calculate stats for all numeric columns found
+            stats_worker = GlobalStatsWorker(self.dm, self.dm.get_time_candidates())
             stats_worker.progress.connect(lambda cur, tot, msg: self.progress.emit(len(csv_files) + 2, len(csv_files) + 2, f"统计: {msg}"))
             stats_worker.error.connect(self.error.emit)
             stats_worker.finished.connect(lambda: self.finished.emit())
@@ -117,6 +135,7 @@ class DatabaseImportWorker(QThread):
             if os.path.exists(self.dm.db_path):
                 try: os.remove(self.dm.db_path)
                 except Exception as ce: logger.error(f"清理失败的DB文件时出错: {ce}")
+
 
 class DerivedVariableWorker(QThread):
     progress = pyqtSignal(int, int, str)
@@ -216,7 +235,13 @@ class GlobalStatsWorker(QThread):
 
     def run(self):
         try:
-            queries = self.calculator.get_global_stats_queries(self.vars_to_calc)
+            # Filter out non-numeric columns like 'source_file'
+            numeric_vars = [v for v in self.vars_to_calc if v != 'source_file']
+            if not numeric_vars:
+                self.finished.emit()
+                return
+
+            queries = self.calculator.get_global_stats_queries(numeric_vars)
             if not queries: self.finished.emit(); return
             
             stats_results = {}
@@ -225,7 +250,6 @@ class GlobalStatsWorker(QThread):
             for i, (var, query) in enumerate(queries.items()):
                 self.progress.emit(i + 1, total, f"变量: {var}")
                 res = conn.execute(query).fetchone()
-                # --- FIX: Handle case where query returns None (e.g., empty table) ---
                 mean, sum_val, min_val, max_val, var_val, std_val = res if res and all(r is not None for r in res) else (0,0,0,0,0,0)
                 stats_results.update({f"{var}_global_mean": mean, f"{var}_global_sum": sum_val, f"{var}_global_min": min_val, f"{var}_global_max": max_val, f"{var}_global_var": var_val, f"{var}_global_std": std_val})
 
@@ -287,16 +311,17 @@ class CustomGlobalStatsWorker(QThread):
         if not agg_match: raise ValueError("空间运算常量需含聚合函数(mean,sum等)。")
         
         agg_func, inner_expr = agg_match.groups()
-        frame_count = self.dm.get_frame_count()
+        time_values = self.dm._get_sorted_time_values()
+        frame_count = len(time_values)
         frame_results = []
         
-        tasks = [(idx, self.dm.db_path, inner_expr, agg_func, globals) for idx in range(frame_count)]
+        tasks = [(t_val, self.dm.db_path, self.dm.time_variable, inner_expr, agg_func, globals) for t_val in time_values]
         
         processed_count = 0
         with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
             future_to_frame = {executor.submit(_parallel_spatial_calc, task): task[0] for task in tasks}
             for future in as_completed(future_to_frame):
-                frame_idx, result = future.result()
+                time_val, result = future.result()
                 if not np.isnan(result):
                     frame_results.append(result)
                 processed_count += 1

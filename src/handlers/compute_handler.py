@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -24,6 +25,7 @@ class ComputeHandler:
 
     def connect_signals(self):
         """连接此处理器管理的UI组件的信号。"""
+        # Connects to the button in the "Data Processing" tab
         self.ui.compute_and_add_btn.clicked.connect(self.start_derived_variable_computation)
 
     def start_derived_variable_computation(self):
@@ -44,8 +46,9 @@ class ComputeHandler:
             return
 
         if new_name in self.dm.get_variables():
-            QMessageBox.warning(self.main_window, "名称冲突", f"变量名 '{new_name}' 已存在。")
-            return
+            reply = QMessageBox.question(self.main_window, "名称冲突", f"变量名 '{new_name}' 已存在。是否覆盖？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+            if reply == QMessageBox.StandardButton.Cancel:
+                return
 
         self.compute_progress_dialog = StatsProgressDialog(self.main_window, "正在计算新变量")
         self.compute_worker = DerivedVariableWorker(self.dm, new_name, formula)
@@ -66,7 +69,8 @@ class ComputeHandler:
         self.dm.load_global_stats() # Reload to get new stats
         self.formula_engine.update_allowed_variables(self.dm.get_variables())
         self.formula_engine.update_custom_global_variables(self.dm.global_stats)
-        self.main_window.stats_handler.update_stats_display() # Refresh stats text
+        self.main_window.stats_handler.update_stats_display() 
+        self.main_window.playback_handler.update_time_axis_candidates() # Update time axis combo
         
         new_name = self.ui.new_variable_name_edit.text().strip()
         QMessageBox.information(self.main_window, "计算完成", f"新变量 '{new_name}' 已成功计算并添加到数据库，其基础统计数据也已更新。")

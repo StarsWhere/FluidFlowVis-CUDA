@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
@@ -30,6 +31,9 @@ class DataManager(QObject):
         
         self._variables: Optional[List[str]] = None
         self._frame_count: Optional[int] = None
+        self._sorted_time_values: Optional[List] = None
+        
+        self.time_variable: str = "frame_index" # Default time variable
         
         self.global_stats: Dict[str, float] = {}
         self.custom_global_formulas: Dict[str, str] = {}
@@ -73,14 +77,12 @@ class DataManager(QObject):
     def create_database_tables(self, conn: sqlite3.Connection):
         """创建所有必需的表，如果它们不存在的话。"""
         cursor = conn.cursor()
-        # Metadata table for storing global stats
         cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS {METADATA_TABLE_NAME} (
             key TEXT PRIMARY KEY,
             value REAL NOT NULL
         );
         """)
-        # Custom constants definitions table
         cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS {CUSTOM_CONSTANTS_TABLE_NAME} (
             id INTEGER PRIMARY KEY,
@@ -94,11 +96,13 @@ class DataManager(QObject):
         """导入完成后，强制重新加载元数据。"""
         self.refresh_schema_info()
         self.load_global_stats() # Load stats from db
+        # Set default time variable after schema is known
+        self.set_time_variable('frame_index' if 'frame_index' in self.get_variables() else self.get_time_candidates()[0])
         logger.info("数据库设置完成。")
 
     def refresh_schema_info(self):
         """当数据库表结构发生变化时（如添加列），强制刷新元数据。"""
-        self._variables = None; self._frame_count = None
+        self._variables = None; self._frame_count = None; self._sorted_time_values = None
         self.get_variables(); self.get_frame_count()
         logger.info("DataManager schema info has been refreshed.")
 
@@ -109,19 +113,48 @@ class DataManager(QObject):
             logger.info("全局过滤器已清除。")
             return
         
-        # 非常基础的验证，防止一些明显的错误
         if 'drop' in filter_text.lower() or 'delete' in filter_text.lower():
              raise ValueError("过滤器不允许包含 'DROP' 或 'DELETE'。")
         
         self.global_filter_clause = f"AND ({filter_text})"
         logger.info(f"全局过滤器已设置为: {self.global_filter_clause}")
-        # 清空缓存，因为过滤条件已改变
         self.cache.clear()
 
+    def set_time_variable(self, variable_name: str):
+        """设置用于时间演化的变量。"""
+        if variable_name not in self.get_variables():
+            msg = f"尝试将时间变量设置为不存在的列: {variable_name}"
+            logger.error(msg)
+            self.error_occurred.emit(msg)
+            return
+            
+        logger.info(f"时间轴变量已更改为: '{variable_name}'")
+        self.time_variable = variable_name
+        self._frame_count = None
+        self._sorted_time_values = None
+        self.cache.clear()
+
+    def _get_sorted_time_values(self) -> List:
+        if self._sorted_time_values is None:
+            if not self.is_database_ready(): return []
+            try:
+                conn = self.get_db_connection()
+                query = f'SELECT DISTINCT "{self.time_variable}" FROM timeseries_data ORDER BY "{self.time_variable}" ASC;'
+                df_times = pd.read_sql_query(query, conn)
+                conn.close()
+                self._sorted_time_values = df_times[self.time_variable].tolist()
+            except Exception as e:
+                logger.error(f"无法获取时间变量 '{self.time_variable}' 的唯一值: {e}")
+                self._sorted_time_values = []
+        return self._sorted_time_values
+
     def get_frame_data(self, frame_index: int) -> Optional[pd.DataFrame]:
-        # 缓存键现在必须包含过滤器，以避免混淆
-        cache_key = (frame_index, self.global_filter_clause)
-        if not (0 <= frame_index < self.get_frame_count()): return None
+        time_values = self._get_sorted_time_values()
+        if not (0 <= frame_index < len(time_values)): return None
+        
+        time_value = time_values[frame_index]
+        cache_key = (frame_index, self.global_filter_clause, self.time_variable)
+        
         if cache_key in self.cache:
             self.cache.move_to_end(cache_key)
             return self.cache[cache_key]
@@ -132,39 +165,43 @@ class DataManager(QObject):
             if not all_known_vars: return pd.DataFrame()
 
             cols_to_select = ", ".join([f'"{var}"' for var in all_known_vars])
-            query = f"SELECT {cols_to_select} FROM timeseries_data WHERE frame_index = ? {self.global_filter_clause}"
+            query = f'SELECT {cols_to_select} FROM timeseries_data WHERE "{self.time_variable}" = ? {self.global_filter_clause}'
             
-            data = pd.read_sql_query(query, conn, params=(frame_index,))
+            data = pd.read_sql_query(query, conn, params=(time_value,))
             conn.close()
 
             self.cache[cache_key] = data
             self._enforce_cache_limit()
             return data
         except Exception as e:
-            msg = f"从数据库加载帧 {frame_index} 数据失败: {e}"
+            msg = f"从数据库加载帧 {frame_index} (时间值: {time_value}) 数据失败: {e}"
             logger.error(msg, exc_info=True)
             self.error_occurred.emit(f"加载帧 {frame_index} 失败 (可能由于过滤器语法错误)。\n错误: {e}")
             return None
 
     def get_time_averaged_data(self, start_frame: int, end_frame: int) -> Optional[pd.DataFrame]:
-        """计算并返回指定时间范围内的平均场。"""
+        time_values = self._get_sorted_time_values()
+        if not (0 <= start_frame < len(time_values) and 0 <= end_frame < len(time_values) and start_frame <= end_frame):
+            return None
+            
+        start_time = time_values[start_frame]
+        end_time = time_values[end_frame]
+        
         try:
             conn = self.get_db_connection()
             variables = self.get_variables()
             
-            # --- FIX: Exclude x and y from the main averaging to prevent duplicate columns ---
-            vars_to_avg = [var for var in variables if var not in ['x', 'y']]
+            vars_to_avg = [var for var in variables if var not in ['x', 'y', self.time_variable]]
             avg_cols = ", ".join([f'AVG("{var}") as "{var}"' for var in vars_to_avg])
             
-            # We still need the coordinate columns for grouping.
             query = f"""
                 SELECT x, y, {avg_cols}
                 FROM timeseries_data
-                WHERE frame_index BETWEEN ? AND ? {self.global_filter_clause}
+                WHERE "{self.time_variable}" BETWEEN ? AND ? {self.global_filter_clause}
                 GROUP BY x, y
             """
             
-            df = pd.read_sql_query(query, conn, params=(start_frame, end_frame))
+            df = pd.read_sql_query(query, conn, params=(start_time, end_time))
             conn.close()
             return df
         except Exception as e:
@@ -174,7 +211,6 @@ class DataManager(QObject):
             return None
 
     def get_timeseries_at_point(self, variable: str, point_coords: Tuple[float, float], tolerance: float) -> Optional[pd.DataFrame]:
-        """使用'探针盒'方法获取一个点的时间序列数据。"""
         if variable not in self.get_variables():
             raise ValueError(f"变量 '{variable}' 不存在。")
         
@@ -185,11 +221,11 @@ class DataManager(QObject):
         try:
             conn = self.get_db_connection()
             query = f"""
-                SELECT timestamp, AVG("{variable}") as "{variable}"
+                SELECT "{self.time_variable}", AVG("{variable}") as "{variable}"
                 FROM timeseries_data
                 WHERE x BETWEEN ? AND ? AND y BETWEEN ? AND ? {self.global_filter_clause}
-                GROUP BY frame_index
-                ORDER BY timestamp
+                GROUP BY "{self.time_variable}"
+                ORDER BY "{self.time_variable}" ASC
             """
             df = pd.read_sql_query(query, conn, params=(x_min, x_max, y_min, y_max))
             conn.close()
@@ -211,28 +247,17 @@ class DataManager(QObject):
 
     def get_frame_count(self) -> int:
         if self._frame_count is None:
-            if not self.is_database_ready(): return 0
-            try:
-                conn = self.get_db_connection()
-                result = conn.execute("SELECT MAX(frame_index) + 1 FROM timeseries_data;").fetchone()
-                conn.close()
-                self._frame_count = result[0] if result and result[0] is not None else 0
-            except Exception: self._frame_count = 0
+            self._frame_count = len(self._get_sorted_time_values())
         return self._frame_count
 
     def get_frame_info(self, i: int) -> Optional[Dict[str, Any]]: 
-        if not (0 <= i < self.get_frame_count()): return None
-        try:
-            conn = self.get_db_connection()
-            ts = conn.execute("SELECT timestamp FROM timeseries_data WHERE frame_index = ? LIMIT 1;", (i,)).fetchone()
-            conn.close()
-            return {'path': f'db_frame_{i}', 'timestamp': ts[0] if ts else i}
-        except Exception: return {'path': f'db_frame_{i}', 'timestamp': i}
+        time_values = self._get_sorted_time_values()
+        if not (0 <= i < len(time_values)): return None
+        return {'path': f'db_frame_{i}', 'timestamp': time_values[i]}
 
     def get_cache_info(self) -> Dict: return {'size': len(self.cache), 'max_size': self.cache_max_size}
 
     def get_database_info(self) -> Dict[str, Any]:
-        """返回数据库的概览信息。"""
         return {
             "db_path": self.db_path,
             "is_ready": self.is_database_ready(),
@@ -249,13 +274,25 @@ class DataManager(QObject):
                 cursor = conn.execute("PRAGMA table_info(timeseries_data);")
                 all_cols = [row[1] for row in cursor.fetchall()]
                 conn.close()
-                excluded_cols = {'id', 'frame_index', 'timestamp'}
+                excluded_cols = {'id'}
                 self._variables = sorted([col for col in all_cols if col not in excluded_cols])
             except Exception: self._variables = []
         return self._variables
 
+    def get_time_candidates(self) -> List[str]:
+        """获取可用作时间轴的变量列表 (所有数值型变量)。"""
+        if not self.is_database_ready(): return []
+        # 'frame_index' is always a candidate
+        candidates = ['frame_index']
+        # In a real scenario, you might query dtype, but for simplicity we list all except non-numeric ones
+        # For this implementation, we assume all columns other than 'source_file' are numeric
+        all_vars = self.get_variables()
+        for var in all_vars:
+            if var != 'frame_index' and var != 'source_file':
+                candidates.append(var)
+        return candidates
+
     def save_global_stats(self, stats: Dict[str, float]):
-        """将统计数据保存或更新到元数据表中。"""
         if not self.db_path: return
         try:
             conn = self.get_db_connection()
@@ -265,13 +302,11 @@ class DataManager(QObject):
             conn.commit()
             conn.close()
             logger.info(f"成功将 {len(stats)} 条统计数据保存到数据库。")
-            # 更新内存中的副本
             self.global_stats.update(stats)
         except Exception as e:
             logger.error(f"保存全局统计数据失败: {e}", exc_info=True)
 
     def load_global_stats(self):
-        """从数据库加载所有全局统计数据。"""
         if not self.is_database_ready(): return
         try:
             conn = self.get_db_connection()
@@ -311,7 +346,8 @@ class DataManager(QObject):
             return []
 
     def clear_all(self):
-        self._variables = None; self._frame_count = None
+        self._variables = None; self._frame_count = None; self._sorted_time_values = None
+        self.time_variable = "frame_index"
         self.cache.clear(); self.clear_global_stats()
         self.global_filter_clause = ""
         logger.info("DataManager 状态已清除。")

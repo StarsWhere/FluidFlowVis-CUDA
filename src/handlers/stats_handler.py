@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -28,10 +29,11 @@ class StatsHandler:
         self.custom_stats_worker = None
 
     def connect_signals(self):
+        # Connect to widgets in the new "Data Processing" tab
         self.ui.recalc_basic_stats_btn.clicked.connect(self.start_global_stats_calculation)
         self.ui.save_and_calc_custom_stats_btn.clicked.connect(self.start_custom_stats_calculation)
         self.ui.export_stats_btn.clicked.connect(self.export_global_stats)
-        self.ui.custom_help_btn.clicked.connect(lambda: self.main_window._show_help("custom_stats"))
+        self.ui.dp_help_btn.clicked.connect(lambda: self.main_window._show_help("data_processing"))
 
     def reset_global_stats(self):
         """当数据重载时调用，重置统计信息和UI状态。"""
@@ -41,6 +43,7 @@ class StatsHandler:
         self.ui.custom_stats_input.clear()
         self.ui.export_stats_btn.setEnabled(False)
         self.ui.save_and_calc_custom_stats_btn.setEnabled(False)
+        self.ui.recalc_basic_stats_btn.setEnabled(False)
 
     def load_definitions_and_stats(self):
         """从数据库加载统计和定义，并更新UI。"""
@@ -55,16 +58,17 @@ class StatsHandler:
         has_stats = bool(self.dm.global_stats)
         self.ui.export_stats_btn.setEnabled(has_stats)
         self.ui.save_and_calc_custom_stats_btn.setEnabled(True)
+        self.ui.recalc_basic_stats_btn.setEnabled(True)
     
     def start_global_stats_calculation(self):
         """强制重新计算所有变量的基础统计数据。"""
         if self.dm.get_frame_count() == 0: return
-        reply = QMessageBox.question(self.main_window, "确认", "这将重新计算所有变量的基础统计数据并覆盖现有值。是否继续？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        reply = QMessageBox.question(self.main_window, "确认", "这将重新计算所有<b>原始数值变量</b>的基础统计数据(mean, min, max等)并覆盖现有值。是否继续？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply != QMessageBox.StandardButton.Yes: return
         
         self.stats_progress_dialog = StatsProgressDialog(self.main_window, "重新计算基础统计")
-        all_vars = self.dm.get_variables()
-        self.stats_worker = GlobalStatsWorker(self.dm, all_vars)
+        vars_to_calc = self.dm.get_time_candidates() # Use this to get all numeric vars
+        self.stats_worker = GlobalStatsWorker(self.dm, vars_to_calc)
         self.stats_worker.progress.connect(self.stats_progress_dialog.update_progress)
         self.stats_worker.finished.connect(self.on_global_stats_finished)
         self.stats_worker.error.connect(self.on_stats_error)
@@ -74,7 +78,7 @@ class StatsHandler:
     def on_global_stats_finished(self):
         """在基础统计计算完成后调用。"""
         if self.stats_progress_dialog: self.stats_progress_dialog.accept()
-        self.dm.load_global_stats() # 从数据库重新加载以获取最新值
+        self.dm.load_global_stats()
         self.update_stats_display()
         self.formula_engine.update_custom_global_variables(self.dm.global_stats)
         self.main_window._trigger_auto_apply()
@@ -82,6 +86,10 @@ class StatsHandler:
 
     def start_custom_stats_calculation(self):
         definitions_text = self.ui.custom_stats_input.toPlainText().strip()
+        if not definitions_text:
+            QMessageBox.information(self.main_window, "无定义", "请输入至少一个自定义常量定义。")
+            return
+
         definitions = [line.strip() for line in definitions_text.split('\n') if line.strip() and not line.strip().startswith('#')]
         
         try:
@@ -101,7 +109,7 @@ class StatsHandler:
 
     def on_custom_stats_finished(self):
         if self.stats_progress_dialog: self.stats_progress_dialog.accept()
-        self.dm.load_global_stats() # 重新加载以包含新计算的常量
+        self.dm.load_global_stats() 
         self.update_stats_display()
         self.formula_engine.update_custom_global_variables(self.dm.global_stats)
         self.main_window._trigger_auto_apply()
