@@ -460,13 +460,12 @@ class TimeAggregatedVariableWorker(QThread):
 
                 # 4. Update main table
                 self.progress.emit(i, total_steps, f"({i+1}.4) 将聚合值写回主表...")
+                # --- BUG FIX: Replaced correlated subquery with more efficient UPDATE FROM syntax ---
                 update_query = f"""
                     UPDATE timeseries_data
-                    SET {safe_name} = (
-                        SELECT agg_value
-                        FROM {temp_table_name}
-                        WHERE {temp_table_name}.x = timeseries_data.x AND {temp_table_name}.y = timeseries_data.y
-                    )
+                    SET {safe_name} = T.agg_value
+                    FROM {temp_table_name} AS T
+                    WHERE timeseries_data.x = T.x AND timeseries_data.y = T.y
                 """
                 cursor.execute(update_query)
                 conn.commit()
