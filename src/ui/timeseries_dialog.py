@@ -1,3 +1,4 @@
+
 from PyQt6.QtGui import QIcon
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -21,7 +22,7 @@ class TimeSeriesDialog(QDialog):
     
     def __init__(self, point_coords: Tuple[float, float], data_manager, filter_clause: str, output_dir: str, parent=None):
         super().__init__(parent)
-        self.setWindowIcon(QIcon("png/icon.png")) # 设置窗口图标
+        self.setWindowIcon(QIcon("png/icon.png")) 
         self.dm = data_manager
         self.point_coords = point_coords
         self.filter_clause = filter_clause
@@ -36,7 +37,6 @@ class TimeSeriesDialog(QDialog):
         controls_layout = QHBoxLayout()
         controls_layout.addWidget(QLabel("选择变量:"))
         self.variable_combo = QComboBox()
-        # Filter out non-numeric variables like 'source_file' for plotting
         plot_vars = [v for v in self.dm.get_variables() if v != 'source_file']
         self.variable_combo.addItems(plot_vars)
         self.variable_combo.currentIndexChanged.connect(self.plot_data)
@@ -47,10 +47,14 @@ class TimeSeriesDialog(QDialog):
         self.fft_button.setEnabled(False)
         controls_layout.addWidget(self.fft_button)
 
-        self.export_fft_button = QPushButton("导出 FFT 结果")
-        self.export_fft_button.clicked.connect(self.export_fft_results)
+        self.export_fft_button = QPushButton("导出 FFT(CSV)")
+        self.export_fft_button.clicked.connect(self.export_fft_results_csv)
         self.export_fft_button.setEnabled(False)
         controls_layout.addWidget(self.export_fft_button)
+
+        self.export_image_button = QPushButton("导出图片(PNG)")
+        self.export_image_button.clicked.connect(self.export_image)
+        controls_layout.addWidget(self.export_image_button)
         main_layout.addLayout(controls_layout)
 
         self.figure = Figure(figsize=(8, 6), dpi=100)
@@ -94,10 +98,9 @@ class TimeSeriesDialog(QDialog):
                 formatter = ticker.ScalarFormatter(useMathText=True); formatter.set_scientific(True); formatter.set_powerlimits((-3, 3))
                 self.ax_time.yaxis.set_major_formatter(formatter)
                 
-                # Check for validity before enabling FFT button
                 is_valid_for_fft = len(self.current_df) > 1 and np.all(np.diff(self.current_df[time_col_name]) > 0)
                 self.fft_button.setEnabled(is_valid_for_fft)
-                self.export_fft_button.setEnabled(False) # FFT not computed yet
+                self.export_fft_button.setEnabled(False) 
 
         except Exception as e:
             logger.error(f"绘制时间序列图失败: {e}", exc_info=True)
@@ -127,7 +130,7 @@ class TimeSeriesDialog(QDialog):
             return
             
         T = np.mean(time_diffs)
-        if T == 0: # Avoid division by zero
+        if T == 0:
             self.ax_fft.clear(); self.ax_fft.text(0.5, 0.5, "时间步长为零，无法计算FFT", ha='center', color='red'); self.canvas.draw(); return
 
         self.yf = np.fft.fft(signal - np.mean(signal))
@@ -142,21 +145,22 @@ class TimeSeriesDialog(QDialog):
         self.canvas.draw()
         self.export_fft_button.setEnabled(True)
 
-    def export_fft_results(self):
+    def _get_common_filename_part(self):
+        """生成用于导出的文件名公共部分。"""
+        selected_variable = self.variable_combo.currentText()
+        x_coord, y_coord = self.point_coords
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        return f"timeseries_x{x_coord:.2e}_y{y_coord:.2e}_{selected_variable}_{timestamp}"
+
+    def export_fft_results_csv(self):
         if not hasattr(self, 'xf') or not hasattr(self, 'yf') or self.xf is None or self.yf is None:
-            logger.warning("没有可导出的 FFT 结果。请先计算 FFT。")
             QMessageBox.warning(self, "无数据", "没有可导出的 FFT 结果。请先计算 FFT。")
             return
 
         import pandas as pd
         
         os.makedirs(self.output_dir, exist_ok=True)
-
-        selected_variable = self.variable_combo.currentText()
-        x_coord, y_coord = self.point_coords
-        
-        # 自动生成文件名并直接保存
-        filename = f"fft_results_x{x_coord:.2e}_y{y_coord:.2e}_{selected_variable}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        filename = f"fft_{self._get_common_filename_part()}.csv"
         file_path = os.path.join(self.output_dir, filename)
 
         try:
@@ -173,3 +177,16 @@ class TimeSeriesDialog(QDialog):
         except Exception as e:
             logger.error(f"导出 FFT 结果失败: {e}", exc_info=True)
             QMessageBox.critical(self, "导出失败", f"导出 FFT 结果失败:\n{e}")
+
+    def export_image(self):
+        """直接将当前图表导出为图片。"""
+        os.makedirs(self.output_dir, exist_ok=True)
+        filename = f"{self._get_common_filename_part()}.png"
+        filepath = os.path.join(self.output_dir, filename)
+        
+        try:
+            self.figure.savefig(filepath, dpi=300, bbox_inches='tight')
+            QMessageBox.information(self, "成功", f"图表已成功导出到:\n{filepath}")
+        except Exception as e:
+            logger.error(f"导出图表图片失败: {e}", exc_info=True)
+            QMessageBox.critical(self, "导出失败", f"导出图片失败:\n{e}")

@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -67,7 +68,7 @@ class StatsHandler:
         
         self.stats_progress_dialog = StatsProgressDialog(self.main_window, "重新计算基础统计")
         vars_to_calc = self.dm.get_time_candidates() # Use this to get all numeric vars
-        self.stats_worker = GlobalStatsWorker(self.dm, vars_to_calc)
+        self.stats_worker = GlobalStatsWorker(self.dm, self.formula_engine, vars_to_calc) # Pass formula_engine
         self.stats_worker.progress.connect(self.stats_progress_dialog.update_progress)
         self.stats_worker.finished.connect(self.on_global_stats_finished)
         self.stats_worker.error.connect(self.on_stats_error)
@@ -99,7 +100,7 @@ class StatsHandler:
             return
             
         self.stats_progress_dialog = StatsProgressDialog(self.main_window, "正在计算自定义常量")
-        self.custom_stats_worker = CustomGlobalStatsWorker(self.dm, definitions)
+        self.custom_stats_worker = CustomGlobalStatsWorker(self.dm, self.formula_engine, definitions) # Pass formula_engine
         self.custom_stats_worker.progress.connect(self.stats_progress_dialog.update_progress)
         self.custom_stats_worker.finished.connect(self.on_custom_stats_finished)
         self.custom_stats_worker.error.connect(self.on_stats_error)
@@ -119,13 +120,34 @@ class StatsHandler:
         QMessageBox.critical(self.main_window, "计算失败", f"计算时发生错误: \n{error_msg}")
 
     def update_stats_display(self):
+        """更新统计显示区域，现在包括派生变量的定义。"""
         all_stats = self.dm.global_stats
-        if not all_stats:
-            self.ui.stats_results_text.setText("无统计结果。"); return
+        var_defs = self.dm.load_variable_definitions()
         
-        text = "\n".join([f"{k}: {v:.6e}" for k, v in sorted(all_stats.items())])
-        self.ui.stats_results_text.setText(text)
-        self.ui.export_stats_btn.setEnabled(True)
+        if not all_stats and not var_defs:
+            self.ui.stats_results_text.setText("无统计结果或已定义的变量。"); return
+        
+        display_parts = []
+
+        # 1. Display variable definitions
+        if var_defs:
+            display_parts.append("<b>--- 已定义的派生/聚合变量 ---</b>")
+            for name, info in sorted(var_defs.items()):
+                type_map = {"per-frame": "逐帧", "time-aggregated": "时间聚合"}
+                type_str = type_map.get(info['type'], info['type'])
+                display_parts.append(f"<b>{name}</b> ({type_str}):<br>&nbsp;&nbsp;<code>{info['formula']}</code>")
+            display_parts.append("<hr>")
+
+        # 2. Display global stats
+        if all_stats:
+            display_parts.append("<b>--- 全局统计常量 ---</b>")
+            for k, v in sorted(all_stats.items()):
+                display_parts.append(f"<code>{k}: {v:.6e}</code>")
+        
+        text = "<br>".join(display_parts)
+        self.ui.stats_results_text.setHtml(f"<div style='font-family: Courier New; font-size: 9pt;'>{text}</div>")
+        self.ui.export_stats_btn.setEnabled(bool(all_stats))
+
 
     def export_global_stats(self):
         if not self.dm.global_stats:

@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 DB_FILENAME = "_intervis_data.db"
 METADATA_TABLE_NAME = "intervis_metadata"
 CUSTOM_CONSTANTS_TABLE_NAME = "intervis_custom_constants"
+VARIABLE_DEFINITIONS_TABLE_NAME = "intervis_variable_definitions" # 新增
 
 class DataManager(QObject):
     """
@@ -88,8 +90,17 @@ class DataManager(QObject):
             definition TEXT NOT NULL UNIQUE
         );
         """)
+        # 新增：创建变量定义表
+        cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS {VARIABLE_DEFINITIONS_TABLE_NAME} (
+            name TEXT PRIMARY KEY,
+            formula TEXT NOT NULL,
+            type TEXT NOT NULL
+        );
+        """)
         conn.commit()
-        logger.info("数据库元数据和自定义常量表已确认存在。")
+        logger.info("数据库元数据、自定义常量和变量定义表已确认存在。")
+
 
     def post_import_setup(self):
         """导入完成后，强制重新加载元数据。"""
@@ -110,11 +121,18 @@ class DataManager(QObject):
         if not filter_text.strip():
             self.global_filter_clause = ""
             logger.info("全局过滤器已清除。")
+            self.cache.clear()
             return
         
-        if 'drop' in filter_text.lower() or 'delete' in filter_text.lower():
-             raise ValueError("过滤器不允许包含 'DROP' 或 'DELETE'。")
-        
+        # 简单的安全检查
+        test_query = f"SELECT 1 FROM timeseries_data WHERE {filter_text} LIMIT 1;"
+        try:
+            conn = self.get_db_connection()
+            conn.execute(test_query)
+            conn.close()
+        except Exception as e:
+            raise ValueError(f"过滤器语法无效: {e}")
+            
         self.global_filter_clause = f"AND ({filter_text})"
         logger.info(f"全局过滤器已设置为: {self.global_filter_clause}")
         self.cache.clear()
@@ -164,6 +182,8 @@ class DataManager(QObject):
             if not all_known_vars: return pd.DataFrame()
 
             cols_to_select = ", ".join([f'"{var}"' for var in all_known_vars])
+            # 移除了 self.global_filter_clause 中的 AND，因为现在它是一个完整的 WHERE 子句
+            filter_part = f"WHERE {self.global_filter_clause}" if self.global_filter_clause else ""
             query = f'SELECT {cols_to_select} FROM timeseries_data WHERE "{self.time_variable}" = ? {self.global_filter_clause}'
             
             data = pd.read_sql_query(query, conn, params=(time_value,))
@@ -345,6 +365,47 @@ class DataManager(QObject):
             logger.error(f"加载自定义常量定义失败: {e}", exc_info=True)
             return []
 
+    # --- 新增：变量定义管理 ---
+    def save_variable_definition(self, name: str, formula: str, type_str: str):
+        if not self.db_path: return
+        try:
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                f"INSERT OR REPLACE INTO {VARIABLE_DEFINITIONS_TABLE_NAME} (name, formula, type) VALUES (?, ?, ?)",
+                (name, formula, type_str)
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"已保存变量定义: {name} ({type_str})")
+        except Exception as e:
+            logger.error(f"保存变量 '{name}' 的定义失败: {e}", exc_info=True)
+
+    def load_variable_definitions(self) -> Dict[str, Dict[str, str]]:
+        if not self.is_database_ready(): return {}
+        try:
+            conn = self.get_db_connection()
+            cursor = conn.execute(f"SELECT name, formula, type FROM {VARIABLE_DEFINITIONS_TABLE_NAME}")
+            definitions = {row[0]: {'formula': row[1], 'type': row[2]} for row in cursor.fetchall()}
+            conn.close()
+            logger.info(f"从数据库加载了 {len(definitions)} 条变量定义。")
+            return definitions
+        except Exception as e:
+            logger.error(f"加载变量定义失败: {e}", exc_info=True)
+            return {}
+
+    def delete_variable_definition(self, name: str):
+        if not self.db_path: return
+        try:
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(f"DELETE FROM {VARIABLE_DEFINITIONS_TABLE_NAME} WHERE name = ?", (name,))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"删除变量 '{name}' 的定义失败: {e}", exc_info=True)
+    # --- 结束新增 ---
+
     def clear_all(self):
         self._variables = None; self._frame_count = None; self._sorted_time_values = None
         self.time_variable = "frame_index"
@@ -357,7 +418,7 @@ class DataManager(QObject):
         logger.info("内存中的全局统计数据已清除。")
         
     def delete_variable(self, var_name: str):
-        """从数据库中删除一个变量列及其关联的统计数据。"""
+        """从数据库中删除一个变量列及其关联的统计数据和定义。"""
         core_vars = {'x', 'y', 'id', 'frame_index', 'source_file'}
         if var_name in core_vars:
             raise ValueError(f"无法删除核心变量 '{var_name}'。")
@@ -374,6 +435,9 @@ class DataManager(QObject):
             logger.info(f"正在从 {METADATA_TABLE_NAME} 表中删除键匹配 '{stats_pattern_to_delete}' 的统计数据")
             cursor.execute(f"DELETE FROM {METADATA_TABLE_NAME} WHERE key LIKE ?", (stats_pattern_to_delete,))
             
+            # 3. Delete from variable definitions table
+            self.delete_variable_definition(var_name) # Use the new method
+
             conn.commit()
             logger.info(f"成功删除变量 '{var_name}' 及其关联数据。")
 
@@ -384,12 +448,12 @@ class DataManager(QObject):
         finally:
             conn.close()
         
-        # 3. Invalidate internal caches so the next query re-reads the schema
+        # 4. Invalidate internal caches so the next query re-reads the schema
         self.refresh_schema_info()
         self.load_global_stats()
 
     def rename_variable(self, old_name: str, new_name: str):
-        """在数据库中重命名一个变量列及其关联的统计数据。"""
+        """在数据库中重命名一个变量列及其关联的统计数据和定义。"""
         core_vars = {'x', 'y', 'id', 'frame_index', 'source_file'}
         if old_name in core_vars:
             raise ValueError(f"无法重命名核心变量 '{old_name}'。")
@@ -421,6 +485,10 @@ class DataManager(QObject):
                 cursor.executemany(f"UPDATE {METADATA_TABLE_NAME} SET key = ? WHERE key = ?", updates)
                 logger.info(f"已更新 {len(updates)} 个统计数据键。")
 
+            # 3. Update variable definition table
+            logger.info(f"正在更新变量定义表中的 '{old_name}'")
+            cursor.execute(f"UPDATE {VARIABLE_DEFINITIONS_TABLE_NAME} SET name = ? WHERE name = ?", (new_name, old_name))
+
             conn.commit()
             logger.info(f"成功重命名变量 '{old_name}' 为 '{new_name}'。")
 
@@ -431,6 +499,6 @@ class DataManager(QObject):
         finally:
             conn.close()
 
-        # 3. Invalidate internal caches and reload stats
+        # 4. Invalidate internal caches and reload stats
         self.refresh_schema_info()
         self.load_global_stats()

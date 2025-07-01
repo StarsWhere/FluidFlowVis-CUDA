@@ -1,3 +1,5 @@
+# src/utils/help_content.py
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -145,6 +147,7 @@ def get_formula_help_html(base_variables: List[str], custom_global_variables: Di
             <li><code>exp(x)</code>: 计算 e 的 x 次方 (e<sup>x</sup>)。</li>
             <li><code>log(x)</code>: 计算 x 的自然对数 (ln(x))。</li>
             <li><code>log10(x)</code>: 计算 x 的以10为底的对数。</li>
+            <li><code>pow(x, y)</code>: 计算 x 的 y 次方 (x<sup>y</sup>)，等同于 <code>x**y</code>。</li>
             <li><code>floor(x)</code>: 对 x 向下取整。</li>
             <li><code>ceil(x)</code>: 对 x 向上取整。</li>
             <li><code>round(x)</code>: 对 x 四舍五入。</li>
@@ -288,7 +291,7 @@ def get_formula_help_html(base_variables: List[str], custom_global_variables: Di
 def get_data_processing_help_html() -> str:
     """
     为“数据处理”选项卡生成统一的、极其详细的帮助文档。
-    这是另一个核心帮助文档，解释了两种不同的计算模式。
+    这是另一个核心帮助文档，解释了三种不同的计算模式和批量处理。
     """
     return """
     <html>
@@ -335,8 +338,6 @@ def get_data_processing_help_html() -> str:
                 margin-top: 25px;
                 background-color: #fff;
             }}
-            .sql-mode {{ color: #28a745; font-weight: bold; }}
-            .parallel-mode {{ color: #d9534f; font-weight: bold; }}
             .code-block {{
                 background-color: #f5f5f5;
                 border: 1px solid #ddd;
@@ -344,7 +345,8 @@ def get_data_processing_help_html() -> str:
                 margin-top: 10px;
                 border-radius: 5px;
                 font-family: "Courier New", Courier, monospace;
-                white-space: pre;
+                white-space: pre-wrap;
+                word-break: break-all;
             }}
         </style>
     </head>
@@ -367,15 +369,21 @@ def get_data_processing_help_html() -> str:
             <ul>
                 <li><b>计算基础:</b> 空间点 (x, y) 在时刻 t 的值。</li>
                 <li><b>目的:</b> 计算那些<b>随时间和空间都变化</b>的物理量。</li>
-                <li><b>例子:</b>
-                    <ul>
-                        <li>速度大小: <code>sqrt(u*u + v*v)</code></li>
-                        <li>动能: <code>0.5 * rho * (u*u + v*v)</code></li>
-                        <li>马赫数: <code>sqrt(u*u+v*v) / a</code> (如果声速 <code>a</code> 是一个变量)</li>
-                    </ul>
-                </li>
-                 <li><b>工作方式:</b> 通常使用高效的SQL在数据库中直接计算。</li>
             </ul>
+            
+            <h4><span class="new-feature">定义格式 (支持批量)</span></h4>
+            <p>在输入框中，每行输入一个定义，格式为: <code>new_variable_name = formula</code></p>
+            <div class="code-block"># 以 '#' 开头的行是注释，将被忽略
+velocity_magnitude = sqrt(u**2 + v**2)
+tke = 0.5 * rho * velocity_magnitude**2
+vorticity = curl(u, v)</div>
+            <div class="note">
+                <p><b>重要特性：顺序执行！</b></p>
+                <p>
+                    定义会<b>从上到下依次计算</b>。这意味着您可以在一个定义中，使用在它上面刚刚创建的新变量。
+                    在上面的例子中，<code>tke</code> 的计算就成功地使用了在它前一行定义的 <code>velocity_magnitude</code>。
+                </p>
+            </div>
         </div>
         
         <!-- ==================== 时间聚合变量 ==================== -->
@@ -389,17 +397,10 @@ def get_data_processing_help_html() -> str:
             <ul>
                 <li><b>计算基础:</b> 空间点 (x, y) 在<b>所有</b>时刻 t 的值的集合。</li>
                 <li><b>目的:</b> 计算<b>不随时间变化</b>的统计场，例如定常分析或雷诺分解。</li>
-                <li><b>例子:</b>
-                    <ul>
-                        <li>计算每个点的<b>时间平均速度</b>: <code>u_time_avg = mean(u)</code></li>
-                        <li>计算每个点的<b>压力标准差</b>（衡量脉动强度）: <code>p_time_std = std(p)</code></li>
-                        <li>计算每个点的<b>最大湍动能</b>: <code>tke_time_max = max(0.5 * (u*u + v*v))</code></li>
-                    </ul>
-                </li>
-                <li><b>工作方式:</b> 通过SQL的 <code>GROUP BY x, y</code> 功能实现。</li>
             </ul>
-             <h4>定义格式</h4>
-            <p>格式为: <code>new_variable_name = aggregate_function(expression)</code></p>
+
+            <h4><span class="new-feature">定义格式 (支持批量)</span></h4>
+            <p>每行一个定义，格式为: <code>new_variable_name = aggregate_function(expression)</code></p>
             <ul>
                 <li>
                     <b><code>aggregate_function</code></b>:
@@ -407,7 +408,10 @@ def get_data_processing_help_html() -> str:
                 </li>
                 <li><b><code>expression</code></b>: 一个简单的数学表达式，如 <code>u</code> 或 <code>p*0.1</code>。</li>
             </ul>
-            <div class="note">
+            <div class="code-block">u_time_avg = mean(u)
+v_time_avg = mean(v)
+p_fluctuation_strength = std(p)</div>
+             <div class="note">
                 <p><b>雷诺分解示例:</b>
                 <ol>
                     <li>首先，使用此功能计算时间平均速度 <code>u_time_avg = mean(u)</code>。</li>
@@ -428,15 +432,17 @@ def get_data_processing_help_html() -> str:
             <h4>核心思想与用途</h4>
             <ul>
                 <li><b>计算基础:</b> <b>所有</b>空间点 (x, y) 在<b>所有</b>时刻 t 的值的集合。</li>
-                <li><b>目的:</b> 计算一个能代表整个仿真过程的<b>单一数字</b>。</li>
-                <li><b>例子:</b>
-                    <ul>
-                        <li>计算全局平均湍动能: <code>tke_global = mean(0.5 * (u**2 + v**2))</code></li>
-                        <li>计算整个流场的平均涡量: <code>avg_vorticity = mean(curl(u, v))</code></li>
-                    </ul>
-                </li>
-                <li><b>工作方式:</b> 若不含空间运算，则使用单次SQL聚合。若包含空间运算（如<code>curl</code>），则会启动一个并行的、逐帧的计算过程。</li>
+                <li><b>目的:</b> 计算一个能代表整个仿真过程的<b>单一数字</b>，用于后续的公式计算或图表标题。</li>
             </ul>
+
+            <h4><span class="new-feature">定义格式 (支持批量和顺序执行)</span></h4>
+            <p>与上面类似，每行一个定义，并支持顺序执行。</p>
+            <div class="code-block"># 计算全局平均湍动能
+tke_global_mean = mean(0.5 * rho * (u**2 + v**2))
+# 计算基于上面结果的某个特征长度
+# (假设 length_scale 是一个已知的原始变量)
+some_reynolds_number = u_global_mean * length_scale / nu
+</div>
         </div>
         
         <div class="warning">
@@ -610,6 +616,9 @@ def get_analysis_help_html() -> str:
                 <li>
                     <b>语法:</b> 使用标准的 <b>SQL <code>WHERE</code> 子句</b> 语法。
                     <b>您不需要写 "WHERE" 关键字本身</b>，只需写入条件即可。
+                </li>
+                <li>
+                    <b><span class="new-feature">辅助构建器:</span></b> 点击 "构建..." 按钮，可以使用可视化界面来添加条件，无需手动编写SQL。
                 </li>
                 <li><b>变量:</b> 您可以使用数据库中的任何原始或派生变量名。</li>
                 <li><b>用途:</b>

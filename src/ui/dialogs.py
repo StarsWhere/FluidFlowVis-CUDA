@@ -7,8 +7,9 @@ import os
 from typing import List
 from datetime import datetime
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, 
-    QPushButton, QTextEdit, QListWidget, QDialogButtonBox, QMessageBox
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar,
+    QPushButton, QTextEdit, QListWidget, QDialogButtonBox, QMessageBox,
+    QComboBox, QInputDialog, QLineEdit
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QIcon
@@ -167,3 +168,166 @@ class StatsProgressDialog(QDialog):
             self.status_label.setText(msg)
         else:
             self.status_label.setText(f"正在处理第 {current}/{total} 个数据文件...")
+
+class FilterBuilderDialog(QDialog):
+    """
+    用于构建数据过滤表达式的对话框。
+    允许用户选择变量、操作符和值来创建复杂的过滤条件。
+    """
+    def __init__(self, available_variables: List[str], parent=None):
+        super().__init__(parent)
+        self.setWindowIcon(QIcon("png/icon.png")) # 设置窗口图标
+        self.setWindowTitle("构建过滤器")
+        self.setMinimumSize(600, 400)
+        
+        self.available_variables = sorted(available_variables)
+        self.filter_parts = [] # 存储 (variable, operator, value) 元组
+
+        self._init_ui()
+        self._populate_variables()
+
+    def _init_ui(self):
+        main_layout = QVBoxLayout(self)
+
+        # 过滤器表达式显示
+        filter_label = QLabel("当前过滤器表达式:")
+        main_layout.addWidget(filter_label)
+        self.filter_display = QTextEdit()
+        self.filter_display.setReadOnly(True)
+        self.filter_display.setFont(QFont("Courier New", 10))
+        main_layout.addWidget(self.filter_display)
+
+        # 添加条件部分
+        add_condition_group = QHBoxLayout()
+        self.variable_combo = QComboBox()
+        self.operator_combo = QComboBox()
+        self.value_edit = QLineEdit()
+        self.add_button = QPushButton("添加条件")
+        self.add_button.clicked.connect(self._add_condition)
+
+        add_condition_group.addWidget(QLabel("变量:"))
+        add_condition_group.addWidget(self.variable_combo)
+        add_condition_group.addWidget(QLabel("操作符:"))
+        add_condition_group.addWidget(self.operator_combo)
+        add_condition_group.addWidget(QLabel("值:"))
+        add_condition_group.addWidget(self.value_edit)
+        add_condition_group.addWidget(self.add_button)
+        main_layout.addLayout(add_condition_group)
+
+        # 过滤器条件列表
+        self.conditions_list = QListWidget()
+        main_layout.addWidget(self.conditions_list)
+        self.conditions_list.itemDoubleClicked.connect(self._edit_condition)
+
+        # 底部按钮
+        button_layout = QHBoxLayout()
+        self.clear_button = QPushButton("清空所有")
+        self.clear_button.clicked.connect(self._clear_conditions)
+        self.remove_button = QPushButton("移除选中")
+        self.remove_button.clicked.connect(self._remove_selected_condition)
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+
+        button_layout.addWidget(self.clear_button)
+        button_layout.addWidget(self.remove_button)
+        button_layout.addStretch()
+        button_layout.addWidget(button_box)
+        main_layout.addLayout(button_layout)
+
+        self._populate_operators()
+        self._update_filter_display()
+
+    def _populate_variables(self):
+        self.variable_combo.addItems(self.available_variables)
+
+    def _populate_operators(self):
+        self.operator_combo.addItems(['==', '!=', '>', '<', '>=', '<=', 'contains', 'not contains'])
+
+    def _add_condition(self):
+        variable = self.variable_combo.currentText()
+        operator = self.operator_combo.currentText()
+        value = self.value_edit.text().strip()
+
+        if not variable or not value:
+            QMessageBox.warning(self, "输入无效", "请选择变量并输入值。")
+            return
+
+        # 对字符串值加引号
+        if operator in ['contains', 'not contains'] or not self._is_numeric(value):
+            value = f"'{value}'" # 确保字符串值被引号包围
+
+        self.filter_parts.append((variable, operator, value))
+        self._update_conditions_list()
+        self._update_filter_display()
+        self.value_edit.clear()
+
+    def _edit_condition(self, item):
+        row = self.conditions_list.row(item)
+        old_var, old_op, old_val = self.filter_parts[row]
+
+        # 移除字符串值的引号
+        if old_op in ['contains', 'not contains'] or not self._is_numeric(old_val.strip("'")):
+            old_val = old_val.strip("'")
+
+        # 弹出输入对话框让用户修改
+        variable, ok_var = QInputDialog.getItem(self, "编辑条件", "变量:", self.available_variables, self.available_variables.index(old_var) if old_var in self.available_variables else 0, False)
+        if not ok_var: return
+
+        operator, ok_op = QInputDialog.getItem(self, "编辑条件", "操作符:", ['==', '!=', '>', '<', '>=', '<=', 'contains', 'not contains'], ['==', '!=', '>', '<', '>=', '<=', 'contains', 'not contains'].index(old_op) if old_op in ['==', '!=', '>', '<', '>=', '<=', 'contains', 'not contains'] else 0, False)
+        if not ok_op: return
+
+        value, ok_val = QInputDialog.getText(self, "编辑条件", "值:", QLineEdit.EchoMode.Normal, old_val)
+        if not ok_val: return
+
+        if not variable or not value:
+            QMessageBox.warning(self, "输入无效", "变量和值不能为空。")
+            return
+
+        # 对字符串值加引号
+        if operator in ['contains', 'not contains'] or not self._is_numeric(value):
+            value = f"'{value}'"
+
+        self.filter_parts[row] = (variable, operator, value)
+        self._update_conditions_list()
+        self._update_filter_display()
+
+    def _remove_selected_condition(self):
+        selected_rows = [item.row() for item in self.conditions_list.selectedItems()]
+        if not selected_rows:
+            QMessageBox.warning(self, "未选择", "请选择要移除的条件。")
+            return
+        
+        # 从后往前删除，避免索引问题
+        for row in sorted(selected_rows, reverse=True):
+            del self.filter_parts[row]
+        
+        self._update_conditions_list()
+        self._update_filter_display()
+
+    def _clear_conditions(self):
+        self.filter_parts.clear()
+        self._update_conditions_list()
+        self._update_filter_display()
+
+    def _update_conditions_list(self):
+        self.conditions_list.clear()
+        for var, op, val in self.filter_parts:
+            display_text = f"{var} {op} {val}"
+            self.conditions_list.addItem(display_text)
+
+    def _update_filter_display(self):
+        # 将条件用 AND 连接起来
+        filter_string = " AND ".join([f"{var} {op} {val}" for var, op, val in self.filter_parts])
+        self.filter_display.setPlainText(filter_string)
+
+    def get_filter_string(self) -> str:
+        return self.filter_display.toPlainText()
+
+    def _is_numeric(self, value_str: str) -> bool:
+        try:
+            float(value_str)
+            return True
+        except ValueError:
+            return False
