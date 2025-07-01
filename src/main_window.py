@@ -1,3 +1,4 @@
+
 from PyQt6.QtGui import QIcon
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -23,6 +24,7 @@ from src.ui.ui_setup import UiMainWindow
 from src.ui.dialogs import ImportDialog, StatsProgressDialog
 from src.ui.timeseries_dialog import TimeSeriesDialog
 from src.ui.profile_plot_dialog import ProfilePlotDialog
+from src.ui.dialogs import FilterBuilderDialog
 from src.core.workers import DatabaseImportWorker
 
 from src.handlers.config_handler import ConfigHandler
@@ -144,6 +146,7 @@ class MainWindow(QMainWindow):
         
         # Analysis/Data Management Controls
         self.ui.apply_filter_btn.clicked.connect(self._apply_global_filter)
+        self.ui.build_filter_btn.clicked.connect(self._open_filter_builder) # NEW
         self.ui.rename_variable_btn.clicked.connect(self._rename_variable)
         self.ui.delete_variable_btn.clicked.connect(self._delete_variable)
         self.ui.time_analysis_mode_combo.currentIndexChanged.connect(self._on_time_analysis_mode_changed)
@@ -151,7 +154,7 @@ class MainWindow(QMainWindow):
         self.ui.pick_by_coords_btn.clicked.connect(self._pick_timeseries_by_coords)
         self.ui.draw_profile_btn.toggled.connect(self._on_draw_profile_toggled)
         self.ui.draw_profile_by_coords_btn.clicked.connect(self._draw_profile_by_coords)
-        self.ui.time_analysis_help_btn.clicked.connect(lambda: self._show_help("analysis"))
+        self.ui.analysis_help_btn.clicked.connect(lambda: self._show_help("analysis"))
         self.ui.time_avg_start_slider.valueChanged.connect(self.ui.time_avg_start_spinbox.setValue)
         self.ui.time_avg_start_spinbox.valueChanged.connect(self.ui.time_avg_start_slider.setValue)
         self.ui.time_avg_end_slider.valueChanged.connect(self.ui.time_avg_end_spinbox.setValue)
@@ -170,13 +173,13 @@ class MainWindow(QMainWindow):
         
         self._connect_auto_apply_widgets()
 
-    def _get_all_formula_editors(self) -> list[QLineEdit]:
+    def _get_all_formula_editors(self) -> list:
         return [
             self.ui.x_axis_formula, self.ui.y_axis_formula, self.ui.chart_title_edit,
             self.ui.heatmap_formula, self.ui.contour_formula,
             self.ui.vector_u_formula, self.ui.vector_v_formula,
             self.ui.new_variable_formula_edit, self.ui.filter_text_edit,
-            self.ui.new_time_agg_formula_edit # Added for new feature
+            self.ui.new_time_agg_formula_edit
         ]
 
     def _connect_auto_apply_widgets(self):
@@ -190,8 +193,15 @@ class MainWindow(QMainWindow):
         ]
         
         for editor in self._get_all_formula_editors():
-            editor.textChanged.connect(self.validation_timer.start)
-            editor.editingFinished.connect(self._trigger_auto_apply)
+            # QLineEdit has textChanged, QTextEdit has textChanged signal but no editingFinished
+            if isinstance(editor, QLineEdit):
+                editor.textChanged.connect(self.validation_timer.start)
+                editor.editingFinished.connect(self._trigger_auto_apply)
+            else: # QTextEdit
+                editor.textChanged.connect(self.validation_timer.start)
+                # For QTextEdit, we trigger on focus out, which is less ideal but works
+                # A better way might be a dedicated "apply" button for these text boxes, but sticking to auto-apply
+                # The redraw_debounce_timer will handle changes naturally
 
         for w in widgets:
             if hasattr(w, 'toggled'): w.toggled.connect(self._trigger_auto_apply)
@@ -207,9 +217,27 @@ class MainWindow(QMainWindow):
 
     def _validate_all_formulas(self):
         for editor in self._get_all_formula_editors():
-            is_valid, error_msg = self.formula_engine.validate_syntax(editor.text())
-            editor.setStyleSheet("" if is_valid else "background-color: #ffe0e0;")
-            editor.setToolTip(error_msg)
+            # For QTextEdit, we need to get toPlainText()
+            formula_text = editor.toPlainText() if hasattr(editor, 'toPlainText') else editor.text()
+            # For multi-line, we might want to validate each line
+            all_valid = True
+            errors = []
+            if isinstance(editor, QLineEdit):
+                 is_valid, error_msg = self.formula_engine.validate_syntax(formula_text)
+                 if not is_valid:
+                     all_valid = False
+                     errors.append(error_msg)
+            else: # QTextEdit
+                for line in formula_text.split('\n'):
+                    if line.strip() and not line.strip().startswith('#'):
+                        is_valid, error_msg = self.formula_engine.validate_syntax(line)
+                        if not is_valid:
+                             all_valid = False
+                             errors.append(f"Line '{line[:30]}...': {error_msg}")
+
+            editor.setStyleSheet("" if all_valid else "background-color: #ffe0e0;")
+            editor.setToolTip("\n".join(errors))
+
 
     def _initialize_project(self):
         if not self.data_manager.setup_project_directory(self.project_dir): return
@@ -223,7 +251,7 @@ class MainWindow(QMainWindow):
 
     def _start_database_import(self):
         self.import_progress_dialog = ImportDialog(self, "正在创建和分析数据库...")
-        self.import_worker = DatabaseImportWorker(self.data_manager)
+        self.import_worker = DatabaseImportWorker(self.data_manager, self.formula_engine)
         self.import_worker.progress.connect(self.import_progress_dialog.update_progress)
         self.import_worker.log_message.connect(self.import_progress_dialog.set_log_message)
         self.import_worker.finished.connect(self._on_import_finished)
@@ -247,14 +275,12 @@ class MainWindow(QMainWindow):
             self.playback_handler.update_time_axis_candidates()
             self.formula_engine.update_allowed_variables(all_vars)
             
-            # --- FIX: Populate floating probe list with checkable items ---
             self.ui.floating_probe_vars_list.clear()
             for var in sorted(all_vars):
                 item = QListWidgetItem(var)
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable) # Make item checkable
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable) 
                 item.setCheckState(Qt.CheckState.Unchecked)
                 self.ui.floating_probe_vars_list.addItem(item)
-            # --- END FIX ---
 
             self.ui.time_slider.setMaximum(frame_count - 1)
             self.ui.video_start_frame.setMaximum(frame_count - 1); self.ui.video_end_frame.setMaximum(frame_count - 1); self.ui.video_end_frame.setValue(frame_count - 1)
@@ -288,6 +314,18 @@ class MainWindow(QMainWindow):
             self.ui.status_bar.showMessage("全局过滤器已应用。", 3000)
         except ValueError as e:
             QMessageBox.critical(self, "过滤器错误", f"过滤器语法无效: {e}")
+
+    # --- 新增：打开过滤器构建器 ---
+    def _open_filter_builder(self):
+        if self.data_manager.get_frame_count() == 0:
+            QMessageBox.warning(self, "无数据", "请先加载数据再构建过滤器。")
+            return
+        
+        dialog = FilterBuilderDialog(self.data_manager.get_variables(), self)
+        if dialog.exec():
+            filter_string = dialog.get_filter_string()
+            self.ui.filter_text_edit.setText(filter_string)
+            self._apply_global_filter() # Automatically apply the new filter
 
     def _on_time_analysis_mode_changed(self):
         is_time_avg = self.ui.time_analysis_mode_combo.currentText() == "时间平均场"
@@ -464,11 +502,9 @@ class MainWindow(QMainWindow):
 
         for item in checked_items:
             var_name = item.text()
-            value = raw_vars.get(var_name, np.nan) # Default to NaN for easier checking
+            value = raw_vars.get(var_name, np.nan) 
             
-            # Special handling for interpolated fields if raw doesn't exist (e.g., curl, div)
             if np.isnan(value):
-                 # Check common interpolated names
                  if var_name in interp_vars:
                      value = interp_vars[var_name]
                  elif f"{var_name}_data" in self.ui.plot_widget.interpolated_results:
@@ -481,7 +517,7 @@ class MainWindow(QMainWindow):
 
         probe_html_lines.append("</div>")
         
-        if len(probe_html_lines) > 2: # Has at least one variable
+        if len(probe_html_lines) > 2: 
              QToolTip.showText(QCursor.pos(), "<br>".join(probe_html_lines), self.ui.plot_widget)
         else:
              QToolTip.hideText()
@@ -605,7 +641,7 @@ class MainWindow(QMainWindow):
         
         reply = QMessageBox.question(self, "确认删除", 
             f"您确定要永久删除变量 <b>'{var_to_delete}'</b> 吗？<br><br>"
-            "此操作将从数据库中移除该列及其所有关联的统计数据，且<b>无法撤销</b>。<br>"
+            "此操作将从数据库中移除该列及其所有关联的统计数据和定义，且<b>无法撤销</b>。<br>"
             "任何依赖此变量的公式、模板或设置文件都将失效。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel)

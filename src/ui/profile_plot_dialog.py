@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -18,7 +19,7 @@ from PyQt6.QtWidgets import (
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.ticker as ticker
-from PyQt6.QtGui import QIcon # 导入QIcon
+from PyQt6.QtGui import QIcon 
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ class ProfilePlotDialog(QDialog):
     def __init__(self, start_point: Tuple, end_point: Tuple, interpolated_data: Dict,
                  available_variables: Dict[str, str], output_dir: str, parent=None):
         super().__init__(parent)
-        self.setWindowIcon(QIcon("png/icon.png")) # 设置窗口图标
+        self.setWindowIcon(QIcon("png/icon.png")) 
         self.start_point = start_point
         self.end_point = end_point
         self.interp_data = interpolated_data
@@ -43,7 +44,6 @@ class ProfilePlotDialog(QDialog):
 
         # --- Controls Layout ---
         controls_layout = QHBoxLayout()
-        # 使用科学计数法格式化坐标
         title = f"从 (X: {start_point[0]:.2e}, Y: {start_point[1]:.2e}) 到 (X: {end_point[0]:.2e}, Y: {end_point[1]:.2e})"
         controls_layout.addWidget(QLabel(title))
         controls_layout.addStretch()
@@ -54,10 +54,13 @@ class ProfilePlotDialog(QDialog):
         self.variable_combo.currentIndexChanged.connect(self._update_plot)
         controls_layout.addWidget(self.variable_combo)
 
-        self.export_button = QPushButton("一键导出数据")
-        self.export_button.setToolTip(f"将当前剖面数据导出到项目输出目录")
-        self.export_button.clicked.connect(self.export_data)
-        controls_layout.addWidget(self.export_button)
+        self.export_csv_button = QPushButton("导出数据(CSV)")
+        self.export_csv_button.clicked.connect(self.export_data_csv)
+        controls_layout.addWidget(self.export_csv_button)
+
+        self.export_img_button = QPushButton("导出图片(PNG)")
+        self.export_img_button.clicked.connect(self.export_image)
+        controls_layout.addWidget(self.export_img_button)
         main_layout.addLayout(controls_layout)
 
         # --- Matplotlib Canvas ---
@@ -137,25 +140,36 @@ class ProfilePlotDialog(QDialog):
             
         self.canvas.draw()
 
-    def export_data(self):
+    def _get_common_filename_part(self):
+        selected_key = self.variable_combo.currentData()
+        start_x, start_y = self.start_point
+        end_x, end_y = self.end_point
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        return f"profile_{selected_key}_from_x{start_x:.1e}y{start_y:.1e}_to_x{end_x:.1e}y{end_y:.1e}_{timestamp}"
+
+    def export_data_csv(self):
         selected_key = self.variable_combo.currentData()
         if not selected_key or selected_key not in self.profile_data_cache:
             QMessageBox.warning(self, "无数据", "没有可导出的剖面数据。"); return
-            
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         
-        # 将坐标添加到文件名中，使用科学计数法
-        start_x, start_y = self.start_point
-        end_x, end_y = self.end_point
-        filename = f"profile_{selected_key}_from_x{start_x:.2e}_y{start_y:.2e}_to_x{end_x:.2e}_y{end_y:.2e}_{timestamp}.csv"
+        filename = f"{self._get_common_filename_part()}.csv"
         filepath = os.path.join(self.output_dir, filename)
             
         try:
             df_to_export = self.profile_data_cache[selected_key].copy()
-            # 更改列头为英文
             df_to_export.rename(columns={'distance': 'Distance', 'value': 'Value'}, inplace=True)
             df_to_export.to_csv(filepath, index=False)
             QMessageBox.information(self, "成功", f"剖面数据已保存到:\n{filepath}")
         except Exception as e:
             logger.error(f"保存剖面数据失败: {e}", exc_info=True)
             QMessageBox.critical(self, "保存失败", f"无法保存文件: {e}")
+
+    def export_image(self):
+        filename = f"{self._get_common_filename_part()}.png"
+        filepath = os.path.join(self.output_dir, filename)
+        try:
+            self.figure.savefig(filepath, dpi=300, bbox_inches='tight')
+            QMessageBox.information(self, "成功", f"剖面图已保存到:\n{filepath}")
+        except Exception as e:
+            logger.error(f"保存剖面图失败: {e}", exc_info=True)
+            QMessageBox.critical(self, "保存失败", f"无法保存图片: {e}")

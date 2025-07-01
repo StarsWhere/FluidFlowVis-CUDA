@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -219,47 +220,33 @@ class UiMainWindow:
         header_layout.addWidget(self.dp_help_btn)
         scroll_layout.addLayout(header_layout)
 
-        # --- Per-Frame Derived Variables (New Columns) Group ---
         compute_group = QGroupBox("逐帧派生变量 (新数据列)"); custom_layout = QVBoxLayout(compute_group)
-        info_label_1 = QLabel("基于<b>每个数据点在各自时刻</b>的值计算新变量。"); info_label_1.setWordWrap(True); custom_layout.addWidget(info_label_1)
-        form_layout = QGridLayout()
-        form_layout.addWidget(QLabel("新变量名:"), 0, 0)
-        self.new_variable_name_edit = QLineEdit(); self.new_variable_name_edit.setPlaceholderText("例: velocity_magnitude")
-        form_layout.addWidget(self.new_variable_name_edit, 0, 1)
-        form_layout.addWidget(QLabel("计算公式:"), 1, 0)
-        self.new_variable_formula_edit = QLineEdit(); self.new_variable_formula_edit.setPlaceholderText("例: sqrt(u*u + v*v)")
-        form_layout.addWidget(self.new_variable_formula_edit, 1, 1)
-        custom_layout.addLayout(form_layout)
+        info_label_1 = QLabel("基于<b>每个数据点在各自时刻</b>的值计算新变量。每行一个定义。"); info_label_1.setWordWrap(True); custom_layout.addWidget(info_label_1)
+        self.new_variable_formula_edit = QTextEdit(); self.new_variable_formula_edit.setPlaceholderText("vel_mag = sqrt(u**2 + v**2)\nvorticity = curl(u, v)")
+        self.new_variable_formula_edit.setFont(QFont("Courier New", 9)); self.new_variable_formula_edit.setFixedHeight(100)
+        custom_layout.addWidget(self.new_variable_formula_edit)
         self.compute_and_add_btn = QPushButton("计算并添加 (逐帧)"); self.compute_and_add_btn.setEnabled(False)
         custom_btn_layout = QHBoxLayout(); custom_btn_layout.addStretch(); custom_btn_layout.addWidget(self.compute_and_add_btn); custom_layout.addLayout(custom_btn_layout)
         scroll_layout.addWidget(compute_group)
 
-        # --- Time-Aggregated Variables ---
         time_agg_group = QGroupBox("时间聚合变量 (新数据列)"); time_agg_layout = QVBoxLayout(time_agg_group)
-        info_label_2 = QLabel("基于<b>每个空间点在所有时刻</b>的值进行聚合计算。"); info_label_2.setWordWrap(True); time_agg_layout.addWidget(info_label_2)
-        time_agg_form = QGridLayout()
-        time_agg_form.addWidget(QLabel("新变量名:"), 0, 0)
-        self.new_time_agg_name_edit = QLineEdit(); self.new_time_agg_name_edit.setPlaceholderText("例: u_time_avg")
-        time_agg_form.addWidget(self.new_time_agg_name_edit, 0, 1)
-        time_agg_form.addWidget(QLabel("聚合公式:"), 1, 0)
-        self.new_time_agg_formula_edit = QLineEdit(); self.new_time_agg_formula_edit.setPlaceholderText("例: mean(u)")
-        time_agg_form.addWidget(self.new_time_agg_formula_edit, 1, 1)
-        time_agg_layout.addLayout(time_agg_form)
+        info_label_2 = QLabel("基于<b>每个空间点在所有时刻</b>的值进行聚合计算。每行一个定义。"); info_label_2.setWordWrap(True); time_agg_layout.addWidget(info_label_2)
+        self.new_time_agg_formula_edit = QTextEdit(); self.new_time_agg_formula_edit.setPlaceholderText("u_time_avg = mean(u)\np_stdev = std(p)")
+        self.new_time_agg_formula_edit.setFont(QFont("Courier New", 9)); self.new_time_agg_formula_edit.setFixedHeight(80)
+        time_agg_layout.addWidget(self.new_time_agg_formula_edit)
         self.compute_and_add_time_agg_btn = QPushButton("计算并添加 (时间聚合)"); self.compute_and_add_time_agg_btn.setEnabled(False)
         time_agg_btn_layout = QHBoxLayout(); time_agg_btn_layout.addStretch(); time_agg_btn_layout.addWidget(self.compute_and_add_time_agg_btn); time_agg_layout.addLayout(time_agg_btn_layout)
         scroll_layout.addWidget(time_agg_group)
 
-        # --- Global Constants (Scalars) Group ---
         custom_group = QGroupBox("全局常量 (标量值)"); custom_layout_2 = QVBoxLayout(custom_group)
-        custom_info = QLabel("基于<b>整个数据集所有点</b>进行聚合，计算单个标量值。"); custom_info.setWordWrap(True); custom_layout_2.addWidget(custom_info)
+        custom_info = QLabel("基于<b>整个数据集所有点</b>进行聚合，计算单个标量值。每行一个定义。"); custom_info.setWordWrap(True); custom_layout_2.addWidget(custom_info)
         self.custom_stats_input = QTextEdit(); self.custom_stats_input.setFont(QFont("Courier New", 9)); self.custom_stats_input.setPlaceholderText("tke_global = mean(0.5 * (u**2 + v**2))\navg_vorticity = mean(curl(u, v))")
         self.custom_stats_input.setFixedHeight(100); custom_layout_2.addWidget(self.custom_stats_input)
         self.save_and_calc_custom_stats_btn = QPushButton("保存定义并计算 (全局)"); self.save_and_calc_custom_stats_btn.setEnabled(False); custom_btn_layout_2 = QHBoxLayout(); custom_btn_layout_2.addStretch(); custom_btn_layout_2.addWidget(self.save_and_calc_custom_stats_btn); custom_layout_2.addLayout(custom_btn_layout_2)
         scroll_layout.addWidget(custom_group)
 
-        # --- Results and Basic Stats Group ---
         results_group = QGroupBox("统计结果与管理"); results_layout = QVBoxLayout(results_group)
-        self.stats_results_text = QTextEdit(); self.stats_results_text.setReadOnly(True); self.stats_results_text.setFont(QFont("Courier New", 9)); self.stats_results_text.setText("尚未计算。")
+        self.stats_results_text = QTextEdit(); self.stats_results_text.setReadOnly(True); self.stats_results_text.setText("尚未计算。")
         results_layout.addWidget(self.stats_results_text)
         h_layout = QHBoxLayout()
         self.export_stats_btn = QPushButton("一键导出统计结果"); self.export_stats_btn.setEnabled(False)
@@ -280,7 +267,19 @@ class UiMainWindow:
         dm_help_btn = QPushButton("?"); dm_help_btn.setFixedSize(25,25); dm_help_btn.setToolTip("打开数据管理与过滤帮助"); dm_help_btn.clicked.connect(lambda: parent_window._show_help("analysis")); filter_help_layout.addWidget(dm_help_btn)
         filter_layout.addLayout(filter_help_layout)
         self.filter_enabled_checkbox = QCheckBox("启用全局数据过滤器"); filter_layout.addWidget(self.filter_enabled_checkbox)
-        filter_hbox = QHBoxLayout(); self.filter_text_edit = QLineEdit(); self.filter_text_edit.setPlaceholderText("SQL WHERE 子句, e.g., p > 1000"); self.apply_filter_btn = QPushButton("应用"); filter_hbox.addWidget(self.filter_text_edit); filter_hbox.addWidget(self.apply_filter_btn); filter_layout.addLayout(filter_hbox)
+        
+        filter_hbox = QHBoxLayout()
+        self.filter_text_edit = QLineEdit()
+        self.filter_text_edit.setPlaceholderText("SQL WHERE 子句, e.g., p > 1000 AND x < 0.5")
+        filter_hbox.addWidget(self.filter_text_edit)
+        
+        self.build_filter_btn = QPushButton("构建...")
+        self.build_filter_btn.setToolTip("使用辅助构建器创建过滤器")
+        filter_hbox.addWidget(self.build_filter_btn)
+        
+        self.apply_filter_btn = QPushButton("应用")
+        filter_hbox.addWidget(self.apply_filter_btn)
+        filter_layout.addLayout(filter_hbox)
         layout.addWidget(filter_group)
         
         export_group = QGroupBox("数据导出"); export_layout = QVBoxLayout(export_group)
@@ -288,7 +287,6 @@ class UiMainWindow:
         self.export_data_csv_btn = QPushButton("导出数据到 CSV..."); export_layout.addWidget(self.export_data_csv_btn)
         layout.addWidget(export_group)
 
-        # NEW: Variable Management Group
         var_management_group = QGroupBox("变量管理")
         vm_layout = QVBoxLayout(var_management_group)
         vm_layout.addWidget(QLabel("从数据库中选择一个变量进行操作："))
@@ -353,7 +351,6 @@ class UiMainWindow:
         btns_layout.addWidget(QLabel("跳帧:")); self.frame_skip_spinbox = QSpinBox(); self.frame_skip_spinbox.setRange(1, 100); self.frame_skip_spinbox.setValue(1); btns_layout.addWidget(self.frame_skip_spinbox)
         playback_layout.addLayout(btns_layout)
         
-        # NEW: Time variable selection
         time_var_layout = QHBoxLayout(); time_var_layout.setContentsMargins(0, 5, 0, 0)
         time_var_layout.addWidget(QLabel("时间轴变量:")); self.time_variable_combo = QComboBox(); self.time_variable_combo.setToolTip("选择哪个数据列作为播放和分析的时间依据"); time_var_layout.addWidget(self.time_variable_combo, 1);
         playback_layout.addLayout(time_var_layout)
@@ -386,7 +383,6 @@ class UiMainWindow:
         help_menu = menubar.addMenu('帮助(&H)')
         self.formula_help_action = QAction('公式指南', main_window); self.formula_help_action.setShortcut('F1')
         self.analysis_help_action = QAction("分析功能指南", main_window); self.analysis_help_action.setShortcut('F2')
-        # NEW
         self.dp_help_action = QAction("数据处理指南", main_window)
         self.template_help_action = QAction("可视化模板指南", main_window)
         self.theme_help_action = QAction("绘图主题指南", main_window)

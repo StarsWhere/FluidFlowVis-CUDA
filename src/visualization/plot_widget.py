@@ -1,3 +1,5 @@
+# src/visualization/plot_widget.py
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import numpy as np
@@ -85,10 +87,9 @@ class PlotWidget(QWidget):
         self.last_mouse_coords: Optional[Tuple[float, float]] = None
         self.thread_pool = QThreadPool(); self.is_busy_interpolating = False
         
-        # --- FIX: Debounce timer for floating probe ---
         self.probe_debounce_timer = QTimer(self)
         self.probe_debounce_timer.setSingleShot(True)
-        self.probe_debounce_timer.setInterval(75)  # 75ms delay
+        self.probe_debounce_timer.setInterval(75) 
 
         self._connect_signals()
         self._setup_plot_style()
@@ -99,10 +100,7 @@ class PlotWidget(QWidget):
         self.canvas.mpl_connect('button_press_event', self._on_button_press)
         self.canvas.mpl_connect('button_release_event', self._on_button_release)
         self.canvas.mpl_connect('figure_leave_event', lambda event: self.mouse_left_plot.emit())
-        
-        # --- FIX: Connect the debounce timer's timeout signal ---
         self.probe_debounce_timer.timeout.connect(self._trigger_probe_update)
-
 
     def _get_platform_font(self) -> str:
         if sys.platform == "win32": return "Microsoft YaHei"
@@ -281,9 +279,6 @@ class PlotWidget(QWidget):
         elif self.picker_mode == PickerMode.PROFILE_END and self.profile_start_point:
             self._update_profile_preview((event.xdata, event.ydata))
         elif not self.picker_mode:
-            # --- FIX: Use the debounce timer ---
-            # Instead of calling get_probe_data_at_coords directly, start the timer.
-            # It will fire only when the mouse has paused for a moment.
             self.probe_debounce_timer.start()
 
     def _trigger_probe_update(self):
@@ -297,8 +292,8 @@ class PlotWidget(QWidget):
         try:
             x_vals_formula = self.x_axis_formula or 'x'
             y_vals_formula = self.y_axis_formula or 'y'
-            x_vals = self.current_data[x_vals_formula] if x_vals_formula in self.current_data.columns else self.formula_engine.evaluate_formula(self.current_data, x_vals_formula)
-            y_vals = self.current_data[y_vals_formula] if y_vals_formula in self.current_data.columns else self.formula_engine.evaluate_formula(self.current_data, y_vals_formula)
+            x_vals = self.formula_engine.evaluate_formula(self.current_data, x_vals_formula)
+            y_vals = self.formula_engine.evaluate_formula(self.current_data, y_vals_formula)
             dist_sq = (x_vals - x)**2 + (y_vals - y)**2
             if not dist_sq.empty:
                 idx = dist_sq.idxmin()
