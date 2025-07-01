@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -49,10 +50,6 @@ class FormulaEngine:
     def validate_syntax(self, formula: str) -> Tuple[bool, str]:
         if not formula.strip(): return True, ""
         try:
-            # 对于包含空间操作的公式，我们只做基本的语法检查，因为它们的验证更复杂
-            if any(func in formula for func in self.spatial_functions):
-                ast.parse(formula, mode='eval')
-                return True, ""
             tree = ast.parse(formula, mode='eval')
             if self._validate_node(tree.body):
                 return True, ""
@@ -99,12 +96,11 @@ class FormulaEngine:
         if formula_stripped in data.columns:
             return data[formula_stripped]
 
-        # [FIX] 使用更智能的正则表达式来检测空间函数的 *调用*
-        # 这将避免将包含 'grad_x' 等子串的变量名误判为空间函数调用
-        spatial_func_pattern = r'\b(' + '|'.join(self.spatial_functions) + r')\s*\('
-        if re.search(spatial_func_pattern, formula_stripped):
+        # [FIXED] 使用更鲁棒的正则检查空间函数调用，避免错误匹配变量名
+        is_spatial = any(re.search(r'\b' + re.escape(f) + r'\s*\(', formula_stripped) for f in self.spatial_functions)
+        if is_spatial:
             raise ValueError(f"空间函数 (如 grad_x, div) 无法直接在 evaluate_formula 中求值。请使用 computation_core。")
-        
+
         # Prepare a safe evaluation scope
         eval_globals = {
             **self.get_all_constants_and_globals(),

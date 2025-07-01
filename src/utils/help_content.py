@@ -378,11 +378,14 @@ velocity_magnitude = sqrt(u**2 + v**2)
 tke = 0.5 * rho * velocity_magnitude**2
 vorticity = curl(u, v)</div>
             <div class="note">
-                <p><b>重要特性：顺序执行！</b></p>
+                <p><b><span class="new-feature">自动依赖排序:</span></b></p>
                 <p>
-                    定义会<b>从上到下依次计算</b>。这意味着您可以在一个定义中，使用在它上面刚刚创建的新变量。
-                    在上面的例子中，<code>tke</code> 的计算就成功地使用了在它前一行定义的 <code>velocity_magnitude</code>。
+                    您<b>无需</b>按计算顺序列出您的定义。InterVis会自动分析变量之间的依赖关系，
+                    并以正确的顺序执行计算。例如，以下定义是完全有效的，即使 <code>tke</code> 在 <code>velocity_magnitude</code> 之前定义:
                 </p>
+                <div class="code-block"># InterVis 会先计算 velocity_magnitude, 再计算 tke
+tke = 0.5 * rho * velocity_magnitude**2
+velocity_magnitude = sqrt(u**2 + v**2)</div>
             </div>
         </div>
         
@@ -399,8 +402,8 @@ vorticity = curl(u, v)</div>
                 <li><b>目的:</b> 计算<b>不随时间变化</b>的统计场，例如定常分析或雷诺分解。</li>
             </ul>
 
-            <h4><span class="new-feature">定义格式 (支持批量)</span></h4>
-            <p>每行一个定义，格式为: <code>new_variable_name = aggregate_function(expression)</code></p>
+            <h4><span class="new-feature">定义格式 (支持批量和自动排序)</span></h4>
+            <p>每行一个定义，格式为: <code>new_variable_name = aggregate_function(expression)</code>。同样支持自动依赖排序。</p>
             <ul>
                 <li>
                     <b><code>aggregate_function</code></b>:
@@ -437,7 +440,7 @@ p_fluctuation_strength = std(p)</div>
             </ul>
 
             <h4><span class="new-feature">定义格式</span></h4>
-            <p>使用特殊的注释行来分隔不同类型的计算块。<b>执行将严格按照从上到下的顺序进行。</b></p>
+            <p>使用特殊的注释行来分隔不同类型的计算块。<b>执行将严格按照从上到下的顺序进行。</b> 每个块内部的定义也会被自动排序。</p>
             <ul>
                 <li><b><code>#--- PER-FRAME ---#</code></b>: 在此标记下的所有定义都将作为<b>逐帧派生变量</b>进行计算。</li>
                 <li><b><code>#--- TIME-AGGREGATED ---#</code></b>: 在此标记下的所有定义都将作为<b>时间聚合变量</b>进行计算。</li>
@@ -484,8 +487,8 @@ velocity_fluctuation = velocity_magnitude - avg_velocity_magnitude
                 <li><b>目的:</b> 计算一个能代表整个仿真过程的<b>单一数字</b>，用于后续的公式计算或图表标题。</li>
             </ul>
 
-            <h4><span class="new-feature">定义格式 (支持批量和顺序执行)</span></h4>
-            <p>与上面类似，每行一个定义，并支持顺序执行。</p>
+            <h4><span class="new-feature">定义格式 (支持批量和自动排序)</span></h4>
+            <p>与上面类似，每行一个定义，并支持自动依赖排序。</p>
             <div class="code-block"># 计算全局平均湍动能
 tke_global_mean = mean(0.5 * rho * (u**2 + v**2))
 # 计算基于上面结果的某个特征长度

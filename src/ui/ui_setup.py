@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -245,14 +246,7 @@ class UiMainWindow:
         combined_group = QGroupBox("3. 组合批量计算 (高级)"); combined_layout = QVBoxLayout(combined_group)
         info_label_3 = QLabel("使用标记按顺序执行不同类型的计算。每行一个定义。"); info_label_3.setWordWrap(True); combined_layout.addWidget(info_label_3)
         self.combined_formula_edit = QTextEdit()
-        self.combined_formula_edit.setPlaceholderText(
-            "#--- PER-FRAME ---#\n"
-            "vel_mag = sqrt(u**2 + v**2)\n\n"
-            "#--- TIME-AGGREGATED ---#\n"
-            "vel_mag_avg = mean(vel_mag)\n\n"
-            "#--- PER-FRAME ---#\n"
-            "vel_fluctuation = vel_mag - vel_mag_avg"
-        )
+        self.combined_formula_edit.setText("#--- PER-FRAME ---#\n\n#--- TIME-AGGREGATED ---#\n")
         self.combined_formula_edit.setFont(QFont("Courier New", 9)); self.combined_formula_edit.setMinimumHeight(120)
         combined_layout.addWidget(self.combined_formula_edit)
         self.compute_combined_btn = QPushButton("执行组合计算"); self.compute_combined_btn.setEnabled(False)

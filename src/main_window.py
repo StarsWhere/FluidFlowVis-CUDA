@@ -292,7 +292,7 @@ class MainWindow(QMainWindow):
             self.theme_handler.populate_theme_combobox()
             self.ui.compute_and_add_btn.setEnabled(True)
             self.ui.compute_and_add_time_agg_btn.setEnabled(True)
-            self.ui.compute_combined_btn.setEnabled(True) # BUGFIX 1: Enable combined compute button
+            self.ui.compute_combined_btn.setEnabled(True)
             self._force_refresh_plot(reset_view=True)
             self.ui.status_bar.showMessage(f"项目加载成功，共 {frame_count} 帧数据。", 5000)
         else:

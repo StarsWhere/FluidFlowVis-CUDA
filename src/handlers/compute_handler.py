@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -5,6 +6,8 @@
 """
 import logging
 import re
+from typing import List, Tuple
+from collections import deque
 from PyQt6.QtWidgets import QMessageBox
 from PyQt6.QtCore import QEventLoop
 from src.ui.dialogs import StatsProgressDialog
@@ -54,6 +57,52 @@ class ComputeHandler:
             definitions.append((name, formula))
         return definitions
 
+    def _topologically_sort_definitions(self, definitions: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+        """
+        对定义列表进行拓扑排序，以确保依赖项在被使用之前计算。
+        """
+        # Graph where key is a variable and value is a list of variables that depend on it.
+        adj = {name: [] for name, _ in definitions}
+        # In-degree count for each variable.
+        in_degree = {name: 0 for name, _ in definitions}
+        # Map name to its formula
+        formulas = dict(definitions)
+        # Set of new variables being defined
+        new_vars = set(formulas.keys())
+
+        for name, formula in definitions:
+            # Find what other *new* variables this formula depends on
+            used_vars = self.formula_engine.get_used_variables(formula)
+            dependencies = used_vars.intersection(new_vars)
+            
+            for dep in dependencies:
+                if dep != name:
+                    adj[dep].append(name)
+                    in_degree[name] += 1
+        
+        # Queue for nodes with no incoming edges (dependencies are met)
+        queue = deque([name for name, count in in_degree.items() if count == 0])
+        
+        sorted_defs = []
+        while queue:
+            u = queue.popleft()
+            sorted_defs.append((u, formulas[u]))
+            
+            if u in adj:
+                for v in adj[u]:
+                    in_degree[v] -= 1
+                    if in_degree[v] == 0:
+                        queue.append(v)
+                        
+        if len(sorted_defs) != len(definitions):
+            cyclic_vars = {name for name, count in in_degree.items() if count > 0}
+            raise ValueError(f"检测到循环依赖，无法解析计算顺序。涉及的变量: {', '.join(cyclic_vars)}")
+            
+        logger.info(f"原始定义顺序: {[d[0] for d in definitions]}")
+        logger.info(f"拓扑排序后顺序: {[d[0] for d in sorted_defs]}")
+        
+        return sorted_defs
+
     def start_derived_variable_computation(self):
         """启动后台任务以计算和添加新的逐帧变量列。"""
         if self.dm.get_frame_count() == 0:
@@ -67,13 +116,14 @@ class ComputeHandler:
         
         try:
             definitions = self._parse_definitions(definitions_text)
+            if not definitions: return
+            sorted_definitions = self._topologically_sort_definitions(definitions)
         except (ValueError, InterruptedError) as e:
             QMessageBox.warning(self.main_window, "输入错误", str(e))
             return
         
         self.compute_progress_dialog = StatsProgressDialog(self.main_window, "正在计算逐帧变量")
-        # For single tasks, always use parallelism for speed
-        self.compute_worker = DerivedVariableWorker(self.dm, self.formula_engine, definitions, use_parallelism=True)
+        self.compute_worker = DerivedVariableWorker(self.dm, self.formula_engine, sorted_definitions)
         
         self.compute_worker.progress.connect(self.on_progress_update)
         self.compute_worker.finished.connect(self.on_computation_finished)
@@ -95,15 +145,19 @@ class ComputeHandler:
 
         try:
             definitions = self._parse_definitions(definitions_text)
+            if not definitions: return
+            
             for _, formula in definitions:
                 if not re.fullmatch(r'\s*(\w+)\s*\((.*)\)\s*', formula, re.DOTALL):
                     raise ValueError(f"公式格式无效: '{formula}'. 时间聚合公式必须是 '聚合函数(表达式)'，例如 'mean(u)'。")
+            
+            sorted_definitions = self._topologically_sort_definitions(definitions)
         except (ValueError, InterruptedError) as e:
             QMessageBox.warning(self.main_window, "输入错误", str(e))
             return
 
         self.compute_progress_dialog = StatsProgressDialog(self.main_window, "正在计算时间聚合变量")
-        self.compute_worker = TimeAggregatedVariableWorker(self.dm, self.formula_engine, definitions)
+        self.compute_worker = TimeAggregatedVariableWorker(self.dm, self.formula_engine, sorted_definitions)
         
         self.compute_worker.progress.connect(self.on_progress_update)
         self.compute_worker.finished.connect(self.on_computation_finished)
@@ -156,6 +210,7 @@ class ComputeHandler:
             try:
                 definitions = self._parse_definitions(defs_text)
                 if not definitions: continue
+                sorted_definitions = self._topologically_sort_definitions(definitions)
             except (ValueError, InterruptedError) as e:
                 self.compute_progress_dialog.close()
                 QMessageBox.warning(self.main_window, "解析错误", f"块 {i+1} 中存在错误: {e}")
@@ -163,15 +218,14 @@ class ComputeHandler:
 
             worker = None
             if block_type == 'per-frame':
-                # [FIX] For combined sequential tasks, disable parallelism to ensure data consistency
-                worker = DerivedVariableWorker(self.dm, self.formula_engine, definitions, use_parallelism=False)
+                worker = DerivedVariableWorker(self.dm, self.formula_engine, sorted_definitions)
             else:
-                for _, formula in definitions:
+                for _, formula in sorted_definitions:
                     if not re.fullmatch(r'\s*(\w+)\s*\((.*)\)\s*', formula, re.DOTALL):
                         QMessageBox.warning(self.main_window, "输入错误", f"时间聚合公式格式无效: '{formula}'")
                         self.compute_progress_dialog.close()
                         return
-                worker = TimeAggregatedVariableWorker(self.dm, self.formula_engine, definitions)
+                worker = TimeAggregatedVariableWorker(self.dm, self.formula_engine, sorted_definitions)
 
             event_loop = QEventLoop()
             error_message = []
@@ -180,8 +234,8 @@ class ComputeHandler:
             worker.error.connect(error_message.append)
             worker.error.connect(event_loop.quit)
             
-            worker.progress.connect(lambda cur, tot, msg: self.compute_progress_dialog.update_progress(i, len(blocks), f"块 {i+1}: {msg}"))
-            
+            worker.progress.connect(lambda cur, tot, msg, b_type=block_type, b_idx=i: self.compute_progress_dialog.update_progress(b_idx, len(blocks), f"块 {b_idx+1}({b_type}): {msg}"))
+
             worker.start()
             self.compute_progress_dialog.show()
             event_loop.exec()
