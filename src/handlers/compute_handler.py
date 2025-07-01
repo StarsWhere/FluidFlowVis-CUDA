@@ -72,7 +72,8 @@ class ComputeHandler:
             return
         
         self.compute_progress_dialog = StatsProgressDialog(self.main_window, "正在计算逐帧变量")
-        self.compute_worker = DerivedVariableWorker(self.dm, self.formula_engine, definitions)
+        # For single tasks, always use parallelism for speed
+        self.compute_worker = DerivedVariableWorker(self.dm, self.formula_engine, definitions, use_parallelism=True)
         
         self.compute_worker.progress.connect(self.on_progress_update)
         self.compute_worker.finished.connect(self.on_computation_finished)
@@ -162,7 +163,8 @@ class ComputeHandler:
 
             worker = None
             if block_type == 'per-frame':
-                worker = DerivedVariableWorker(self.dm, self.formula_engine, definitions)
+                # [FIX] For combined sequential tasks, disable parallelism to ensure data consistency
+                worker = DerivedVariableWorker(self.dm, self.formula_engine, definitions, use_parallelism=False)
             else:
                 for _, formula in definitions:
                     if not re.fullmatch(r'\s*(\w+)\s*\((.*)\)\s*', formula, re.DOTALL):
@@ -178,7 +180,6 @@ class ComputeHandler:
             worker.error.connect(error_message.append)
             worker.error.connect(event_loop.quit)
             
-            # Connect progress to a lambda to add block info
             worker.progress.connect(lambda cur, tot, msg: self.compute_progress_dialog.update_progress(i, len(blocks), f"块 {i+1}: {msg}"))
             
             worker.start()

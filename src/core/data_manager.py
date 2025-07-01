@@ -170,6 +170,7 @@ class DataManager(QObject):
         if not (0 <= frame_index < len(time_values)): return None
         
         time_value = time_values[frame_index]
+        # Use a tuple as a key, including filter and time variable for cache invalidation
         cache_key = (frame_index, self.global_filter_clause, self.time_variable)
         
         if cache_key in self.cache:
@@ -178,12 +179,13 @@ class DataManager(QObject):
         
         try:
             conn = self.get_db_connection()
+            # [FIX] Ensure ALL available columns are selected to make all variables available for computation.
             all_known_vars = self.get_variables(include_id=True)
-            if not all_known_vars: return pd.DataFrame()
+            if not all_known_vars: 
+                conn.close()
+                return pd.DataFrame()
 
             cols_to_select = ", ".join([f'"{var}"' for var in all_known_vars])
-            # 移除了 self.global_filter_clause 中的 AND，因为现在它是一个完整的 WHERE 子句
-            filter_part = f"WHERE {self.global_filter_clause}" if self.global_filter_clause else ""
             query = f'SELECT {cols_to_select} FROM timeseries_data WHERE "{self.time_variable}" = ? {self.global_filter_clause}'
             
             data = pd.read_sql_query(query, conn, params=(time_value,))
@@ -210,7 +212,8 @@ class DataManager(QObject):
             conn = self.get_db_connection()
             variables = self.get_variables()
             
-            vars_to_avg = [var for var in variables if var not in ['x', 'y', self.time_variable]]
+            # Aggregate all variables except for spatial coordinates and the time variable itself.
+            vars_to_avg = [var for var in variables if var not in ['x', 'y', self.time_variable, 'frame_index', 'id', 'source_file']]
             avg_cols = ", ".join([f'AVG("{var}") as "{var}"' for var in vars_to_avg])
             
             query = f"""
@@ -308,7 +311,7 @@ class DataManager(QObject):
         # For this implementation, we assume all columns other than 'source_file' are numeric
         all_vars = self.get_variables()
         for var in all_vars:
-            if var != 'frame_index' and var != 'source_file':
+            if var != 'frame_index' and var != 'source_file' and var != 'id':
                 candidates.append(var)
         return candidates
 
