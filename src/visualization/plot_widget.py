@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 from matplotlib.lines import Line2D
 from scipy.interpolate import interpn, griddata
-import matplotlib.contour as mcontour # Added import for mcontour
+import matplotlib.contour as mcontour
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
 from PyQt6.QtCore import pyqtSignal, QObject, QRunnable, QThreadPool, Qt
@@ -92,9 +92,6 @@ class PlotWidget(QWidget):
         self.canvas.mpl_connect('scroll_event', self._on_scroll)
         self.canvas.mpl_connect('button_press_event', self._on_button_press)
         self.canvas.mpl_connect('button_release_event', self._on_button_release)
-        # --- FIX ---
-        # The 'figure_leave_event' passes an event argument.
-        # Use a lambda function to consume this argument and emit the argument-less signal.
         self.canvas.mpl_connect('figure_leave_event', lambda event: self.mouse_left_plot.emit())
 
     def _get_platform_font(self) -> str:
@@ -169,59 +166,76 @@ class PlotWidget(QWidget):
     
     def redraw(self, is_initial: bool = False):
         if not self.interpolated_results: return
+        
+        # --- FIX ---
+        # Do NOT call self.ax.clear(). Instead, each draw function will manage its own artists.
+        # This preserves the axes state and prevents the colorbar bug.
+        
         self._remove_profile_preview()
         self._update_plot_decorations()
-        self._draw_heatmap(); self._draw_contour(); self._draw_vector_plot()
-        if is_initial: self.reset_view()
-        self.canvas.draw_idle()
-    
-    def _draw_heatmap(self):
-        data, gx, gy = self.interpolated_results.get('heatmap_data'), self.interpolated_results.get('grid_x'), self.interpolated_results.get('grid_y')
         
+        self._draw_heatmap()
+        self._draw_contour()
+        self._draw_vector_plot()
+
+        self.ax.grid(True, linestyle='--', alpha=0.5)
+
+        if is_initial: 
+            self.reset_view()
+        
+        self.canvas.draw_idle()
+
+    def _draw_heatmap(self):
+        # 1. Remove previous artists this function created.
         if self.colorbar_obj: self.colorbar_obj.remove(); self.colorbar_obj = None
         if self.heatmap_obj: self.heatmap_obj.remove(); self.heatmap_obj = None
 
-        if not self.heatmap_config.get('enabled') or data is None or gx is None: return
+        # 2. Get data and check if we should draw.
+        data, gx, gy = self.interpolated_results.get('heatmap_data'), self.interpolated_results.get('grid_x'), self.interpolated_results.get('grid_y')
+        if not self.heatmap_config.get('enabled') or data is None or gx is None or np.all(np.isnan(data)):
+            return
 
+        # 3. Draw the new artists.
         vmin_str, vmax_str = self.heatmap_config.get('vmin'), self.heatmap_config.get('vmax')
-        
         vmin = float(vmin_str) if vmin_str is not None and str(vmin_str).strip() != '' else None
         vmax = float(vmax_str) if vmax_str is not None and str(vmax_str).strip() != '' else None
 
         valid = data[~np.isnan(data)]
         if valid.size > 0:
-            if vmin is None: vmin = np.min(valid)
-            if vmax is None: vmax = np.max(valid)
+            if vmin is None: vmin = np.nanmin(valid)
+            if vmax is None: vmax = np.nanmax(valid)
 
         self.heatmap_obj = self.ax.pcolormesh(gx, gy, data, cmap=self.heatmap_config.get('colormap', 'viridis'), vmin=vmin, vmax=vmax, shading='gouraud')
         self.colorbar_obj = self.figure.colorbar(self.heatmap_obj, ax=self.ax, format=ticker.ScalarFormatter(useMathText=True))
         self.colorbar_obj.set_label(self.heatmap_config.get('formula', ''))
 
     def _draw_contour(self):
-        # Always attempt to clear previous contour if it exists
-        if self.contour_obj:
-            # Ensure contour_obj is a valid QuadContourSet before attempting to remove collections
-            if isinstance(self.contour_obj, mcontour.QuadContourSet) and hasattr(self.contour_obj, 'collections'):
-                for coll in self.contour_obj.collections:
-                    try:
-                        coll.remove()
-                    except ValueError: # Handle cases where collection might already be removed
-                        pass
-            self.contour_obj = None
+        # 1. Remove previous artists
+        if self.contour_obj and hasattr(self.contour_obj, 'collections'):
+            for coll in self.contour_obj.collections:
+                coll.remove()
+        self.contour_obj = None
 
+        # 2. Get data and check
         data, gx, gy = self.interpolated_results.get('contour_data'), self.interpolated_results.get('grid_x'), self.interpolated_results.get('grid_y')
         if not self.contour_config.get('enabled') or data is None or gx is None or np.all(np.isnan(data)):
-            # If contour is disabled or data is invalid, ensure contour_obj is None
-            self.contour_obj = None
             return
 
+        # 3. Draw new artists
         self.contour_obj = self.ax.contour(gx, gy, data, levels=self.contour_config.get('levels', 10), colors=self.contour_config.get('colors', 'black'), linewidths=self.contour_config.get('linewidths', 1.0))
         if self.contour_config.get('show_labels'): self.ax.clabel(self.contour_obj, inline=True, fontsize=8, fmt='%.2e')
 
     def _draw_vector_plot(self):
+        # 1. Remove previous artists
         if self.vector_quiver_obj: self.vector_quiver_obj.remove(); self.vector_quiver_obj = None
-        if self.vector_stream_obj: self.vector_stream_obj.lines.remove(); self.vector_stream_obj = None
+        if self.vector_stream_obj:
+            if self.vector_stream_obj.lines:
+                self.vector_stream_obj.lines.remove()
+            if hasattr(self.vector_stream_obj, 'arrows') and self.vector_stream_obj.arrows:
+                 self.vector_stream_obj.arrows.remove()
+        self.vector_stream_obj = None
         
+        # 2. Check and delegate
         if not self.vector_config.get('enabled'): return
         plot_type = VectorPlotType.from_str(self.vector_config.get('type'))
         if plot_type == VectorPlotType.QUIVER: self._draw_quiver()
@@ -251,7 +265,12 @@ class PlotWidget(QWidget):
             self.colorbar_obj.set_label(f"Streamline ({color_by.value})")
 
     def _on_mouse_move(self, event):
-        if event.inaxes != self.ax or event.xdata is None: return
+        if event.inaxes != self.ax or event.xdata is None or event.ydata is None: 
+            if self.last_mouse_coords is not None:
+                self.mouse_left_plot.emit()
+                self.last_mouse_coords = None
+            return
+
         self.mouse_moved.emit(event.xdata, event.ydata)
         self.last_mouse_coords = (event.xdata, event.ydata)
         if self.is_dragging:
@@ -284,7 +303,7 @@ class PlotWidget(QWidget):
             if gx is not None and gy is not None:
                 point, grid_coords = (y, x), (gy[:, 0], gx[0, :])
                 for key, data in self.interpolated_results.items():
-                    if 'data' in key and isinstance(data, np.ndarray):
+                    if 'data' in key and isinstance(data, np.ndarray) and data.ndim == 2:
                         val = interpn(grid_coords, data, point, method='linear', bounds_error=False, fill_value=np.nan)[0]
                         results['interpolated'][key.replace('_data', '')] = val
         except Exception as e: logger.debug(f"获取插值探针数据时出错: {e}")
@@ -367,10 +386,9 @@ class PlotWidget(QWidget):
             try:
                 self.profile_preview_line.remove()
             except (ValueError, AttributeError):
-                pass # Line may have already been removed or is None
+                pass 
             finally:
                 self.profile_preview_line = None
-        # self.canvas.draw_idle() # Let the caller handle the redraw to avoid stuttering
 
     def save_figure(self, filename: str, dpi: int = 300):
         try: self.figure.savefig(filename, dpi=dpi, bbox_inches='tight'); return True
@@ -395,7 +413,6 @@ class PlotWidget(QWidget):
                 self.ax.set_aspect(value, adjustable='datalim', anchor='C')
             else: # 'auto'
                 self.ax.set_aspect('auto', adjustable='box')
-                # Re-apply limits for 'auto' to ensure it fills the space correctly after a mode change
                 self.ax.set_xlim(x_min - m * xr, x_max + m * xr)
                 self.ax.set_ylim(y_min - m * yr, y_max + m * yr)
 

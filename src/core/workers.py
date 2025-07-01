@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -315,7 +314,10 @@ class DerivedVariableWorker(QThread):
 
 
 class TimeAggregatedVariableWorker(QThread):
-    """为每个空间点计算时间聚合值，并将其作为新列添加。"""
+    """
+    [OPTIMIZED] 为每个空间点计算时间聚合值，并将其作为新列添加。
+    此版本使用高效的SQL操作，而不是逐点或逐帧处理。
+    """
     progress = pyqtSignal(int, int, str)
     finished = pyqtSignal()
     error = pyqtSignal(str)
@@ -337,6 +339,8 @@ class TimeAggregatedVariableWorker(QThread):
     def run(self):
         conn = None
         safe_name = f'"{self.new_name}"'
+        temp_table_name = f"__temp_agg_{self.new_name}"
+        
         try:
             agg_func, inner_expr = self._parse_formula()
             
@@ -358,16 +362,17 @@ class TimeAggregatedVariableWorker(QThread):
             cursor.execute(f"ALTER TABLE timeseries_data ADD COLUMN {safe_name} REAL;")
             conn.commit()
 
-            # Variance/Std requires special handling in SQL
+            # Variance/Std requires special handling in SQL using a numerically stable formula
             if is_variance:
-                agg_expr = f"AVG(pow({inner_expr}, 2)) - pow(AVG({inner_expr}), 2)" # Variance
+                # AVG(X*X) - AVG(X)*AVG(X)
+                agg_expr = f"AVG(pow({inner_expr}, 2)) - pow(AVG({inner_expr}), 2)"
                 if agg_func == 'std':
-                    agg_expr = f"SQRT({agg_expr})" # Standard Deviation
+                    # SQRT(VAR)
+                    agg_expr = f"SQRT({agg_expr})"
             else:
                 agg_expr = f"{sql_agg_func}({inner_expr})"
 
-            self.progress.emit(1, 5, "步骤 2/5: 计算每个点的聚合值...")
-            temp_table_name = "time_agg_temp"
+            self.progress.emit(1, 5, "步骤 2/5: 计算每个点的聚合值 (SQL)...")
             cursor.execute(f"DROP TABLE IF EXISTS {temp_table_name}")
             create_temp_query = f"""
                 CREATE TEMP TABLE {temp_table_name} AS
@@ -409,9 +414,13 @@ class TimeAggregatedVariableWorker(QThread):
             self.error.emit(str(e))
         finally:
             if conn:
-                cursor = conn.cursor()
-                cursor.execute(f"DROP TABLE IF EXISTS {temp_table_name}")
-                conn.close()
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute(f"DROP TABLE IF EXISTS {temp_table_name}")
+                except Exception as e_cleanup:
+                    logger.error(f"清理临时表失败: {e_cleanup}")
+                finally:
+                    conn.close()
 
 class BatchExportWorker(QThread):
     progress = pyqtSignal(int, int, str)

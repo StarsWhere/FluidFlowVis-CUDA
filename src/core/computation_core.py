@@ -11,7 +11,7 @@ from scipy.spatial.qhull import QhullError
 from typing import Dict, Any
 
 from src.core.formula_engine import FormulaEngine
-from src.utils.gpu_utils import is_gpu_available, evaluate_formula_gpu
+from src.utils.gpu_utils import is_gpu_available, evaluate_formula_gpu, cp
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,8 @@ def compute_gridded_field(
     """
     if data is None or data.empty or not formula:
         return {}
+    
+    use_gpu = use_gpu and is_gpu_available()
 
     # 1. 计算坐标轴
     try:
@@ -102,7 +104,7 @@ def _evaluate_spatial_formula_recursively(
     use_gpu: bool
 ) -> np.ndarray:
     """
-    递归地解析和计算公式，处理空间操作。
+    [OPTIMIZED] 递归地解析和计算公式，处理空间操作，并利用GPU进行梯度计算。
     """
     formula = formula.strip()
     
@@ -132,27 +134,68 @@ def _evaluate_spatial_formula_recursively(
     # 递归计算每个参数的网格化场
     arg_grids = [_evaluate_spatial_formula_recursively(arg, data, points, grid_x, grid_y, formula_engine, use_gpu) for arg in args]
 
-    # 执行空间运算
+    # --- 执行空间运算 (CPU 或 GPU) ---
+    if use_gpu:
+        # 转移到GPU
+        grid_y_gpu = cp.asarray(grid_y[:, 0])
+        grid_x_gpu = cp.asarray(grid_x[0, :])
+        arg_grids_gpu = [cp.asarray(grid) if grid is not None else None for grid in arg_grids]
+        
+        result_gpu = _perform_spatial_op_gpu(op, arg_grids_gpu, grid_y_gpu, grid_x_gpu)
+        
+        # 将结果转回CPU
+        return cp.asnumpy(result_gpu) if result_gpu is not None else None
+    else:
+        # 在CPU上执行
+        return _perform_spatial_op_cpu(op, arg_grids, grid_y[:, 0], grid_x[0, :])
+
+
+def _perform_spatial_op_cpu(op, arg_grids, grid_y_coords, grid_x_coords):
+    """在CPU上使用NumPy执行空间运算。"""
     if op in ['grad_x', 'grad_y', 'laplacian']:
         if len(arg_grids) != 1: raise ValueError(f"{op}需要1个参数，但收到了{len(arg_grids)}")
         field = arg_grids[0]
-        if field is None: return None # Propagate None if interpolation failed
-        # 使用np.gradient计算两个方向的梯度
-        grad_gy, grad_gx = np.gradient(field, grid_y[:, 0], grid_x[0, :])
+        if field is None: return None
+        grad_gy, grad_gx = np.gradient(field, grid_y_coords, grid_x_coords)
         if op == 'grad_x': return grad_gx
         if op == 'grad_y': return grad_gy
         if op == 'laplacian':
-            # 拉普拉斯算子是梯度的散度
-            g_gx_y, g_gx_x = np.gradient(grad_gx, grid_y[:, 0], grid_x[0, :])
-            g_gy_y, g_gy_x = np.gradient(grad_gy, grid_y[:, 0], grid_x[0, :])
+            g_gx_y, g_gx_x = np.gradient(grad_gx, grid_y_coords, grid_x_coords)
+            g_gy_y, g_gy_x = np.gradient(grad_gy, grid_y_coords, grid_x_coords)
             return g_gx_x + g_gy_y
 
     elif op in ['div', 'curl']:
         if len(arg_grids) != 2: raise ValueError(f"{op}需要2个参数，但收到了{len(arg_grids)}")
         u, v = arg_grids
-        if u is None or v is None: return None # Propagate None
-        grad_u_y, grad_u_x = np.gradient(u, grid_y[:, 0], grid_x[0, :])
-        grad_v_y, grad_v_x = np.gradient(v, grid_y[:, 0], grid_x[0, :])
+        if u is None or v is None: return None
+        grad_u_y, grad_u_x = np.gradient(u, grid_y_coords, grid_x_coords)
+        grad_v_y, grad_v_x = np.gradient(v, grid_y_coords, grid_x_coords)
+        if op == 'div': return grad_u_x + grad_v_y
+        if op == 'curl': return grad_v_x - grad_u_y
+    
+    raise ValueError(f"未知的空间操作: {op}")
+
+
+def _perform_spatial_op_gpu(op, arg_grids_gpu, grid_y_coords_gpu, grid_x_coords_gpu):
+    """在GPU上使用CuPy执行空间运算。"""
+    if op in ['grad_x', 'grad_y', 'laplacian']:
+        if len(arg_grids_gpu) != 1: raise ValueError(f"{op}需要1个参数，但收到了{len(arg_grids_gpu)}")
+        field = arg_grids_gpu[0]
+        if field is None: return None
+        grad_gy, grad_gx = cp.gradient(field, grid_y_coords_gpu, grid_x_coords_gpu)
+        if op == 'grad_x': return grad_gx
+        if op == 'grad_y': return grad_gy
+        if op == 'laplacian':
+            g_gx_y, g_gx_x = cp.gradient(grad_gx, grid_y_coords_gpu, grid_x_coords_gpu)
+            g_gy_y, g_gy_x = cp.gradient(grad_gy, grid_y_coords_gpu, grid_x_coords_gpu)
+            return g_gx_x + g_gy_y
+
+    elif op in ['div', 'curl']:
+        if len(arg_grids_gpu) != 2: raise ValueError(f"{op}需要2个参数，但收到了{len(arg_grids_gpu)}")
+        u, v = arg_grids_gpu
+        if u is None or v is None: return None
+        grad_u_y, grad_u_x = cp.gradient(u, grid_y_coords_gpu, grid_x_coords_gpu)
+        grad_v_y, grad_v_x = cp.gradient(v, grid_y_coords_gpu, grid_x_coords_gpu)
         if op == 'div': return grad_u_x + grad_v_y
         if op == 'curl': return grad_v_x - grad_u_y
     
@@ -170,10 +213,7 @@ def _get_values_from_simple_formula(data, formula, formula_engine, use_gpu):
 
     if use_gpu and is_gpu_available() and not uses_aggregates:
         try:
-            req_vars = formula_engine.get_used_variables(formula)
-            var_data = {var: data[var].values for var in req_vars}
-            combined_vars = {**formula_engine.get_all_constants_and_globals(), **var_data}
-            return evaluate_formula_gpu(formula, combined_vars)
+            return evaluate_formula_gpu(formula, data, formula_engine)
         except Exception as e:
             logger.warning(f"GPU评估公式 '{formula}' 失败，回退到CPU。错误: {e}")
             return formula_engine.evaluate_formula(data, formula)

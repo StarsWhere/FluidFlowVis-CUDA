@@ -200,7 +200,7 @@ class MainWindow(QMainWindow):
         if self.config_handler._is_loading_config: return
         self.config_handler.mark_config_as_dirty()
         if self.data_manager.get_frame_count() > 0:
-            self._should_reset_view_after_refresh = True
+            self._should_reset_view_after_refresh = False
             self.redraw_debounce_timer.start()
 
     def _validate_all_formulas(self):
@@ -248,7 +248,8 @@ class MainWindow(QMainWindow):
             self.ui.floating_probe_vars_list.clear()
             for var in sorted(all_vars):
                 item = QListWidgetItem(var)
-                item.setCheckState(Qt.CheckState.Unchecked) # Make item checkable
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable) # Make item checkable
+                item.setCheckState(Qt.CheckState.Unchecked)
                 self.ui.floating_probe_vars_list.addItem(item)
             # --- END FIX ---
 
@@ -280,7 +281,7 @@ class MainWindow(QMainWindow):
         try:
             filter_text = self.ui.filter_text_edit.text() if self.ui.filter_enabled_checkbox.isChecked() else ""
             self.data_manager.set_global_filter(filter_text)
-            self._force_refresh_plot(reset_view=True)
+            self._force_refresh_plot(reset_view=False) # Don't reset view on filter change
             self.ui.status_bar.showMessage("全局过滤器已应用。", 3000)
         except ValueError as e:
             QMessageBox.critical(self, "过滤器错误", f"过滤器语法无效: {e}")
@@ -346,10 +347,29 @@ class MainWindow(QMainWindow):
         self.ui.draw_profile_btn.setChecked(False)
         if not self.ui.plot_widget.interpolated_results: QMessageBox.warning(self, "无数据", "无可用于剖面的插值数据。"); return
         if self.profile_dialog and self.profile_dialog.isVisible(): self.profile_dialog.close()
-        available_data = {
-            key.replace('_data', ''): self.config_handler.get_current_config().get(key.replace('_data',''),{}).get('formula', key.replace('_data',''))
-            for key, data in self.ui.plot_widget.interpolated_results.items() if 'data' in key and isinstance(data, np.ndarray)
-        }
+        
+        # Build a comprehensive list of available data for the profile plot
+        available_data = {}
+        config = self.config_handler.get_current_config()
+        
+        # Add fields that were actually computed and are present in interpolated_results
+        for key in ['heatmap', 'contour', 'vector_u', 'vector_v']:
+            data_key = f'{key}_data'
+            if data_key in self.ui.plot_widget.interpolated_results and self.ui.plot_widget.interpolated_results[data_key] is not None:
+                # Find the corresponding formula from the config
+                formula = ""
+                if key == 'heatmap' and config['heatmap'].get('enabled'):
+                    formula = config['heatmap'].get('formula', key)
+                elif key == 'contour' and config['contour'].get('enabled'):
+                    formula = config['contour'].get('formula', key)
+                elif key == 'vector_u' and config['vector'].get('enabled'):
+                    formula = config['vector'].get('u_formula', key)
+                elif key == 'vector_v' and config['vector'].get('enabled'):
+                    formula = config['vector'].get('v_formula', key)
+                
+                if formula:
+                    available_data[key] = formula
+
         self.profile_dialog = ProfilePlotDialog(start_point, end_point, self.ui.plot_widget.interpolated_results, available_data, self.output_dir, self)
         self.profile_dialog.show()
 
@@ -441,17 +461,19 @@ class MainWindow(QMainWindow):
 
         for item in checked_items:
             var_name = item.text()
-            value = raw_vars.get(var_name, 'N/A')
+            value = raw_vars.get(var_name, np.nan) # Default to NaN for easier checking
             
             # Special handling for interpolated fields if raw doesn't exist (e.g., curl, div)
-            if value == 'N/A':
+            if np.isnan(value):
                  # Check common interpolated names
-                 if var_name in interp_vars: value = interp_vars[var_name]
+                 if var_name in interp_vars:
+                     value = interp_vars[var_name]
                  elif f"{var_name}_data" in self.ui.plot_widget.interpolated_results:
                      val = interp_vars.get(var_name)
-                     if val is not None: value = val
+                     if val is not None:
+                         value = val
             
-            val_str = f"{value:.4e}" if isinstance(value, (int, float)) and not np.isnan(value) else str(value)
+            val_str = f"{value:.4e}" if isinstance(value, (int, float)) and not np.isnan(value) else 'N/A'
             probe_html_lines.append(f"<b>{var_name:<15}</b>: {val_str}")
 
         probe_html_lines.append("</div>")
@@ -474,7 +496,7 @@ class MainWindow(QMainWindow):
     def _on_interpolation_error(self, message: str):
         QMessageBox.critical(self, "可视化错误", f"无法渲染图形，公式可能存在问题。\n\n错误详情:\n{message}"); self.ui.status_bar.showMessage(f"渲染错误: {message}", 5000)
 
-    def _on_gpu_toggle(self, is_on): self.ui.plot_widget.set_config(use_gpu=is_on); self._update_gpu_status_label(); self._trigger_auto_apply()
+    def _on_gpu_toggle(self, is_on): self._trigger_auto_apply()
     def _on_vector_plot_type_changed(self):
         is_q = self.ui.vector_plot_type.currentData(Qt.ItemDataRole.UserRole) == self.config_handler.VectorPlotType.QUIVER
         self.ui.quiver_options_group.setVisible(is_q); self.ui.streamline_options_group.setVisible(not is_q); self._trigger_auto_apply()
@@ -538,8 +560,18 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _update_gpu_status_label(self):
-        status, color = ("GPU: 启用", "green") if self.ui.gpu_checkbox.isChecked() and is_gpu_available() else (("GPU: 可用", "orange") if is_gpu_available() else ("GPU: 不可用", "red"))
-        self.ui.gpu_status_label.setText(status); self.ui.gpu_status_label.setStyleSheet(f"color: {color};")
+        use_gpu = self.ui.gpu_checkbox.isChecked()
+        gpu_available = is_gpu_available()
+        
+        if use_gpu and gpu_available:
+            status, color = ("GPU: 已启用", "green")
+        elif not use_gpu and gpu_available:
+            status, color = ("GPU: 可用 (未启用)", "orange")
+        else: # not gpu_available
+            status, color = ("GPU: 不可用", "red")
+            
+        self.ui.gpu_status_label.setText(status)
+        self.ui.gpu_status_label.setStyleSheet(f"color: {color};")
 
     def _show_variable_menu(self, line_edit: QLineEdit, position: QPoint):
         menu = QMenu(self); insert_text = lambda text: line_edit.insert(f" {text} ")
