@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -300,7 +299,7 @@ class DerivedVariableWorker(QThread):
                 self.dm.refresh_schema_info()
                 self.formula_engine.update_allowed_variables(self.dm.get_variables()) # Make new var available for next formula
 
-                stats_worker = GlobalStatsWorker(self.dm, [new_name])
+                stats_worker = GlobalStatsWorker(self.dm, self.formula_engine, [new_name])
                 stats_worker.error.connect(lambda e: logger.error(f"计算 '{new_name}' 统计时出错: {e}"))
                 stats_worker.run()
             
@@ -381,9 +380,10 @@ class TimeAggregatedVariableWorker(QThread):
     finished = pyqtSignal()
     error = pyqtSignal(str)
     
-    def __init__(self, data_manager: DataManager, definitions: List[Tuple[str, str]], parent=None):
+    def __init__(self, data_manager: DataManager, formula_engine: FormulaEngine, definitions: List[Tuple[str, str]], parent=None):
         super().__init__(parent)
         self.dm = data_manager
+        self.formula_engine = formula_engine
         self.definitions = definitions # List of (new_name, formula)
 
     def _parse_formula(self, formula: str) -> Tuple[str, str]:
@@ -467,7 +467,7 @@ class TimeAggregatedVariableWorker(QThread):
                 self.dm.save_variable_definition(new_name, formula, "time-aggregated")
                 self.dm.refresh_schema_info() # Refresh schema for next loop iteration
                 
-                stats_worker = GlobalStatsWorker(self.dm, [new_name])
+                stats_worker = GlobalStatsWorker(self.dm, self.formula_engine, [new_name])
                 stats_worker.error.connect(lambda e: logger.error(f"计算 '{new_name}' 统计时出错: {e}"))
                 stats_worker.run()
             

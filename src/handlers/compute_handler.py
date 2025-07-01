@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -101,7 +100,7 @@ class ComputeHandler:
             return
 
         self.compute_progress_dialog = StatsProgressDialog(self.main_window, "正在计算时间聚合变量")
-        self.compute_worker = TimeAggregatedVariableWorker(self.dm, definitions)
+        self.compute_worker = TimeAggregatedVariableWorker(self.dm, self.formula_engine, definitions)
         
         self.compute_worker.progress.connect(self.on_progress_update)
         self.compute_worker.finished.connect(self.on_computation_finished)
