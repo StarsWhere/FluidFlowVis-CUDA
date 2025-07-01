@@ -41,6 +41,7 @@ class ExportHandler:
 
     def set_output_dir(self, directory: str):
         self.output_dir = directory
+        os.makedirs(self.output_dir, exist_ok=True)
         self.ui.output_dir_line_edit.setText(self.output_dir)
 
     def _change_output_directory(self):
@@ -110,6 +111,13 @@ class ExportHandler:
         
         default_name = f"filtered_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         filepath = os.path.join(self.output_dir, default_name)
+
+        reply = QMessageBox.question(self.main_window, "确认导出",
+                                     f"将把当前过滤的数据导出到以下文件：\n\n{filepath}\n\n是否继续？",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
         
         progress = ProgressDialog(self.main_window, "正在导出数据...")
         filter_clause = self.dm.global_filter_clause if self.ui.filter_enabled_checkbox.isChecked() else ""

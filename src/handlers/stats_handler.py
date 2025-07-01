@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -94,8 +93,22 @@ class StatsHandler:
         try:
             # 1. 找出需要删除的旧常量
             old_definitions = self.dm.load_custom_definitions()
-            old_names = {self.main_window.compute_handler.compute_worker.calculator.parse_definition(d)[0] for d in old_definitions}
-            new_names = {self.main_window.compute_handler.compute_worker.calculator.parse_definition(d)[0] for d in new_definitions}
+            
+            # 使用一个健壮的解析器来获取名称
+            def parse_names(defs):
+                names = set()
+                for d in defs:
+                    try:
+                        # 假设等号左边就是变量名
+                        name = d.split('=', 1)[0].strip()
+                        if name:
+                            names.add(name)
+                    except IndexError:
+                        logger.warning(f"无法解析定义: '{d}'")
+                return names
+
+            old_names = parse_names(old_definitions)
+            new_names = parse_names(new_definitions)
             
             names_to_delete = list(old_names - new_names)
             if names_to_delete:
@@ -116,9 +129,12 @@ class StatsHandler:
                 self.custom_stats_worker.start()
                 self.stats_progress_dialog.exec()
             else:
-                # 如果没有新定义，只需刷新UI
+                # 如果没有新定义，只需刷新UI并通知用户
                 self.on_custom_stats_finished()
-                QMessageBox.information(self.main_window, "操作完成", "所有自定义常量均已移除。")
+                if names_to_delete:
+                    QMessageBox.information(self.main_window, "操作完成", "已移除已删除的自定义常量。")
+                else:
+                    QMessageBox.information(self.main_window, "无操作", "没有需要计算或移除的自定义常量。")
 
         except Exception as e:
             self.on_stats_error(f"处理自定义常量时出错: {e}")
@@ -140,7 +156,7 @@ class StatsHandler:
         QMessageBox.critical(self.main_window, "计算失败", f"计算时发生错误: \n{error_msg}")
 
     def update_stats_display(self):
-        """更新统计显示区域，现在包括派生变量的定义。"""
+        """更新统计显示区域，包括已定义的派生变量和所有全局常量。"""
         all_stats = self.dm.global_stats
         var_defs = self.dm.load_variable_definitions()
         
@@ -149,23 +165,27 @@ class StatsHandler:
         
         display_parts = []
 
-        # 1. Display variable definitions
+        # 1. 显示已定义的派生变量
         if var_defs:
             display_parts.append("<b>--- 已定义的派生/聚合变量 ---</b>")
+            type_map = {"per-frame": "逐帧", "time-aggregated": "时间聚合"}
+            # 按名称排序以获得一致的显示
             for name, info in sorted(var_defs.items()):
-                type_map = {"per-frame": "逐帧", "time-aggregated": "时间聚合"}
-                type_str = type_map.get(info['type'], info['type'])
-                display_parts.append(f"<b>{name}</b> ({type_str}):<br>&nbsp;&nbsp;<code>{info['formula']}</code>")
+                type_str = type_map.get(info.get('type', '未知'), info.get('type', '未知'))
+                formula = info.get('formula', '无公式')
+                display_parts.append(f"<b>{name}</b> ({type_str}):<br>  <code>{formula}</code>")
             display_parts.append("<hr>")
 
-        # 2. Display global stats
+        # 2. 显示全局统计常量
         if all_stats:
             display_parts.append("<b>--- 全局统计常量 ---</b>")
+            # 按键名排序以获得一致的显示
             for k, v in sorted(all_stats.items()):
                 display_parts.append(f"<code>{k}: {v:.6e}</code>")
         
         text = "<br>".join(display_parts)
-        self.ui.stats_results_text.setHtml(f"<div style='font-family: Courier New; font-size: 9pt;'>{text}</div>")
+        # 使用更适合显示的字体
+        self.ui.stats_results_text.setHtml(f"<div style='font-family: Consolas, \"Courier New\", monospace; font-size: 9pt;'>{text}</div>")
         self.ui.export_stats_btn.setEnabled(bool(all_stats))
 
 
@@ -177,6 +197,13 @@ class StatsHandler:
         filename = f"global_stats_{timestamp}.csv"
         filepath = os.path.join(self.output_dir, filename)
 
+        reply = QMessageBox.question(self.main_window, "确认导出",
+                                     f"将把全局统计结果导出到以下文件：\n\n{filepath}\n\n是否继续？",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
         try:
             with open(filepath, 'w', encoding='utf-8', newline='') as f:
                 import csv
@@ -185,27 +212,33 @@ class StatsHandler:
 
                 all_stats = self.dm.global_stats
                 custom_defs_list = self.dm.load_custom_definitions()
-                # 重新使用 StatisticsCalculator 的解析逻辑
-                calculator = self.main_window.compute_handler.compute_worker.calculator
-                custom_formulas = {calculator.parse_definition(d)[0]: calculator.parse_definition(d)[1] for d in custom_defs_list}
+                
+                # 创建一个从名称到公式的映射
+                custom_formulas = {}
+                for d in custom_defs_list:
+                    try:
+                        name, formula = d.split('=', 1)
+                        custom_formulas[name.strip()] = formula.strip()
+                    except ValueError:
+                        continue # 跳过格式不正确的定义
                 
                 for name, value in sorted(all_stats.items()):
-                    formula = ""
+                    formula = "N/A"
                     if name in custom_formulas:
                         formula = custom_formulas[name]
                     else:
-                        # 尝试从名称推断公式
+                        # 尝试从名称推断基础统计的公式
                         parts = name.split('_global_')
                         if len(parts) == 2:
-                            var, stat = parts
+                            var, stat_type = parts
                             stat_func_map = {
                                 "mean": "mean", "sum": "sum", "min": "min",
                                 "max": "max", "var": "var", "std": "std"
                             }
-                            if stat in stat_func_map:
-                                formula = f"{stat_func_map[stat]}({var})"
+                            if stat_type in stat_func_map:
+                                formula = f"{stat_func_map[stat_type]}({var})"
                             else:
-                                formula = f"基础统计 ({stat})"
+                                formula = f"基础统计 ({stat_type})"
                         else:
                             formula = "基础统计"
 

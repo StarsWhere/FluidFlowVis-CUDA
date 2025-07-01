@@ -1,3 +1,4 @@
+
 # src/visualization/plot_widget.py
 
 #!/usr/bin/env python3
@@ -261,14 +262,14 @@ class PlotWidget(QWidget):
             self.colorbar_obj.set_label(f"Streamline ({color_by.value})")
 
     def _on_mouse_move(self, event):
-        if event.inaxes != self.ax or event.xdata is None or event.ydata is None: 
-            if self.last_mouse_coords is not None:
-                self.mouse_left_plot.emit()
-                self.last_mouse_coords = None
+        if event.inaxes != self.ax:
+            return
+
+        self.last_mouse_coords = (event.xdata, event.ydata)
+        if self.last_mouse_coords[0] is None:
             return
 
         self.mouse_moved.emit(event.xdata, event.ydata)
-        self.last_mouse_coords = (event.xdata, event.ydata)
         
         if self.is_dragging:
             if self.drag_start_pos:

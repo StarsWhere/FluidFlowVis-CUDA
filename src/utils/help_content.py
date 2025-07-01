@@ -567,38 +567,38 @@ def get_analysis_help_html() -> str:
     <html>
     <head>
         <style>
-            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; line-height: 1.6; color: #333; }}
-            h2 {{ color: #005A9C; border-bottom: 2px solid #005A9C; padding-bottom: 5px; margin-top: 25px; }}
-            h3 {{ color: #5bc0de; border-bottom: 1px solid #ccc; padding-bottom: 5px; margin-top: 20px; }}
-            code {{
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; line-height: 1.6; color: #333; }
+            h2 { color: #005A9C; border-bottom: 2px solid #005A9C; padding-bottom: 5px; margin-top: 25px; }
+            h3 { color: #5bc0de; border-bottom: 1px solid #ccc; padding-bottom: 5px; margin-top: 20px; }
+            code {
                 background-color: #f0f0f0;
                 padding: 3px 6px;
                 border: 1px solid #ddd;
                 border-radius: 4px;
                 font-family: "Courier New", Courier, monospace;
                 font-size: 0.95em;
-            }}
-            ul, ol {{ padding-left: 25px; }}
-            li {{ margin-bottom: 8px; }}
-            .note {{
+            }
+            ul, ol { padding-left: 25px; }
+            li { margin-bottom: 8px; }
+            .note {
                 border-left: 4px solid #f0ad4e; /* Warning yellow */
                 padding: 10px 15px;
                 background-color: #fcf8e3;
                 margin-top: 15px;
                 margin-bottom: 15px;
                 border-radius: 4px;
-            }}
-            .new-feature {{
+            }
+            .new-feature {
                 color: #007bff; /* Primary blue */
                 font-weight: bold;
-            }}
-            .section-box {{
+            }
+            .section-box {
                 border: 1px solid #ccc;
                 border-radius: 5px;
                 padding: 20px;
                 margin-top: 25px;
                 background-color: #f9f9f9;
-            }}
+            }
         </style>
     </head>
     <body>
@@ -692,6 +692,11 @@ def get_analysis_help_html() -> str:
                     <b>鼠标位置插值数据:</b>
                     根据周围数据点通过线性插值计算出的、在您<b>鼠标精确位置</b>上的各个场的值
                     (例如热力图、等高线、矢量场的值)。这反映了您在屏幕上看到的平滑可视化结果的精确数值。
+                </li>
+                <li>
+                    <b><span class="new-feature">按坐标查询:</span></b>
+                    点击“<b>按坐标查询...</b>”按钮，会弹出一个输入框。您可以在其中输入精确的X和Y坐标 (用逗号分隔)，
+                    数据探针将立即更新以显示该点的数据，无需用鼠标费力寻找。
                 </li>
             </ul>
         </div>

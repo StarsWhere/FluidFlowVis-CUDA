@@ -6,7 +6,7 @@ import os
 import logging
 from typing import Optional
 import numpy as np
-from PyQt6.QtWidgets import QMainWindow, QMessageBox, QFileDialog, QLineEdit, QMenu, QInputDialog, QToolTip, QListWidgetItem, QTableWidgetItem
+from PyQt6.QtWidgets import QMainWindow, QMessageBox, QFileDialog, QLineEdit, QMenu, QInputDialog, QToolTip, QListWidgetItem, QTableWidgetItem, QApplication
 from PyQt6.QtCore import Qt, QSettings, QPoint, QTimer
 from PyQt6.QtGui import QCursor
 
@@ -683,11 +683,16 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.Cancel)
 
         if reply == QMessageBox.StandardButton.Yes:
+            wait_box = QMessageBox(QMessageBox.Icon.Information, "请稍候", "正在从数据库删除变量...", QMessageBox.StandardButton.NoButton, self)
+            wait_box.show()
+            QApplication.processEvents()
             try:
                 self.data_manager.delete_variable(var_to_delete)
+                wait_box.accept()
                 QMessageBox.information(self, "成功", f"变量 '{var_to_delete}' 已成功删除。正在刷新应用...")
                 self._load_project_data() # 完全刷新以更新所有UI部分
             except Exception as e:
+                wait_box.accept()
                 logger.error(f"从UI删除变量时出错: {e}", exc_info=True)
                 QMessageBox.critical(self, "删除失败", f"删除变量 '{var_to_delete}' 时发生错误:\n{e}")
 
@@ -721,10 +726,15 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.Cancel)
 
             if reply == QMessageBox.StandardButton.Yes:
+                wait_box = QMessageBox(QMessageBox.Icon.Information, "请稍候", "正在重命名数据库中的变量...", QMessageBox.StandardButton.NoButton, self)
+                wait_box.show()
+                QApplication.processEvents()
                 try:
                     self.data_manager.rename_variable(old_name, new_name)
+                    wait_box.accept()
                     QMessageBox.information(self, "成功", f"变量已成功重命名为 '{new_name}'。正在刷新应用...")
                     self._load_project_data() # 完全刷新
                 except Exception as e:
+                    wait_box.accept()
                     logger.error(f"从UI重命名变量时出错: {e}", exc_info=True)
                     QMessageBox.critical(self, "重命名失败", f"重命名变量时发生错误:\n{e}")

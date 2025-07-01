@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
@@ -73,7 +72,8 @@ class DataManager(QObject):
     def get_db_connection(self) -> sqlite3.Connection:
         """返回一个新的数据库连接。调用者负责关闭连接。"""
         if not self.db_path: raise ConnectionError("数据库路径未设置。")
-        return sqlite3.connect(self.db_path, timeout=10)
+        # 增加超时时间以应对潜在的短暂锁定
+        return sqlite3.connect(self.db_path, timeout=15)
     
     def create_database_tables(self, conn: sqlite3.Connection):
         """创建所有必需的表，如果它们不存在的话。"""
@@ -385,7 +385,6 @@ class DataManager(QObject):
         except Exception as e:
             logger.error(f"删除全局统计数据失败: {e}", exc_info=True)
 
-    # --- 新增：变量定义管理 ---
     def save_variable_definition(self, name: str, formula: str, type_str: str):
         if not self.db_path: return
         try:
@@ -414,18 +413,6 @@ class DataManager(QObject):
             logger.error(f"加载变量定义失败: {e}", exc_info=True)
             return {}
 
-    def delete_variable_definition(self, name: str):
-        if not self.db_path: return
-        try:
-            conn = self.get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute(f"DELETE FROM {VARIABLE_DEFINITIONS_TABLE_NAME} WHERE name = ?", (name,))
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            logger.error(f"删除变量 '{name}' 的定义失败: {e}", exc_info=True)
-    # --- 结束新增 ---
-
     def clear_all(self):
         self._variables = None; self._frame_count = None; self._sorted_time_values = None
         self.time_variable = "frame_index"
@@ -438,27 +425,33 @@ class DataManager(QObject):
         logger.info("内存中的全局统计数据已清除。")
         
     def delete_variable(self, var_name: str):
-        """从数据库中删除一个变量列及其关联的统计数据和定义。"""
+        """
+        从数据库中删除一个变量列及其关联的元数据，使用单一连接和事务。
+        """
         core_vars = {'x', 'y', 'id', 'frame_index', 'source_file'}
         if var_name in core_vars:
             raise ValueError(f"无法删除核心变量 '{var_name}'。")
 
         conn = self.get_db_connection()
-        cursor = conn.cursor()
         try:
-            # 1. Drop the column from the main data table
+            # SQLite的ALTER TABLE语句会隐式提交事务，所以必须单独执行。
             logger.info(f"正在从 timeseries_data 表中删除列: {var_name}")
-            cursor.execute(f'ALTER TABLE timeseries_data DROP COLUMN "{var_name}";')
+            conn.execute(f'ALTER TABLE timeseries_data DROP COLUMN "{var_name}";')
 
-            # 2. Delete associated global stats from metadata table
+            # 在一个新事务中处理所有元数据表的更改
+            cursor = conn.cursor()
+            cursor.execute("BEGIN TRANSACTION;")
+
+            # 1. 删除关联的全局统计数据
             stats_pattern_to_delete = f"{var_name}_global_%"
             logger.info(f"正在从 {METADATA_TABLE_NAME} 表中删除键匹配 '{stats_pattern_to_delete}' 的统计数据")
             cursor.execute(f"DELETE FROM {METADATA_TABLE_NAME} WHERE key LIKE ?", (stats_pattern_to_delete,))
             
-            # 3. Delete from variable definitions table
-            self.delete_variable_definition(var_name) # Use the new method
-
-            conn.commit()
+            # 2. 从变量定义表中删除
+            logger.info(f"正在删除变量 '{var_name}' 的定义")
+            cursor.execute(f"DELETE FROM {VARIABLE_DEFINITIONS_TABLE_NAME} WHERE name = ?", (var_name,))
+            
+            conn.commit() # 提交元数据更改
             logger.info(f"成功删除变量 '{var_name}' 及其关联数据。")
 
         except Exception as e:
@@ -468,29 +461,33 @@ class DataManager(QObject):
         finally:
             conn.close()
         
-        # 4. Invalidate internal caches so the next query re-reads the schema
+        # 3. 刷新内存中的缓存和状态
         self.refresh_schema_info()
         self.load_global_stats()
 
     def rename_variable(self, old_name: str, new_name: str):
-        """在数据库中重命名一个变量列及其关联的统计数据和定义。"""
+        """
+        在数据库中重命名一个变量列及其关联的元数据，使用单一连接和事务。
+        """
         core_vars = {'x', 'y', 'id', 'frame_index', 'source_file'}
         if old_name in core_vars:
             raise ValueError(f"无法重命名核心变量 '{old_name}'。")
         if not new_name.isidentifier():
             raise ValueError(f"新名称 '{new_name}' 不是一个有效的标识符。")
-        current_vars = self.get_variables()
-        if new_name in current_vars:
+        if new_name in self.get_variables():
             raise ValueError(f"变量名 '{new_name}' 已存在。")
 
         conn = self.get_db_connection()
-        cursor = conn.cursor()
         try:
-            # 1. Rename the column in the main data table
+            # 同样，先执行非事务性的 RENAME COLUMN
             logger.info(f"正在重命名列 '{old_name}' 为 '{new_name}'")
-            cursor.execute(f'ALTER TABLE timeseries_data RENAME COLUMN "{old_name}" TO "{new_name}";')
+            conn.execute(f'ALTER TABLE timeseries_data RENAME COLUMN "{old_name}" TO "{new_name}";')
+
+            # 在一个新事务中处理所有元数据表的更改
+            cursor = conn.cursor()
+            cursor.execute("BEGIN TRANSACTION;")
             
-            # 2. Update associated global stats keys in metadata table
+            # 1. 更新关联的全局统计数据键
             stats_pattern = f"{old_name}_global_%"
             logger.info(f"正在更新匹配 '{stats_pattern}' 的统计数据键")
             cursor.execute(f"SELECT key FROM {METADATA_TABLE_NAME} WHERE key LIKE ?", (stats_pattern,))
@@ -505,7 +502,7 @@ class DataManager(QObject):
                 cursor.executemany(f"UPDATE {METADATA_TABLE_NAME} SET key = ? WHERE key = ?", updates)
                 logger.info(f"已更新 {len(updates)} 个统计数据键。")
 
-            # 3. Update variable definition table
+            # 2. 更新变量定义表中的名称
             logger.info(f"正在更新变量定义表中的 '{old_name}'")
             cursor.execute(f"UPDATE {VARIABLE_DEFINITIONS_TABLE_NAME} SET name = ? WHERE name = ?", (new_name, old_name))
 
@@ -519,6 +516,6 @@ class DataManager(QObject):
         finally:
             conn.close()
 
-        # 4. Invalidate internal caches and reload stats
+        # 3. 刷新内存状态
         self.refresh_schema_info()
         self.load_global_stats()
