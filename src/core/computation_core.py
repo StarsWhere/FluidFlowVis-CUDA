@@ -21,7 +21,8 @@ def _interpolate_field(points, values, grid_x, grid_y):
     """
     if values is None:
         return None
-    valid_indices = ~np.isnan(points).any(axis=1) & ~np.isnan(values)
+    # [FIX] 使用 np.isfinite 替换 np.isnan 来同时过滤掉 NaN 和 inf 值，增强鲁棒性
+    valid_indices = np.isfinite(points).all(axis=1) & np.isfinite(values)
     filtered_points = points[valid_indices]
     filtered_values = values[valid_indices]
     

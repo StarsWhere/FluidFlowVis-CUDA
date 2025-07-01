@@ -342,20 +342,26 @@ class DerivedVariableWorker(QThread):
         all_update_data = []
         processed_count = 0
         
-        with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-            future_to_frame = {executor.submit(worker_func, task): task[0] for task in tasks}
-            for future in as_completed(future_to_frame):
-                try:
-                    frame_results = future.result()
-                    if frame_results:
-                        all_update_data.extend(frame_results)
-                except Exception as exc:
-                    logger.error(f"子进程计算 '{new_name}' 时发生异常: {exc}", exc_info=True)
-                    # Continue processing other futures
-                
-                processed_count += 1
-                progress_msg = f"步骤 {current_step+1}/{total_steps} ('{new_name}'): 计算帧 {processed_count}/{total_frames}"
-                self.progress.emit(current_step, total_steps, progress_msg)
+        # [FIX] Wrap the entire ProcessPoolExecutor block to catch pool-level errors like BrokenProcessPool
+        try:
+            with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+                future_to_frame = {executor.submit(worker_func, task): task[0] for task in tasks}
+                for future in as_completed(future_to_frame):
+                    try:
+                        frame_results = future.result()
+                        if frame_results:
+                            all_update_data.extend(frame_results)
+                    except Exception as exc:
+                        logger.error(f"子进程计算 '{new_name}' 时发生可捕获的异常: {exc}", exc_info=True)
+                    
+                    processed_count += 1
+                    progress_msg = f"步骤 {current_step+1}/{total_steps} ('{new_name}'): 计算帧 {processed_count}/{total_frames}"
+                    self.progress.emit(current_step, total_steps, progress_msg)
+        except Exception as e:
+            # This will now catch BrokenProcessPool and other executor-level errors
+            logger.error(f"并行计算池在处理 '{new_name}' 时失败: {e}", exc_info=True)
+            # Re-raise the error so it's caught by the main worker's `run` method and reported to the UI
+            raise e
 
         if not all_update_data:
             raise ValueError(f"公式 '{formula}' 未对任何点计算出有效结果。请检查公式和数据。")
