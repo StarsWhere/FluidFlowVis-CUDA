@@ -491,7 +491,7 @@ class MainWindow(QMainWindow):
         content = content_map.get(help_type)
         if content: HelpDialog(content, self).exec()
 
-    def _show_about(self): QMessageBox.about(self, "关于 InterVis", "<h2>InterVis v3.3-ProFinal</h2><p>作者: StarsWhere</p><p>一个使用PyQt6和Matplotlib构建的交互式数据可视化工具。</p><p><b>v3.3 功能重构:</b></p><ul><li><b>统一数据处理:</b> 将“逐帧计算”和“全局统计”合并为统一的“数据处理”选项卡，流程更清晰。</li><li><b>动态时间轴:</b> 不再依赖文件名排序，用户可从数据中任选数值列作为时间演化依据。</li><li><b>帮助系统完善:</b> 为所有计算功能提供了统一且详细的帮助文档。</li><li>保留并优化了原有功能，如一键导出、多变量剖面图、并行批量导出、可视化模板与主题等。</li></ul>")
+    def _show_about(self): QMessageBox.about(self, "关于 InterVis", "<h2>InterVis v3.4-ProFinal</h2><p>作者: StarsWhere</p><p>一个使用PyQt6和Matplotlib构建的交互式数据可视化工具。</p><p><b>v3.4 功能重构:</b></p><ul><li><b>统一数据处理:</b> 将“逐帧计算”和“全局统计”合并为统一的“数据处理”选项卡，流程更清晰。</li><li><b>动态时间轴:</b> 不再依赖文件名排序，用户可从数据中任选数值列作为时间演化依据。</li><li><b>帮助系统完善:</b> 为所有计算功能提供了统一且详细的帮助文档。</li><li>保留并优化了原有功能，如一键导出、多变量剖面图、并行批量导出、可视化模板与主题等。</li></ul>")
     def _force_reload_data(self):
         reply = QMessageBox.question(self, "确认重新导入", "这将删除现有数据库并从CSV文件重新导入所有数据。此操作不可撤销。\n\n是否继续？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
         if reply == QMessageBox.StandardButton.Yes:
