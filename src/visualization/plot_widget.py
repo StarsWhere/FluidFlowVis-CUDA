@@ -17,7 +17,8 @@ from scipy.interpolate import interpn, griddata
 import matplotlib.contour as mcontour
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
-from PyQt6.QtCore import pyqtSignal, QObject, QRunnable, QThreadPool, Qt
+from PyQt6.QtCore import pyqtSignal, QObject, QRunnable, QThreadPool, Qt, QTimer
+
 from PyQt6.QtGui import QCursor
 
 from src.core.rendering_core import prepare_gridded_data
@@ -84,6 +85,11 @@ class PlotWidget(QWidget):
         self.last_mouse_coords: Optional[Tuple[float, float]] = None
         self.thread_pool = QThreadPool(); self.is_busy_interpolating = False
         
+        # --- FIX: Debounce timer for floating probe ---
+        self.probe_debounce_timer = QTimer(self)
+        self.probe_debounce_timer.setSingleShot(True)
+        self.probe_debounce_timer.setInterval(75)  # 75ms delay
+
         self._connect_signals()
         self._setup_plot_style()
 
@@ -93,6 +99,10 @@ class PlotWidget(QWidget):
         self.canvas.mpl_connect('button_press_event', self._on_button_press)
         self.canvas.mpl_connect('button_release_event', self._on_button_release)
         self.canvas.mpl_connect('figure_leave_event', lambda event: self.mouse_left_plot.emit())
+        
+        # --- FIX: Connect the debounce timer's timeout signal ---
+        self.probe_debounce_timer.timeout.connect(self._trigger_probe_update)
+
 
     def _get_platform_font(self) -> str:
         if sys.platform == "win32": return "Microsoft YaHei"
@@ -167,39 +177,46 @@ class PlotWidget(QWidget):
     def redraw(self, is_initial: bool = False):
         if not self.interpolated_results: return
         
-        # --- FIX ---
-        # Do NOT call self.ax.clear(). Instead, each draw function will manage its own artists.
-        # This preserves the axes state and prevents the colorbar bug.
+        xlim, ylim = self.ax.get_xlim(), self.ax.get_ylim()
         
-        self._remove_profile_preview()
+        self._clear_artists()
         self._update_plot_decorations()
         
         self._draw_heatmap()
         self._draw_contour()
         self._draw_vector_plot()
-
+        self._remove_profile_preview() # Ensure it's redrawn if needed
+        
         self.ax.grid(True, linestyle='--', alpha=0.5)
 
         if is_initial: 
             self.reset_view()
+        else:
+            self.ax.set_xlim(xlim)
+            self.ax.set_ylim(ylim)
         
         self.canvas.draw_idle()
-
-    def _draw_heatmap(self):
-        # 1. Remove previous artists this function created.
+    
+    def _clear_artists(self):
+        """Safely removes artists created by this widget."""
         if self.colorbar_obj: self.colorbar_obj.remove(); self.colorbar_obj = None
         if self.heatmap_obj: self.heatmap_obj.remove(); self.heatmap_obj = None
+        if self.contour_obj and hasattr(self.contour_obj, 'collections'):
+            for coll in self.contour_obj.collections: coll.remove()
+        self.contour_obj = None
+        if self.vector_quiver_obj: self.vector_quiver_obj.remove(); self.vector_quiver_obj = None
+        if self.vector_stream_obj:
+            if self.vector_stream_obj.lines: self.vector_stream_obj.lines.remove()
+            if hasattr(self.vector_stream_obj, 'arrows') and self.vector_stream_obj.arrows: self.vector_stream_obj.arrows.remove()
+        self.vector_stream_obj = None
 
-        # 2. Get data and check if we should draw.
+    def _draw_heatmap(self):
         data, gx, gy = self.interpolated_results.get('heatmap_data'), self.interpolated_results.get('grid_x'), self.interpolated_results.get('grid_y')
-        if not self.heatmap_config.get('enabled') or data is None or gx is None or np.all(np.isnan(data)):
-            return
+        if not self.heatmap_config.get('enabled') or data is None or gx is None or np.all(np.isnan(data)): return
 
-        # 3. Draw the new artists.
         vmin_str, vmax_str = self.heatmap_config.get('vmin'), self.heatmap_config.get('vmax')
         vmin = float(vmin_str) if vmin_str is not None and str(vmin_str).strip() != '' else None
         vmax = float(vmax_str) if vmax_str is not None and str(vmax_str).strip() != '' else None
-
         valid = data[~np.isnan(data)]
         if valid.size > 0:
             if vmin is None: vmin = np.nanmin(valid)
@@ -210,32 +227,13 @@ class PlotWidget(QWidget):
         self.colorbar_obj.set_label(self.heatmap_config.get('formula', ''))
 
     def _draw_contour(self):
-        # 1. Remove previous artists
-        if self.contour_obj and hasattr(self.contour_obj, 'collections'):
-            for coll in self.contour_obj.collections:
-                coll.remove()
-        self.contour_obj = None
-
-        # 2. Get data and check
         data, gx, gy = self.interpolated_results.get('contour_data'), self.interpolated_results.get('grid_x'), self.interpolated_results.get('grid_y')
-        if not self.contour_config.get('enabled') or data is None or gx is None or np.all(np.isnan(data)):
-            return
+        if not self.contour_config.get('enabled') or data is None or gx is None or np.all(np.isnan(data)): return
 
-        # 3. Draw new artists
         self.contour_obj = self.ax.contour(gx, gy, data, levels=self.contour_config.get('levels', 10), colors=self.contour_config.get('colors', 'black'), linewidths=self.contour_config.get('linewidths', 1.0))
         if self.contour_config.get('show_labels'): self.ax.clabel(self.contour_obj, inline=True, fontsize=8, fmt='%.2e')
 
     def _draw_vector_plot(self):
-        # 1. Remove previous artists
-        if self.vector_quiver_obj: self.vector_quiver_obj.remove(); self.vector_quiver_obj = None
-        if self.vector_stream_obj:
-            if self.vector_stream_obj.lines:
-                self.vector_stream_obj.lines.remove()
-            if hasattr(self.vector_stream_obj, 'arrows') and self.vector_stream_obj.arrows:
-                 self.vector_stream_obj.arrows.remove()
-        self.vector_stream_obj = None
-        
-        # 2. Check and delegate
         if not self.vector_config.get('enabled'): return
         plot_type = VectorPlotType.from_str(self.vector_config.get('type'))
         if plot_type == VectorPlotType.QUIVER: self._draw_quiver()
@@ -273,6 +271,7 @@ class PlotWidget(QWidget):
 
         self.mouse_moved.emit(event.xdata, event.ydata)
         self.last_mouse_coords = (event.xdata, event.ydata)
+        
         if self.is_dragging:
             if self.drag_start_pos:
                 dx, dy = event.xdata - self.drag_start_pos[0], event.ydata - self.drag_start_pos[1]
@@ -282,8 +281,16 @@ class PlotWidget(QWidget):
         elif self.picker_mode == PickerMode.PROFILE_END and self.profile_start_point:
             self._update_profile_preview((event.xdata, event.ydata))
         elif not self.picker_mode:
-            self.get_probe_data_at_coords(event.xdata, event.ydata)
-    
+            # --- FIX: Use the debounce timer ---
+            # Instead of calling get_probe_data_at_coords directly, start the timer.
+            # It will fire only when the mouse has paused for a moment.
+            self.probe_debounce_timer.start()
+
+    def _trigger_probe_update(self):
+        """Slot for the debounce timer. Triggers the actual probe data calculation."""
+        if self.last_mouse_coords and not self.picker_mode and self.canvas.underMouse():
+            self.get_probe_data_at_coords(*self.last_mouse_coords)
+
     def get_probe_data_at_coords(self, x: float, y: float):
         if self.current_data is None or self.current_data.empty: return
         results = {'x': x, 'y': y, 'variables': {}, 'interpolated': {}}
