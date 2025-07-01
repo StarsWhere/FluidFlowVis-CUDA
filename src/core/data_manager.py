@@ -345,7 +345,8 @@ class DataManager(QObject):
             cursor = conn.cursor()
             cursor.execute(f"DELETE FROM {CUSTOM_CONSTANTS_TABLE_NAME}") # Clear old definitions
             data_to_insert = [(d,) for d in definitions]
-            cursor.executemany(f"INSERT INTO {CUSTOM_CONSTANTS_TABLE_NAME} (definition) VALUES (?)", data_to_insert)
+            if data_to_insert:
+                cursor.executemany(f"INSERT INTO {CUSTOM_CONSTANTS_TABLE_NAME} (definition) VALUES (?)", data_to_insert)
             conn.commit()
             conn.close()
             logger.info(f"成功将 {len(definitions)} 条自定义常量定义保存到数据库。")
@@ -364,6 +365,25 @@ class DataManager(QObject):
         except Exception as e:
             logger.error(f"加载自定义常量定义失败: {e}", exc_info=True)
             return []
+
+    def delete_global_stats(self, stat_names: List[str]):
+        """删除指定名称的全局常量值。"""
+        if not self.db_path or not stat_names:
+            return
+        try:
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+            placeholders = ','.join('?' for _ in stat_names)
+            query = f"DELETE FROM {METADATA_TABLE_NAME} WHERE key IN ({placeholders})"
+            cursor.execute(query, stat_names)
+            conn.commit()
+            conn.close()
+            logger.info(f"已从数据库中删除全局常量值: {stat_names}")
+            # Also remove from memory
+            for name in stat_names:
+                self.global_stats.pop(name, None)
+        except Exception as e:
+            logger.error(f"删除全局统计数据失败: {e}", exc_info=True)
 
     # --- 新增：变量定义管理 ---
     def save_variable_definition(self, name: str, formula: str, type_str: str):

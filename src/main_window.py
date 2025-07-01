@@ -6,7 +6,7 @@ import os
 import logging
 from typing import Optional
 import numpy as np
-from PyQt6.QtWidgets import QMainWindow, QMessageBox, QFileDialog, QLineEdit, QMenu, QInputDialog, QToolTip, QListWidgetItem
+from PyQt6.QtWidgets import QMainWindow, QMessageBox, QFileDialog, QLineEdit, QMenu, QInputDialog, QToolTip, QListWidgetItem, QTableWidgetItem
 from PyQt6.QtCore import Qt, QSettings, QPoint, QTimer
 from PyQt6.QtGui import QCursor
 
@@ -120,7 +120,7 @@ class MainWindow(QMainWindow):
         self.ui.plot_widget.profile_line_defined.connect(self._on_profile_line_defined)
         self.ui.plot_widget.plot_rendered.connect(self._on_plot_rendered)
         self.ui.plot_widget.interpolation_error.connect(self._on_interpolation_error)
-        self.ui.plot_widget.mouse_left_plot.connect(QToolTip.hideText)
+        self.ui.plot_widget.mouse_left_plot.connect(lambda: QToolTip.hideText())
         
         # Menu & Toolbar
         self.ui.open_data_dir_action.triggered.connect(self._change_project_directory)
@@ -145,8 +145,9 @@ class MainWindow(QMainWindow):
         self.ui.aspect_ratio_combo.currentIndexChanged.connect(self._on_aspect_ratio_mode_changed)
         
         # Analysis/Data Management Controls
+        self.ui.probe_by_coords_btn.clicked.connect(self._probe_by_coords) # NEW
         self.ui.apply_filter_btn.clicked.connect(self._apply_global_filter)
-        self.ui.build_filter_btn.clicked.connect(self._open_filter_builder) # NEW
+        self.ui.build_filter_btn.clicked.connect(self._open_filter_builder)
         self.ui.rename_variable_btn.clicked.connect(self._rename_variable)
         self.ui.delete_variable_btn.clicked.connect(self._delete_variable)
         self.ui.time_analysis_mode_combo.currentIndexChanged.connect(self._on_time_analysis_mode_changed)
@@ -270,7 +271,7 @@ class MainWindow(QMainWindow):
         frame_count = self.data_manager.get_frame_count()
         if frame_count > 0:
             all_vars = self.data_manager.get_variables()
-            self._update_variables_list()
+            self._update_variables_table() # MODIFIED
             self.stats_handler.load_definitions_and_stats()
             self.playback_handler.update_time_axis_candidates()
             self.formula_engine.update_allowed_variables(all_vars)
@@ -315,7 +316,6 @@ class MainWindow(QMainWindow):
         except ValueError as e:
             QMessageBox.critical(self, "过滤器错误", f"过滤器语法无效: {e}")
 
-    # --- 新增：打开过滤器构建器 ---
     def _open_filter_builder(self):
         if self.data_manager.get_frame_count() == 0:
             QMessageBox.warning(self, "无数据", "请先加载数据再构建过滤器。")
@@ -389,15 +389,12 @@ class MainWindow(QMainWindow):
         if not self.ui.plot_widget.interpolated_results: QMessageBox.warning(self, "无数据", "无可用于剖面的插值数据。"); return
         if self.profile_dialog and self.profile_dialog.isVisible(): self.profile_dialog.close()
         
-        # Build a comprehensive list of available data for the profile plot
         available_data = {}
         config = self.config_handler.get_current_config()
         
-        # Add fields that were actually computed and are present in interpolated_results
         for key in ['heatmap', 'contour', 'vector_u', 'vector_v']:
             data_key = f'{key}_data'
             if data_key in self.ui.plot_widget.interpolated_results and self.ui.plot_widget.interpolated_results[data_key] is not None:
-                # Find the corresponding formula from the config
                 formula = ""
                 if key == 'heatmap' and config['heatmap'].get('enabled'):
                     formula = config['heatmap'].get('formula', key)
@@ -467,8 +464,19 @@ class MainWindow(QMainWindow):
         self._update_main_probe_display(data)
         self._update_floating_probe_display(data)
 
+    def _probe_by_coords(self):
+        text, ok = QInputDialog.getText(self, "按坐标查询探针", "请输入坐标 (x, y):")
+        if ok and text:
+            try:
+                x_str, y_str = text.split(',')
+                x, y = float(x_str.strip()), float(y_str.strip())
+                # Manually trigger the probe update for these coordinates
+                self.ui.plot_widget.get_probe_data_at_coords(x, y)
+                QMessageBox.information(self, "查询成功", f"数据探针已更新为坐标 ({x:.3e}, {y:.3e}) 的值。")
+            except (ValueError, IndexError):
+                QMessageBox.warning(self, "输入无效", "请输入格式为 'x, y' 的两个数值。")
+
     def _update_main_probe_display(self, data):
-        # Preserve scroll position
         scrollbar = self.ui.probe_text.verticalScrollBar()
         scroll_position = scrollbar.value()
 
@@ -492,7 +500,7 @@ class MainWindow(QMainWindow):
         checked_items = [self.ui.floating_probe_vars_list.item(i) for i in range(self.ui.floating_probe_vars_list.count()) if self.ui.floating_probe_vars_list.item(i).checkState() == Qt.CheckState.Checked]
         
         if not checked_items:
-            QToolTip.hideText()
+            QToolTip.hideText() # Hide if no variables are selected for floating display
             return
 
         probe_html_lines = ["<div style='background-color: #ffffdd; border: 1px solid black; padding: 4px; font-family: Monospace; font-size: 9pt;'>"]
@@ -517,8 +525,9 @@ class MainWindow(QMainWindow):
 
         probe_html_lines.append("</div>")
         
-        if len(probe_html_lines) > 2: 
-             QToolTip.showText(QCursor.pos(), "<br>".join(probe_html_lines), self.ui.plot_widget)
+        # Always show if there are items to display and the mouse is over the canvas
+        if len(probe_html_lines) > 2 and self.ui.plot_widget.canvas.underMouse(): 
+             QToolTip.showText(QCursor.pos() + QPoint(10, 10), "<br>".join(probe_html_lines), self.ui.plot_widget)
         else:
              QToolTip.hideText()
 
@@ -622,22 +631,49 @@ class MainWindow(QMainWindow):
         if not menu.actions(): menu.addAction("无可用变量").setEnabled(False)
         menu.exec(position)
 
-    def _update_variables_list(self):
-        """填充“数据管理”选项卡中的变量列表。"""
-        self.ui.variables_list.clear()
+    def _update_variables_table(self):
+        """填充“数据管理”选项卡中的变量表格。"""
+        self.ui.variables_table.setRowCount(0)
+        self.ui.variables_table.blockSignals(True)
+        
         all_vars = self.data_manager.get_variables()
+        definitions = self.data_manager.load_variable_definitions()
+        
         # 排除用户不应管理的核心/特殊列
-        managed_vars = [v for v in all_vars if v not in ['id', 'frame_index', 'source_file', 'x', 'y']]
-        self.ui.variables_list.addItems(sorted(managed_vars))
+        managed_vars = [v for v in all_vars if v not in ['id', 'frame_index', 'source_file']]
+        
+        type_map = {"per-frame": "逐帧计算", "time-aggregated": "时间聚合"}
+        
+        for var_name in sorted(managed_vars):
+            row_position = self.ui.variables_table.rowCount()
+            self.ui.variables_table.insertRow(row_position)
+            
+            name_item = QTableWidgetItem(var_name)
+            
+            if var_name in definitions:
+                info = definitions[var_name]
+                type_item = QTableWidgetItem(type_map.get(info['type'], info['type']))
+                formula_item = QTableWidgetItem(info['formula'])
+            else:
+                type_item = QTableWidgetItem("原始数据")
+                formula_item = QTableWidgetItem("来自源文件")
+            
+            self.ui.variables_table.setItem(row_position, 0, name_item)
+            self.ui.variables_table.setItem(row_position, 1, type_item)
+            self.ui.variables_table.setItem(row_position, 2, formula_item)
+            
+        self.ui.variables_table.resizeColumnsToContents()
+        self.ui.variables_table.blockSignals(False)
+
 
     def _delete_variable(self):
         """处理删除所选变量的逻辑。"""
-        selected_items = self.ui.variables_list.selectedItems()
-        if not selected_items:
-            QMessageBox.warning(self, "未选择", "请在列表中选择一个要删除的变量。")
+        current_row = self.ui.variables_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "未选择", "请在表格中选择一个要删除的变量。")
             return
         
-        var_to_delete = selected_items[0].text()
+        var_to_delete = self.ui.variables_table.item(current_row, 0).text()
         
         reply = QMessageBox.question(self, "确认删除", 
             f"您确定要永久删除变量 <b>'{var_to_delete}'</b> 吗？<br><br>"
@@ -657,12 +693,12 @@ class MainWindow(QMainWindow):
 
     def _rename_variable(self):
         """处理重命名所选变量的逻辑。"""
-        selected_items = self.ui.variables_list.selectedItems()
-        if not selected_items:
-            QMessageBox.warning(self, "未选择", "请在列表中选择一个要重命名的变量。")
+        current_row = self.ui.variables_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "未选择", "请在表格中选择一个要重命名的变量。")
             return
 
-        old_name = selected_items[0].text()
+        old_name = self.ui.variables_table.item(current_row, 0).text()
         
         new_name, ok = QInputDialog.getText(self, "重命名变量", 
                                             f"请输入 '{old_name}' 的新名称:", 

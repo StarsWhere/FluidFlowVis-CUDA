@@ -9,7 +9,8 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QSplitter, QGroupBox, QLabel, QComboBox, QLineEdit, QPushButton,
     QSlider, QSpinBox, QDoubleSpinBox, QCheckBox, QTextEdit,
-    QStatusBar, QToolBar, QScrollArea, QTabWidget, QFrame, QListWidget, QListWidgetItem
+    QStatusBar, QToolBar, QScrollArea, QTabWidget, QFrame, QTableWidget, QTableWidgetItem,
+    QHeaderView, QListWidget
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QFont, QIcon
@@ -179,6 +180,9 @@ class UiMainWindow:
         # Main Probe Group
         probe_group = QGroupBox("数据探针"); probe_layout = QVBoxLayout(probe_group)
         coord_layout = QHBoxLayout(); coord_layout.addWidget(QLabel("鼠标坐标:")); self.probe_coord_label = QLabel("(0.00, 0.00)"); self.probe_coord_label.setFont(QFont("monospace")); coord_layout.addWidget(self.probe_coord_label); coord_layout.addStretch(); probe_layout.addLayout(coord_layout)
+        
+        self.probe_by_coords_btn = QPushButton("按坐标查询..."); self.probe_by_coords_btn.setToolTip("输入精确坐标查询探针数据"); probe_layout.addWidget(self.probe_by_coords_btn)
+        
         self.probe_text = QTextEdit(); self.probe_text.setReadOnly(True); self.probe_text.setFont(QFont("Courier New", 9)); self.probe_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap); probe_layout.addWidget(self.probe_text)
         analysis_splitter.addWidget(probe_group)
 
@@ -205,7 +209,7 @@ class UiMainWindow:
         tools_main_layout.addStretch()
         analysis_splitter.addWidget(tools_container)
         
-        analysis_splitter.setSizes([300, 250])
+        analysis_splitter.setSizes([350, 250]) # Adjusted size for the new button
         layout.addWidget(analysis_splitter)
         return tab
         
@@ -242,7 +246,7 @@ class UiMainWindow:
         custom_info = QLabel("基于<b>整个数据集所有点</b>进行聚合，计算单个标量值。每行一个定义。"); custom_info.setWordWrap(True); custom_layout_2.addWidget(custom_info)
         self.custom_stats_input = QTextEdit(); self.custom_stats_input.setFont(QFont("Courier New", 9)); self.custom_stats_input.setPlaceholderText("tke_global = mean(0.5 * (u**2 + v**2))\navg_vorticity = mean(curl(u, v))")
         self.custom_stats_input.setFixedHeight(100); custom_layout_2.addWidget(self.custom_stats_input)
-        self.save_and_calc_custom_stats_btn = QPushButton("保存定义并计算 (全局)"); self.save_and_calc_custom_stats_btn.setEnabled(False); custom_btn_layout_2 = QHBoxLayout(); custom_btn_layout_2.addStretch(); custom_btn_layout_2.addWidget(self.save_and_calc_custom_stats_btn); custom_layout_2.addLayout(custom_btn_layout_2)
+        self.save_and_calc_custom_stats_btn = QPushButton("保存并计算 (全局)"); self.save_and_calc_custom_stats_btn.setEnabled(False); custom_btn_layout_2 = QHBoxLayout(); custom_btn_layout_2.addStretch(); custom_btn_layout_2.addWidget(self.save_and_calc_custom_stats_btn); custom_layout_2.addLayout(custom_btn_layout_2)
         scroll_layout.addWidget(custom_group)
 
         results_group = QGroupBox("统计结果与管理"); results_layout = QVBoxLayout(results_group)
@@ -291,9 +295,14 @@ class UiMainWindow:
         vm_layout = QVBoxLayout(var_management_group)
         vm_layout.addWidget(QLabel("从数据库中选择一个变量进行操作："))
         
-        self.variables_list = QListWidget()
-        self.variables_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
-        vm_layout.addWidget(self.variables_list)
+        self.variables_table = QTableWidget()
+        self.variables_table.setColumnCount(3)
+        self.variables_table.setHorizontalHeaderLabels(["变量名", "类型", "公式 / 来源"])
+        self.variables_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.variables_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.variables_table.verticalHeader().setVisible(False)
+        self.variables_table.horizontalHeader().setStretchLastSection(True)
+        vm_layout.addWidget(self.variables_table)
         
         vm_buttons_layout = QHBoxLayout()
         vm_buttons_layout.addStretch()

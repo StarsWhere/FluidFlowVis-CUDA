@@ -85,27 +85,44 @@ class StatsHandler:
         QMessageBox.information(self.main_window, "计算完成", "基础统计数据已更新。")
 
     def start_custom_stats_calculation(self):
+        """
+        处理自定义全局常量的计算，包括删除不再存在的定义。
+        """
         definitions_text = self.ui.custom_stats_input.toPlainText().strip()
-        if not definitions_text:
-            QMessageBox.information(self.main_window, "无定义", "请输入至少一个自定义常量定义。")
-            return
+        new_definitions = [line.strip() for line in definitions_text.split('\n') if line.strip() and not line.strip().startswith('#')]
 
-        definitions = [line.strip() for line in definitions_text.split('\n') if line.strip() and not line.strip().startswith('#')]
-        
         try:
-            self.dm.save_custom_definitions(definitions)
-            logger.info("自定义常量定义已保存。")
-        except Exception as e:
-            self.on_stats_error(f"保存定义失败: {e}")
-            return
+            # 1. 找出需要删除的旧常量
+            old_definitions = self.dm.load_custom_definitions()
+            old_names = {self.main_window.compute_handler.compute_worker.calculator.parse_definition(d)[0] for d in old_definitions}
+            new_names = {self.main_window.compute_handler.compute_worker.calculator.parse_definition(d)[0] for d in new_definitions}
             
-        self.stats_progress_dialog = StatsProgressDialog(self.main_window, "正在计算自定义常量")
-        self.custom_stats_worker = CustomGlobalStatsWorker(self.dm, self.formula_engine, definitions) # Pass formula_engine
-        self.custom_stats_worker.progress.connect(self.stats_progress_dialog.update_progress)
-        self.custom_stats_worker.finished.connect(self.on_custom_stats_finished)
-        self.custom_stats_worker.error.connect(self.on_stats_error)
-        self.custom_stats_worker.start()
-        self.stats_progress_dialog.exec()
+            names_to_delete = list(old_names - new_names)
+            if names_to_delete:
+                logger.info(f"正在删除不再定义的全局常量: {names_to_delete}")
+                self.dm.delete_global_stats(names_to_delete)
+
+            # 2. 保存新的定义列表（这将覆盖旧的）
+            self.dm.save_custom_definitions(new_definitions)
+            logger.info("新的自定义常量定义已保存。")
+
+            # 3. 如果有新的定义需要计算，则启动worker
+            if new_definitions:
+                self.stats_progress_dialog = StatsProgressDialog(self.main_window, "正在计算自定义常量")
+                self.custom_stats_worker = CustomGlobalStatsWorker(self.dm, self.formula_engine, new_definitions)
+                self.custom_stats_worker.progress.connect(self.stats_progress_dialog.update_progress)
+                self.custom_stats_worker.finished.connect(self.on_custom_stats_finished)
+                self.custom_stats_worker.error.connect(self.on_stats_error)
+                self.custom_stats_worker.start()
+                self.stats_progress_dialog.exec()
+            else:
+                # 如果没有新定义，只需刷新UI
+                self.on_custom_stats_finished()
+                QMessageBox.information(self.main_window, "操作完成", "所有自定义常量均已移除。")
+
+        except Exception as e:
+            self.on_stats_error(f"处理自定义常量时出错: {e}")
+            return
 
     def on_custom_stats_finished(self):
         if self.stats_progress_dialog: self.stats_progress_dialog.accept()
@@ -113,7 +130,10 @@ class StatsHandler:
         self.update_stats_display()
         self.formula_engine.update_custom_global_variables(self.dm.global_stats)
         self.main_window._trigger_auto_apply()
-        QMessageBox.information(self.main_window, "计算完成", "自定义常量已计算并更新。")
+        if self.custom_stats_worker: # Only show message if a calculation was run
+             QMessageBox.information(self.main_window, "计算完成", "自定义常量已计算并更新。")
+        self.custom_stats_worker = None
+
 
     def on_stats_error(self, error_msg: str):
         if self.stats_progress_dialog: self.stats_progress_dialog.accept()
@@ -161,12 +181,34 @@ class StatsHandler:
             with open(filepath, 'w', encoding='utf-8', newline='') as f:
                 import csv
                 writer = csv.writer(f)
-                writer.writerow(["Name", "Value", "Definition (if custom)"])
+                writer.writerow(["Name", "Value", "Definition/Source"])
+
+                all_stats = self.dm.global_stats
+                custom_defs_list = self.dm.load_custom_definitions()
+                # 重新使用 StatisticsCalculator 的解析逻辑
+                calculator = self.main_window.compute_handler.compute_worker.calculator
+                custom_formulas = {calculator.parse_definition(d)[0]: calculator.parse_definition(d)[1] for d in custom_defs_list}
                 
-                custom_names = self.dm.custom_global_formulas.keys()
-                
-                for name, value in sorted(self.dm.global_stats.items()):
-                    formula = self.dm.custom_global_formulas.get(name, "")
+                for name, value in sorted(all_stats.items()):
+                    formula = ""
+                    if name in custom_formulas:
+                        formula = custom_formulas[name]
+                    else:
+                        # 尝试从名称推断公式
+                        parts = name.split('_global_')
+                        if len(parts) == 2:
+                            var, stat = parts
+                            stat_func_map = {
+                                "mean": "mean", "sum": "sum", "min": "min",
+                                "max": "max", "var": "var", "std": "std"
+                            }
+                            if stat in stat_func_map:
+                                formula = f"{stat_func_map[stat]}({var})"
+                            else:
+                                formula = f"基础统计 ({stat})"
+                        else:
+                            formula = "基础统计"
+
                     writer.writerow([name, f"{value:.6e}", formula])
             
             QMessageBox.information(self.main_window, "导出成功", f"统计结果已保存到:\n{filepath}")
