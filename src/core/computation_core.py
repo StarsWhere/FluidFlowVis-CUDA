@@ -21,7 +21,6 @@ def _interpolate_field(points, values, grid_x, grid_y):
     """
     if values is None:
         return None
-    # [FIX] 使用 np.isfinite 替换 np.isnan 来同时过滤掉 NaN 和 inf 值，增强鲁棒性
     valid_indices = np.isfinite(points).all(axis=1) & np.isfinite(values)
     filtered_points = points[valid_indices]
     filtered_values = values[valid_indices]
@@ -34,6 +33,17 @@ def _interpolate_field(points, values, grid_x, grid_y):
             return griddata(filtered_points, filtered_values, (grid_x, grid_y), method='nearest')
         except QhullError:
              raise ValueError("输入点共线或退化，无法生成插值网格。")
+
+    # [FIX] 增加几何退化检查，以防止底层Qhull库崩溃
+    # 检查点是否能构成一个二维区域
+    x_range = np.ptp(filtered_points[:, 0])  # ptp (peak-to-peak) = max - min
+    y_range = np.ptp(filtered_points[:, 1])
+    if x_range < 1e-9 or y_range < 1e-9:
+        logger.warning("数据点在几何上是退化的 (共线或单点)，将强制使用最近邻插值。")
+        try:
+            return griddata(filtered_points, filtered_values, (grid_x, grid_y), method='nearest')
+        except QhullError:
+             raise ValueError("退化的数据导致插值失败。")
 
     try:
         # 1. 执行主要的线性插值

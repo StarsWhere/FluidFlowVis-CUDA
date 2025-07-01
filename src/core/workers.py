@@ -12,7 +12,7 @@ import re
 import numpy as np
 from typing import List, Dict, Any, Tuple
 from datetime import datetime
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed, BrokenProcessPool
 from scipy.interpolate import interpn
 
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -342,9 +342,9 @@ class DerivedVariableWorker(QThread):
         all_update_data = []
         processed_count = 0
         
-        # [FIX] Wrap the entire ProcessPoolExecutor block to catch pool-level errors like BrokenProcessPool
         try:
-            with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+            # [FIX] 限制最大工作进程数为CPU核心数的一半，以降低内存压力
+            with ProcessPoolExecutor(max_workers=max(1, os.cpu_count() // 2)) as executor:
                 future_to_frame = {executor.submit(worker_func, task): task[0] for task in tasks}
                 for future in as_completed(future_to_frame):
                     try:
@@ -352,15 +352,18 @@ class DerivedVariableWorker(QThread):
                         if frame_results:
                             all_update_data.extend(frame_results)
                     except Exception as exc:
+                        # Log non-critical exceptions from individual futures
                         logger.error(f"子进程计算 '{new_name}' 时发生可捕获的异常: {exc}", exc_info=True)
                     
                     processed_count += 1
                     progress_msg = f"步骤 {current_step+1}/{total_steps} ('{new_name}'): 计算帧 {processed_count}/{total_frames}"
                     self.progress.emit(current_step, total_steps, progress_msg)
+        except BrokenProcessPool as e:
+            # Specifically catch BrokenProcessPool to give a more informative error
+            logger.error(f"并行计算池在处理 '{new_name}' 时崩溃。这通常由内存不足或底层库（如SciPy）的严重错误引起。错误: {e}", exc_info=True)
+            raise RuntimeError(f"并行计算池崩溃。请检查数据有效性（尤其是退化情况）和系统内存。")
         except Exception as e:
-            # This will now catch BrokenProcessPool and other executor-level errors
             logger.error(f"并行计算池在处理 '{new_name}' 时失败: {e}", exc_info=True)
-            # Re-raise the error so it's caught by the main worker's `run` method and reported to the UI
             raise e
 
         if not all_update_data:
@@ -370,7 +373,6 @@ class DerivedVariableWorker(QThread):
         self.progress.emit(current_step, total_steps, progress_msg)
         
         update_query = f"UPDATE timeseries_data SET {safe_name} = ? WHERE id = ?"
-        # Use chunks for very large datasets to avoid memory issues
         chunk_size = 50000
         for i in range(0, len(all_update_data), chunk_size):
             chunk = all_update_data[i:i + chunk_size]
