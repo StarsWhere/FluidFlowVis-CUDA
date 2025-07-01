@@ -353,7 +353,7 @@ def get_data_processing_help_html() -> str:
     <body>
         <h2>数据处理中心指南</h2>
         <p>
-            此选项卡是 InterVis 的“大脑”，它让您可以执行<b>三种核心的计算任务</b>，
+            此选项卡是 InterVis 的“大脑”，它让您可以执行<b>四种核心的计算任务</b>，
             从而极大地扩展您的分析能力。计算结果将被<b>永久保存</b>在项目的数据库中，
             供后续的可视化和进一步计算使用。
         </p>
@@ -422,9 +422,58 @@ p_fluctuation_strength = std(p)</div>
             </div>
         </div>
 
+        <!-- ==================== 组合批量计算 ==================== -->
+        <div class="section-box" style="border-color: #d9534f; border-width: 2px;">
+            <h3 style="color: #d9534f;">3. <span class="new-feature">组合批量计算 (高级)</span></h3>
+            <p>
+                此功能是上述两种计算模式的强大结合，允许您在一个任务中定义<b>一系列按顺序执行的计算步骤</b>。
+                这对于需要多步推导的复杂分析（例如，计算雷诺应力产生项）至关重要，因为它确保了后续计算可以使用前面步骤中刚刚生成的新变量。
+            </p>
+            
+            <h4>核心思想与用途</h4>
+            <ul>
+                <li><b>计算基础:</b> 混合使用“逐帧”和“时间聚合”计算。</li>
+                <li><b>目的:</b> 自动执行依赖于先前计算结果的多步骤分析流程。</li>
+            </ul>
+
+            <h4><span class="new-feature">定义格式</span></h4>
+            <p>使用特殊的注释行来分隔不同类型的计算块。<b>执行将严格按照从上到下的顺序进行。</b></p>
+            <ul>
+                <li><b><code>#--- PER-FRAME ---#</code></b>: 在此标记下的所有定义都将作为<b>逐帧派生变量</b>进行计算。</li>
+                <li><b><code>#--- TIME-AGGREGATED ---#</code></b>: 在此标记下的所有定义都将作为<b>时间聚合变量</b>进行计算。</li>
+            </ul>
+            <div class="code-block"># 这是一个计算雷诺分解的复杂示例
+
+#--- PER-FRAME ---#
+# 第一步：计算每个点的瞬时速度大小
+velocity_magnitude = sqrt(u**2 + v**2)
+
+#--- TIME-AGGREGATED ---#
+# 第二步：计算整个时间序列上的平均速度大小
+# 注意：这里的 velocity_magnitude 是上一步刚刚创建的
+avg_velocity_magnitude = mean(velocity_magnitude)
+
+#--- PER-FRAME ---#
+# 第三步：计算每个点的速度脉动量
+# 注意：这里的 avg_velocity_magnitude 是第二步创建的，它是一个不随时间变化的场
+velocity_fluctuation = velocity_magnitude - avg_velocity_magnitude
+</div>
+             <div class="warning">
+                <p><b>工作流程:</b></p>
+                <ol>
+                    <li>InterVis 将首先执行第一个 <code>#--- PER-FRAME ---#</code> 块。</li>
+                    <li>完成后，它会更新数据库和变量列表。新变量 <code>velocity_magnitude</code> 现在可用了。</li>
+                    <li>然后，它会执行 <code>#--- TIME-AGGREGATED ---#</code> 块，此时它可以访问 <code>velocity_magnitude</code>。</li>
+                    <li>完成后，再次更新状态。新变量 <code>avg_velocity_magnitude</code> 现在可用了。</li>
+                    <li>最后，它执行第三个块，完成整个计算链。</li>
+                </ol>
+                <p>这种顺序执行的能力避免了手动分步计算，极大地提高了复杂分析的效率。</p>
+            </div>
+        </div>
+
         <!-- ==================== 全局常量 ==================== -->
         <div class="section-box">
-            <h3>3. 全局常量 (Global Constants)</h3>
+            <h3>4. 全局常量 (Global Constants)</h3>
             <p>
                 此功能用于计算代表<b>整个数据集</b>（跨越所有时间、所有空间点）特征的<b>单个标量值</b>。
             </p>
@@ -449,9 +498,10 @@ some_reynolds_number = u_global_mean * length_scale / nu
             <p>
                 <b>总结与区分:</b>
                 <ul>
-                    <li><b>逐帧派生变量:</b> <code>f(point, time) -> value(point, time)</code>。结果随时间和空间变化。</li>
-                    <li><b>时间聚合变量:</b> <code>f(point, all_times) -> value(point)</code>。结果只随空间变化，不随时间变化。</li>
-                    <li><b>全局常量:</b> <code>f(all_points, all_times) -> single_value</code>。结果是一个不随任何因素变化的标量。</li>
+                    <li><b>1. 逐帧派生变量:</b> <code>f(point, time) -> value(point, time)</code>。结果随时间和空间变化。</li>
+                    <li><b>2. 时间聚合变量:</b> <code>f(point, all_times) -> value(point)</code>。结果只随空间变化，不随时间变化。</li>
+                    <li><b>3. 组合批量计算:</b> 混合以上两种模式，按顺序执行。</li>
+                    <li><b>4. 全局常量:</b> <code>f(all_points, all_times) -> single_value</code>。结果是一个不随任何因素变化的标量。</li>
                 </ul>
             </p>
         </div>

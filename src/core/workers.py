@@ -250,7 +250,6 @@ class DatabaseImportWorker(QThread):
             self.error.emit(str(e))
             if self.dm.db_path and os.path.exists(self.dm.db_path):
                 try:
-                    # Ensure connection is closed before removing
                     if 'conn' in locals() and conn: conn.close()
                     os.remove(self.dm.db_path)
                 except Exception as ce: logger.error(f"清理失败的DB文件时出错: {ce}")
@@ -261,11 +260,11 @@ class DerivedVariableWorker(QThread):
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, data_manager: DataManager, definitions: List[Tuple[str, str]], parent=None):
+    def __init__(self, data_manager: DataManager, formula_engine: FormulaEngine, definitions: List[Tuple[str, str]], parent=None):
         super().__init__(parent)
         self.dm = data_manager
-        self.definitions = definitions # List of (new_name, formula)
-        self.formula_engine = FormulaEngine()
+        self.definitions = definitions
+        self.formula_engine = formula_engine
 
     def run(self):
         conn = None
@@ -277,17 +276,32 @@ class DerivedVariableWorker(QThread):
             for i, (new_name, formula) in enumerate(self.definitions):
                 safe_name = f'"{new_name}"'
                 
-                # Step 1: Add new column
                 self.progress.emit(i, total_steps, f"步骤 {i+1}/{total_steps}: 准备计算 '{new_name}'...")
+                
+                # --- [FIX] More robust column handling ---
                 cursor = conn.cursor()
                 cursor.execute("PRAGMA table_info(timeseries_data);")
-                if any(col[1] == new_name for col in cursor.fetchall()):
-                    logger.info(f"已存在的列 '{new_name}' 已被删除，将重新计算。")
-                    cursor.execute(f"ALTER TABLE timeseries_data DROP COLUMN {safe_name};")
-                cursor.execute(f"ALTER TABLE timeseries_data ADD COLUMN {safe_name} REAL;")
-                conn.commit()
+                column_exists = any(col[1] == new_name for col in cursor.fetchall())
 
-                # Step 2: Choose computation path and execute
+                if column_exists:
+                    logger.info(f"列 '{new_name}' 已存在。将删除它以便重新计算。")
+                    try:
+                        conn.execute(f'ALTER TABLE timeseries_data DROP COLUMN {safe_name};')
+                    except sqlite3.OperationalError as e:
+                        logger.error(f"无法删除已存在的列 '{new_name}'。错误: {e}")
+                        raise e
+
+                try:
+                    conn.execute(f"ALTER TABLE timeseries_data ADD COLUMN {safe_name} REAL;")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" in str(e).lower():
+                        logger.warning(f"无法添加列 '{new_name}'，因为它已存在且未能被删除。将继续并覆盖数据。")
+                    else:
+                        raise e
+                
+                conn.commit()
+                # --- End of fix ---
+
                 if any(f in formula for f in self.formula_engine.spatial_functions):
                     logger.info(f"检测到空间运算，为 '{new_name}' 切换到逐帧插值计算模式。")
                     self._run_parallel_computation(conn, new_name, formula, is_spatial=True, step_info=(i, total_steps))
@@ -295,10 +309,9 @@ class DerivedVariableWorker(QThread):
                     logger.info(f"为 '{new_name}' 使用逐帧并行计算模式（支持复杂函数）。")
                     self._run_parallel_computation(conn, new_name, formula, is_spatial=False, step_info=(i, total_steps))
                 
-                # Step 3: Save definition and update stats for this variable
                 self.dm.save_variable_definition(new_name, formula, "per-frame")
                 self.dm.refresh_schema_info()
-                self.formula_engine.update_allowed_variables(self.dm.get_variables()) # Make new var available for next formula
+                self.formula_engine.update_allowed_variables(self.dm.get_variables())
 
                 stats_worker = GlobalStatsWorker(self.dm, self.formula_engine, [new_name])
                 stats_worker.error.connect(lambda e: logger.error(f"计算 '{new_name}' 统计时出错: {e}"))
@@ -310,7 +323,6 @@ class DerivedVariableWorker(QThread):
         except Exception as e:
             logger.error(f"计算派生变量失败: {e}", exc_info=True)
             self.error.emit(str(e))
-            # Cleanup is tricky in a loop, better to just report error
         finally:
             if conn:
                 conn.close()
@@ -328,7 +340,6 @@ class DerivedVariableWorker(QThread):
         total_frames = len(time_values)
         if total_frames == 0: return
 
-        # Load fresh globals before each calculation
         self.dm.load_global_stats()
         all_globals = self.dm.global_stats.copy()
 
@@ -344,7 +355,6 @@ class DerivedVariableWorker(QThread):
         processed_count = 0
         
         try:
-            # [FIX] 限制最大工作进程数为CPU核心数的一半，以降低内存压力
             with ProcessPoolExecutor(max_workers=max(1, os.cpu_count() // 2)) as executor:
                 future_to_frame = {executor.submit(worker_func, task): task[0] for task in tasks}
                 for future in as_completed(future_to_frame):
@@ -353,14 +363,12 @@ class DerivedVariableWorker(QThread):
                         if frame_results:
                             all_update_data.extend(frame_results)
                     except Exception as exc:
-                        # Log non-critical exceptions from individual futures
                         logger.error(f"子进程计算 '{new_name}' 时发生可捕获的异常: {exc}", exc_info=True)
                     
                     processed_count += 1
                     progress_msg = f"步骤 {current_step+1}/{total_steps} ('{new_name}'): 计算帧 {processed_count}/{total_frames}"
                     self.progress.emit(current_step, total_steps, progress_msg)
         except BrokenProcessPool as e:
-            # Specifically catch BrokenProcessPool to give a more informative error
             logger.error(f"并行计算池在处理 '{new_name}' 时崩溃。这通常由内存不足或底层库（如SciPy）的严重错误引起。错误: {e}", exc_info=True)
             raise RuntimeError(f"并行计算池崩溃。请检查数据有效性（尤其是退化情况）和系统内存。")
         except Exception as e:
@@ -381,10 +389,6 @@ class DerivedVariableWorker(QThread):
             conn.commit()
             
 class TimeAggregatedVariableWorker(QThread):
-    """
-    [OPTIMIZED] 为每个空间点计算时间聚合值，并将其作为新列添加。
-    此版本使用高效的SQL操作，并支持批量计算。
-    """
     progress = pyqtSignal(int, int, str)
     finished = pyqtSignal()
     error = pyqtSignal(str)
@@ -393,10 +397,9 @@ class TimeAggregatedVariableWorker(QThread):
         super().__init__(parent)
         self.dm = data_manager
         self.formula_engine = formula_engine
-        self.definitions = definitions # List of (new_name, formula)
+        self.definitions = definitions
 
     def _parse_formula(self, formula: str) -> Tuple[str, str]:
-        """解析 'agg_func(expression)' 格式的公式。"""
         match = re.fullmatch(r'\s*(\w+)\s*\((.*)\)\s*', formula, re.DOTALL)
         if not match:
             raise ValueError(f"公式格式无效 '{formula}' (需要 agg_func(expression))")
@@ -425,15 +428,29 @@ class TimeAggregatedVariableWorker(QThread):
                 if not sql_agg_func and not is_variance:
                     raise ValueError(f"不支持的时间聚合函数: '{agg_func}'. 支持: mean, sum, min, max, std, var")
 
+                # --- [FIX] More robust column handling (similar to DerivedVariableWorker) ---
                 cursor = conn.cursor()
-                
-                # 1. Prepare database table
-                self.progress.emit(i, total_steps, f"({i+1}.1) 准备 '{new_name}' 的数据库列...")
                 cursor.execute("PRAGMA table_info(timeseries_data);")
-                if any(col[1] == new_name for col in cursor.fetchall()):
-                    cursor.execute(f"ALTER TABLE timeseries_data DROP COLUMN {safe_name};")
-                cursor.execute(f"ALTER TABLE timeseries_data ADD COLUMN {safe_name} REAL;")
+                column_exists = any(col[1] == new_name for col in cursor.fetchall())
+
+                if column_exists:
+                    logger.info(f"列 '{new_name}' 已存在。将删除它以便重新计算。")
+                    try:
+                        conn.execute(f'ALTER TABLE timeseries_data DROP COLUMN {safe_name};')
+                    except sqlite3.OperationalError as e:
+                        logger.error(f"无法删除已存在的列 '{new_name}'。错误: {e}")
+                        raise e
+
+                try:
+                    conn.execute(f"ALTER TABLE timeseries_data ADD COLUMN {safe_name} REAL;")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" in str(e).lower():
+                        logger.warning(f"无法添加列 '{new_name}'，因为它已存在且未能被删除。将继续并覆盖数据。")
+                    else:
+                        raise e
+                
                 conn.commit()
+                # --- End of fix ---
 
                 if is_variance:
                     agg_expr = f"AVG(pow({inner_expr}, 2)) - pow(AVG({inner_expr}), 2)"
@@ -442,7 +459,6 @@ class TimeAggregatedVariableWorker(QThread):
                 else:
                     agg_expr = f"{sql_agg_func}({inner_expr})"
 
-                # 2. Calculate aggregates into a temp table
                 self.progress.emit(i, total_steps, f"({i+1}.2) 计算 '{new_name}' 的聚合值 (SQL)...")
                 cursor.execute(f"DROP TABLE IF EXISTS {temp_table_name}")
                 create_temp_query = f"""
@@ -453,14 +469,11 @@ class TimeAggregatedVariableWorker(QThread):
                 """
                 cursor.execute(create_temp_query)
                 
-                # 3. Index temp table
                 self.progress.emit(i, total_steps, f"({i+1}.3) 为临时数据创建索引...")
                 cursor.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS idx_temp_coords ON {temp_table_name} (x, y);")
                 conn.commit()
 
-                # 4. Update main table
                 self.progress.emit(i, total_steps, f"({i+1}.4) 将聚合值写回主表...")
-                # --- BUG FIX: Replaced correlated subquery with more efficient UPDATE FROM syntax ---
                 update_query = f"""
                     UPDATE timeseries_data
                     SET {safe_name} = T.agg_value
@@ -470,10 +483,9 @@ class TimeAggregatedVariableWorker(QThread):
                 cursor.execute(update_query)
                 conn.commit()
                 
-                # 5. Save definition and compute stats
                 self.progress.emit(i, total_steps, f"({i+1}.5) 计算 '{new_name}' 的全局统计...")
                 self.dm.save_variable_definition(new_name, formula, "time-aggregated")
-                self.dm.refresh_schema_info() # Refresh schema for next loop iteration
+                self.dm.refresh_schema_info()
                 
                 stats_worker = GlobalStatsWorker(self.dm, self.formula_engine, [new_name])
                 stats_worker.error.connect(lambda e: logger.error(f"计算 '{new_name}' 统计时出错: {e}"))
@@ -487,7 +499,7 @@ class TimeAggregatedVariableWorker(QThread):
             self.error.emit(str(e))
         finally:
             if conn:
-                try: # Cleanup last temp table if it exists
+                try:
                     cursor = conn.cursor()
                     cursor.execute(f"DROP TABLE IF EXISTS {temp_table_name}")
                 except Exception as e_cleanup:
@@ -555,13 +567,12 @@ class GlobalStatsWorker(QThread):
     def __init__(self, data_manager: DataManager, formula_engine: FormulaEngine, vars_to_calc: List[str], parent=None):
         super().__init__(parent)
         self.dm = data_manager
-        self.formula_engine = formula_engine # Store the FormulaEngine instance
+        self.formula_engine = formula_engine
         self.vars_to_calc = vars_to_calc
         self.calculator = StatisticsCalculator(self.dm)
 
     def run(self):
         try:
-            # Filter out non-numeric columns like 'source_file'
             numeric_vars = [v for v in self.vars_to_calc if v != 'source_file' and v != 'id']
             if not numeric_vars:
                 self.finished.emit()
@@ -595,7 +606,7 @@ class CustomGlobalStatsWorker(QThread):
         super().__init__(parent)
         self.calculator = StatisticsCalculator(data_manager)
         self.definitions, self.dm = definitions, data_manager
-        self.formula_engine = formula_engine # Store the FormulaEngine instance
+        self.formula_engine = formula_engine
 
     def run(self):
         try:
@@ -605,15 +616,13 @@ class CustomGlobalStatsWorker(QThread):
             
             new_stats, new_formulas = {}, {}
             
-            # Execute definitions sequentially
             for i, definition in enumerate(self.definitions):
-                # Update globals with results from previous definitions in this batch
                 current_globals = {**base_stats, **new_stats}
                 self.formula_engine.update_custom_global_variables(current_globals)
 
                 name, formula, _ = self.calculator.parse_definition(definition)
 
-                if any(sf in formula for sf in self.formula_engine.spatial_functions): # Use self.formula_engine
+                if any(sf in formula for sf in self.formula_engine.spatial_functions):
                     result = self._calculate_spatial_stats_parallel(name, formula, current_globals, i)
                 else:
                     result = self._calculate_sql_stats(definition, current_globals, i)
@@ -658,7 +667,6 @@ class CustomGlobalStatsWorker(QThread):
                     frame_results.append(result)
                 processed_count += 1
                 msg = f"'{name}': 并行计算帧 {processed_count}/{frame_count}"
-                # Use a finer-grained progress update
                 self.progress.emit(i * frame_count + processed_count, len(self.definitions) * frame_count, msg)
 
         if not frame_results: raise ValueError(f"未能为 '{name}' 计算出有效结果。")

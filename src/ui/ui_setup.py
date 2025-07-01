@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -224,16 +223,16 @@ class UiMainWindow:
         header_layout.addWidget(self.dp_help_btn)
         scroll_layout.addLayout(header_layout)
 
-        compute_group = QGroupBox("逐帧派生变量 (新数据列)"); custom_layout = QVBoxLayout(compute_group)
+        compute_group = QGroupBox("1. 逐帧派生变量 (新数据列)"); custom_layout = QVBoxLayout(compute_group)
         info_label_1 = QLabel("基于<b>每个数据点在各自时刻</b>的值计算新变量。每行一个定义。"); info_label_1.setWordWrap(True); custom_layout.addWidget(info_label_1)
         self.new_variable_formula_edit = QTextEdit(); self.new_variable_formula_edit.setPlaceholderText("vel_mag = sqrt(u**2 + v**2)\nvorticity = curl(u, v)")
-        self.new_variable_formula_edit.setFont(QFont("Courier New", 9)); self.new_variable_formula_edit.setFixedHeight(100)
+        self.new_variable_formula_edit.setFont(QFont("Courier New", 9)); self.new_variable_formula_edit.setFixedHeight(80)
         custom_layout.addWidget(self.new_variable_formula_edit)
         self.compute_and_add_btn = QPushButton("计算并添加 (逐帧)"); self.compute_and_add_btn.setEnabled(False)
         custom_btn_layout = QHBoxLayout(); custom_btn_layout.addStretch(); custom_btn_layout.addWidget(self.compute_and_add_btn); custom_layout.addLayout(custom_btn_layout)
         scroll_layout.addWidget(compute_group)
 
-        time_agg_group = QGroupBox("时间聚合变量 (新数据列)"); time_agg_layout = QVBoxLayout(time_agg_group)
+        time_agg_group = QGroupBox("2. 时间聚合变量 (新数据列)"); time_agg_layout = QVBoxLayout(time_agg_group)
         info_label_2 = QLabel("基于<b>每个空间点在所有时刻</b>的值进行聚合计算。每行一个定义。"); info_label_2.setWordWrap(True); time_agg_layout.addWidget(info_label_2)
         self.new_time_agg_formula_edit = QTextEdit(); self.new_time_agg_formula_edit.setPlaceholderText("u_time_avg = mean(u)\np_stdev = std(p)")
         self.new_time_agg_formula_edit.setFont(QFont("Courier New", 9)); self.new_time_agg_formula_edit.setFixedHeight(80)
@@ -242,10 +241,28 @@ class UiMainWindow:
         time_agg_btn_layout = QHBoxLayout(); time_agg_btn_layout.addStretch(); time_agg_btn_layout.addWidget(self.compute_and_add_time_agg_btn); time_agg_layout.addLayout(time_agg_btn_layout)
         scroll_layout.addWidget(time_agg_group)
 
-        custom_group = QGroupBox("全局常量 (标量值)"); custom_layout_2 = QVBoxLayout(custom_group)
+        # NEW: Combined computation group
+        combined_group = QGroupBox("3. 组合批量计算 (高级)"); combined_layout = QVBoxLayout(combined_group)
+        info_label_3 = QLabel("使用标记按顺序执行不同类型的计算。每行一个定义。"); info_label_3.setWordWrap(True); combined_layout.addWidget(info_label_3)
+        self.combined_formula_edit = QTextEdit()
+        self.combined_formula_edit.setPlaceholderText(
+            "#--- PER-FRAME ---#\n"
+            "vel_mag = sqrt(u**2 + v**2)\n\n"
+            "#--- TIME-AGGREGATED ---#\n"
+            "vel_mag_avg = mean(vel_mag)\n\n"
+            "#--- PER-FRAME ---#\n"
+            "vel_fluctuation = vel_mag - vel_mag_avg"
+        )
+        self.combined_formula_edit.setFont(QFont("Courier New", 9)); self.combined_formula_edit.setMinimumHeight(120)
+        combined_layout.addWidget(self.combined_formula_edit)
+        self.compute_combined_btn = QPushButton("执行组合计算"); self.compute_combined_btn.setEnabled(False)
+        combined_btn_layout = QHBoxLayout(); combined_btn_layout.addStretch(); combined_btn_layout.addWidget(self.compute_combined_btn); combined_layout.addLayout(combined_btn_layout)
+        scroll_layout.addWidget(combined_group)
+
+        custom_group = QGroupBox("4. 全局常量 (标量值)"); custom_layout_2 = QVBoxLayout(custom_group)
         custom_info = QLabel("基于<b>整个数据集所有点</b>进行聚合，计算单个标量值。每行一个定义。"); custom_info.setWordWrap(True); custom_layout_2.addWidget(custom_info)
         self.custom_stats_input = QTextEdit(); self.custom_stats_input.setFont(QFont("Courier New", 9)); self.custom_stats_input.setPlaceholderText("tke_global = mean(0.5 * (u**2 + v**2))\navg_vorticity = mean(curl(u, v))")
-        self.custom_stats_input.setFixedHeight(100); custom_layout_2.addWidget(self.custom_stats_input)
+        self.custom_stats_input.setFixedHeight(80); custom_layout_2.addWidget(self.custom_stats_input)
         self.save_and_calc_custom_stats_btn = QPushButton("保存并计算 (全局)"); self.save_and_calc_custom_stats_btn.setEnabled(False); custom_btn_layout_2 = QHBoxLayout(); custom_btn_layout_2.addStretch(); custom_btn_layout_2.addWidget(self.save_and_calc_custom_stats_btn); custom_layout_2.addLayout(custom_btn_layout_2)
         scroll_layout.addWidget(custom_group)
 
