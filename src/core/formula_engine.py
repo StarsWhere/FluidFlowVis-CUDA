@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -100,10 +99,12 @@ class FormulaEngine:
         if formula_stripped in data.columns:
             return data[formula_stripped]
 
-        # 空间函数不能在这里被评估
-        if any(f in formula_stripped for f in self.spatial_functions):
+        # [FIX] 使用更智能的正则表达式来检测空间函数的 *调用*
+        # 这将避免将包含 'grad_x' 等子串的变量名误判为空间函数调用
+        spatial_func_pattern = r'\b(' + '|'.join(self.spatial_functions) + r')\s*\('
+        if re.search(spatial_func_pattern, formula_stripped):
             raise ValueError(f"空间函数 (如 grad_x, div) 无法直接在 evaluate_formula 中求值。请使用 computation_core。")
-
+        
         # Prepare a safe evaluation scope
         eval_globals = {
             **self.get_all_constants_and_globals(),

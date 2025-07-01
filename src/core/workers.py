@@ -40,7 +40,7 @@ def _parallel_simple_derived_var_calc(args: Tuple) -> List[Tuple[float, int]]:
     dm.setup_project_directory(os.path.dirname(db_path))
     dm.set_time_variable(time_variable)
     formula_engine = FormulaEngine()
-    formula_engine.update_allowed_variables(dm.get_variables())
+    formula_engine.update_allowed_variables(dm.get_variables(force_reload=True))
     formula_engine.update_custom_global_variables(all_globals)
 
     try:
@@ -84,7 +84,7 @@ def _parallel_spatial_derived_var_calc(args: Tuple) -> List[Tuple[float, int]]:
         dm.set_time_variable(time_variable)
         formula_engine = FormulaEngine()
         # 在刷新schema之前更新变量，以防公式依赖于新变量
-        all_vars_from_db = dm.get_variables()
+        all_vars_from_db = dm.get_variables(force_reload=True)
         formula_engine.update_allowed_variables(all_vars_from_db)
         formula_engine.update_custom_global_variables(all_globals)
         
@@ -150,7 +150,7 @@ def _parallel_spatial_calc(args: Tuple) -> Tuple[Any, float]:
         dm.setup_project_directory(os.path.dirname(db_path))
         dm.set_time_variable(time_variable) # Ensure correct time axis
         formula_engine = FormulaEngine()
-        formula_engine.update_allowed_variables(dm.get_variables())
+        formula_engine.update_allowed_variables(dm.get_variables(force_reload=True))
         formula_engine.update_custom_global_variables(base_globals)
         
         # Fetch data for a specific time value
@@ -176,7 +176,6 @@ def _parallel_spatial_calc(args: Tuple) -> Tuple[Any, float]:
 # --- End of helper function ---
 
 class DatabaseImportWorker(QThread):
-    """扫描CSV，导入数据库，并自动计算基础统计数据。"""
     progress = pyqtSignal(int, int, str)
     log_message = pyqtSignal(str)
     finished = pyqtSignal()
@@ -185,7 +184,7 @@ class DatabaseImportWorker(QThread):
     def __init__(self, data_manager: DataManager, formula_engine: FormulaEngine, parent=None):
         super().__init__(parent)
         self.dm = data_manager
-        self.formula_engine = formula_engine # Store the FormulaEngine instance
+        self.formula_engine = formula_engine
         self.is_cancelled = False
     
     def run(self):
@@ -204,7 +203,6 @@ class DatabaseImportWorker(QThread):
             conn = self.dm.get_db_connection()
             self.dm.create_database_tables(conn)
             
-            # Add frame_index and source_file columns to the definition
             cols_def_parts = [f'"{col}" REAL' for col in all_cols]
             table_def = f"""
                 CREATE TABLE timeseries_data (
@@ -214,18 +212,16 @@ class DatabaseImportWorker(QThread):
                     {", ".join(cols_def_parts)}
                 );
             """
-            conn.execute("DROP TABLE IF EXISTS timeseries_data;") # Ensure fresh start
+            conn.execute("DROP TABLE IF EXISTS timeseries_data;")
             conn.execute(table_def)
             conn.commit()
 
             for i, filename in enumerate(csv_files):
                 if self.is_cancelled: break
                 self.progress.emit(i + 1, len(csv_files) + 2, f"正在导入: {filename}")
-                # Load all original columns
                 df = pd.read_csv(os.path.join(self.dm.project_directory, filename), dtype={col: float for col in numeric_cols})
                 df['frame_index'] = i
                 df['source_file'] = filename
-                # Ensure columns match the table schema order
                 df_ordered = df[['frame_index', 'source_file'] + all_cols]
                 df_ordered.to_sql('timeseries_data', conn, if_exists='append', index=False)
             
@@ -238,8 +234,7 @@ class DatabaseImportWorker(QThread):
             
             self.log_message.emit("导入完成，正在计算基础统计数据...")
             self.dm.refresh_schema_info()
-            # Calculate stats for all numeric columns found
-            stats_worker = GlobalStatsWorker(self.dm, self.formula_engine, self.dm.get_time_candidates()) # Pass formula_engine
+            stats_worker = GlobalStatsWorker(self.dm, self.formula_engine, self.dm.get_time_candidates())
             stats_worker.progress.connect(lambda cur, tot, msg: self.progress.emit(len(csv_files) + 2, len(csv_files) + 2, f"统计: {msg}"))
             stats_worker.error.connect(self.error.emit)
             stats_worker.finished.connect(lambda: self.finished.emit())
@@ -260,11 +255,12 @@ class DerivedVariableWorker(QThread):
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, data_manager: DataManager, formula_engine: FormulaEngine, definitions: List[Tuple[str, str]], parent=None):
+    def __init__(self, data_manager: DataManager, formula_engine: FormulaEngine, definitions: List[Tuple[str, str]], use_parallelism: bool = True, parent=None):
         super().__init__(parent)
         self.dm = data_manager
         self.definitions = definitions
         self.formula_engine = formula_engine
+        self.use_parallelism = use_parallelism # New flag to control execution mode
 
     def run(self):
         conn = None
@@ -278,19 +274,14 @@ class DerivedVariableWorker(QThread):
                 
                 self.progress.emit(i, total_steps, f"步骤 {i+1}/{total_steps}: 准备计算 '{new_name}'...")
                 
-                # --- [FIX] More robust column handling ---
                 cursor = conn.cursor()
                 cursor.execute("PRAGMA table_info(timeseries_data);")
                 column_exists = any(col[1] == new_name for col in cursor.fetchall())
 
                 if column_exists:
                     logger.info(f"列 '{new_name}' 已存在。将删除它以便重新计算。")
-                    try:
-                        conn.execute(f'ALTER TABLE timeseries_data DROP COLUMN {safe_name};')
-                    except sqlite3.OperationalError as e:
-                        logger.error(f"无法删除已存在的列 '{new_name}'。错误: {e}")
-                        raise e
-
+                    conn.execute(f'ALTER TABLE timeseries_data DROP COLUMN {safe_name};')
+                
                 try:
                     conn.execute(f"ALTER TABLE timeseries_data ADD COLUMN {safe_name} REAL;")
                 except sqlite3.OperationalError as e:
@@ -300,16 +291,19 @@ class DerivedVariableWorker(QThread):
                         raise e
                 
                 conn.commit()
-                # --- End of fix ---
-
-                if any(f in formula for f in self.formula_engine.spatial_functions):
-                    logger.info(f"检测到空间运算，为 '{new_name}' 切换到逐帧插值计算模式。")
-                    self._run_parallel_computation(conn, new_name, formula, is_spatial=True, step_info=(i, total_steps))
-                else:
-                    logger.info(f"为 '{new_name}' 使用逐帧并行计算模式（支持复杂函数）。")
-                    self._run_parallel_computation(conn, new_name, formula, is_spatial=False, step_info=(i, total_steps))
                 
+                is_spatial = any(f in formula for f in self.formula_engine.spatial_functions)
+                
+                # [FIX] Choose execution path based on the new flag
+                if self.use_parallelism:
+                    logger.info(f"为 '{new_name}' 使用并行计算模式。")
+                    self._run_parallel_computation(conn, new_name, formula, is_spatial, step_info=(i, total_steps))
+                else:
+                    logger.info(f"为 '{new_name}' 使用串行计算模式 (保证数据一致性)。")
+                    self._run_serial_computation(conn, new_name, formula, is_spatial, step_info=(i, total_steps))
+
                 self.dm.save_variable_definition(new_name, formula, "per-frame")
+                # Crucially, refresh schema info for the next loop iteration (important for serial mode)
                 self.dm.refresh_schema_info()
                 self.formula_engine.update_allowed_variables(self.dm.get_variables())
 
@@ -326,6 +320,59 @@ class DerivedVariableWorker(QThread):
         finally:
             if conn:
                 conn.close()
+
+    def _run_serial_computation(self, conn, new_name, formula, is_spatial, step_info):
+        """[NEW] Serially computes the derived variable frame by frame."""
+        current_step, total_steps = step_info
+        time_values = self.dm._get_sorted_time_values()
+        total_frames = len(time_values)
+        if total_frames == 0: return
+
+        cursor = conn.cursor()
+        safe_name = f'"{new_name}"'
+        update_query = f"UPDATE timeseries_data SET {safe_name} = ? WHERE id = ?"
+        
+        for frame_idx, time_value in enumerate(time_values):
+            progress_msg = f"步骤 {current_step+1}/{total_steps} ('{new_name}'): 计算帧 {frame_idx+1}/{total_frames}"
+            self.progress.emit(current_step, total_steps, progress_msg)
+            
+            frame_data = self.dm.get_frame_data(frame_idx)
+            if frame_data is None or frame_data.empty: continue
+            
+            update_data = []
+            if is_spatial:
+                # This path is already robust and uses the single-frame computation core
+                x_formula, y_formula, grid_res = 'x', 'y', (150, 150)
+                # Note: we pass self.formula_engine which is kept up-to-date
+                computation_result = compute_gridded_field(frame_data, formula, x_formula, y_formula, self.formula_engine, grid_res, use_gpu=False)
+                
+                result_grid = computation_result.get('result_data')
+                if result_grid is None: continue
+
+                grid_x = computation_result.get('grid_x'); grid_y = computation_result.get('grid_y')
+                original_x = self.formula_engine.evaluate_formula(frame_data, x_formula)
+                original_y = self.formula_engine.evaluate_formula(frame_data, y_formula)
+                points_to_sample = np.vstack([original_y, original_x]).T
+                grid_coords = (grid_y[:, 0], grid_x[0, :])
+                
+                sampled_values = interpn(grid_coords, result_grid, points_to_sample, method='linear', bounds_error=False, fill_value=np.nan)
+                
+                point_ids = frame_data['id'].values
+                for i in range(len(point_ids)):
+                    if not np.isnan(sampled_values[i]):
+                        update_data.append((float(sampled_values[i]), int(point_ids[i])))
+            else:
+                # Simple non-spatial calculation
+                new_values = self.formula_engine.evaluate_formula(frame_data, formula)
+                point_ids = frame_data['id'].values
+                for i in range(len(point_ids)):
+                    if not np.isnan(new_values.iloc[i]):
+                        update_data.append((float(new_values.iloc[i]), int(point_ids[i])))
+            
+            if update_data:
+                cursor.executemany(update_query, update_data)
+                conn.commit()
+
 
     def _run_parallel_computation(self, conn, new_name, formula, is_spatial, step_info):
         current_step, total_steps = step_info
@@ -428,19 +475,14 @@ class TimeAggregatedVariableWorker(QThread):
                 if not sql_agg_func and not is_variance:
                     raise ValueError(f"不支持的时间聚合函数: '{agg_func}'. 支持: mean, sum, min, max, std, var")
 
-                # --- [FIX] More robust column handling (similar to DerivedVariableWorker) ---
                 cursor = conn.cursor()
                 cursor.execute("PRAGMA table_info(timeseries_data);")
                 column_exists = any(col[1] == new_name for col in cursor.fetchall())
 
                 if column_exists:
                     logger.info(f"列 '{new_name}' 已存在。将删除它以便重新计算。")
-                    try:
-                        conn.execute(f'ALTER TABLE timeseries_data DROP COLUMN {safe_name};')
-                    except sqlite3.OperationalError as e:
-                        logger.error(f"无法删除已存在的列 '{new_name}'。错误: {e}")
-                        raise e
-
+                    conn.execute(f'ALTER TABLE timeseries_data DROP COLUMN {safe_name};')
+                
                 try:
                     conn.execute(f"ALTER TABLE timeseries_data ADD COLUMN {safe_name} REAL;")
                 except sqlite3.OperationalError as e:
@@ -450,7 +492,6 @@ class TimeAggregatedVariableWorker(QThread):
                         raise e
                 
                 conn.commit()
-                # --- End of fix ---
 
                 if is_variance:
                     agg_expr = f"AVG(pow({inner_expr}, 2)) - pow(AVG({inner_expr}), 2)"
