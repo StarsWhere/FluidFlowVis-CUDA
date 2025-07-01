@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import numpy as np
@@ -57,6 +58,7 @@ class PlotWidget(QWidget):
     timeseries_point_picked = pyqtSignal(tuple)
     profile_line_defined = pyqtSignal(tuple, tuple)
     interpolation_error = pyqtSignal(str)
+    mouse_left_plot = pyqtSignal()
 
     def __init__(self, formula_engine, parent=None):
         super().__init__(parent)
@@ -91,6 +93,8 @@ class PlotWidget(QWidget):
         self.canvas.mpl_connect('scroll_event', self._on_scroll)
         self.canvas.mpl_connect('button_press_event', self._on_button_press)
         self.canvas.mpl_connect('button_release_event', self._on_button_release)
+        self.canvas.mpl_connect('figure_leave_event', self.mouse_left_plot.emit)
+
 
     def _get_platform_font(self) -> str:
         if sys.platform == "win32": return "Microsoft YaHei"

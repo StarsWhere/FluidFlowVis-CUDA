@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -312,6 +313,105 @@ class DerivedVariableWorker(QThread):
         cursor.executemany(update_query, all_update_data)
         conn.commit()
 
+
+class TimeAggregatedVariableWorker(QThread):
+    """为每个空间点计算时间聚合值，并将其作为新列添加。"""
+    progress = pyqtSignal(int, int, str)
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+    
+    def __init__(self, data_manager: DataManager, new_name: str, formula: str, parent=None):
+        super().__init__(parent)
+        self.dm = data_manager
+        self.new_name = new_name
+        self.formula = formula
+
+    def _parse_formula(self) -> Tuple[str, str]:
+        """解析 'agg_func(expression)' 格式的公式。"""
+        match = re.fullmatch(r'\s*(\w+)\s*\((.*)\)\s*', self.formula, re.DOTALL)
+        if not match:
+            raise ValueError("公式格式无效 (需要 agg_func(expression))")
+        agg_func_str, inner_expr = match.groups()
+        return agg_func_str.lower(), inner_expr.strip()
+
+    def run(self):
+        conn = None
+        safe_name = f'"{self.new_name}"'
+        try:
+            agg_func, inner_expr = self._parse_formula()
+            
+            # 映射到SQL聚合函数
+            agg_map = {'mean': 'AVG', 'sum': 'SUM', 'min': 'MIN', 'max': 'MAX'}
+            sql_agg_func = agg_map.get(agg_func)
+            is_variance = agg_func in ['var', 'std']
+
+            if not sql_agg_func and not is_variance:
+                raise ValueError(f"不支持的时间聚合函数: '{agg_func}'. 支持: mean, sum, min, max, std, var")
+
+            conn = self.dm.get_db_connection()
+            cursor = conn.cursor()
+            
+            self.progress.emit(0, 5, "步骤 1/5: 准备数据库...")
+            cursor.execute("PRAGMA table_info(timeseries_data);")
+            if any(col[1] == self.new_name for col in cursor.fetchall()):
+                cursor.execute(f"ALTER TABLE timeseries_data DROP COLUMN {safe_name};")
+            cursor.execute(f"ALTER TABLE timeseries_data ADD COLUMN {safe_name} REAL;")
+            conn.commit()
+
+            # Variance/Std requires special handling in SQL
+            if is_variance:
+                agg_expr = f"AVG(pow({inner_expr}, 2)) - pow(AVG({inner_expr}), 2)" # Variance
+                if agg_func == 'std':
+                    agg_expr = f"SQRT({agg_expr})" # Standard Deviation
+            else:
+                agg_expr = f"{sql_agg_func}({inner_expr})"
+
+            self.progress.emit(1, 5, "步骤 2/5: 计算每个点的聚合值...")
+            temp_table_name = "time_agg_temp"
+            cursor.execute(f"DROP TABLE IF EXISTS {temp_table_name}")
+            create_temp_query = f"""
+                CREATE TEMP TABLE {temp_table_name} AS
+                SELECT x, y, {agg_expr} as agg_value
+                FROM timeseries_data
+                GROUP BY x, y
+            """
+            logger.info(f"Executing temp table creation: {create_temp_query}")
+            cursor.execute(create_temp_query)
+            
+            self.progress.emit(2, 5, "步骤 3/5: 为临时数据创建索引...")
+            cursor.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS idx_temp_coords ON {temp_table_name} (x, y);")
+            conn.commit()
+
+            self.progress.emit(3, 5, "步骤 4/5: 将聚合值写回主表...")
+            update_query = f"""
+                UPDATE timeseries_data
+                SET {safe_name} = (
+                    SELECT agg_value
+                    FROM {temp_table_name}
+                    WHERE {temp_table_name}.x = timeseries_data.x AND {temp_table_name}.y = timeseries_data.y
+                )
+            """
+            logger.info(f"Executing final update query...")
+            cursor.execute(update_query)
+            conn.commit()
+            
+            self.progress.emit(4, 5, f"步骤 5/5: 计算新变量 '{self.new_name}' 的全局统计...")
+            self.dm.refresh_schema_info()
+            stats_worker = GlobalStatsWorker(self.dm, [self.new_name])
+            stats_worker.error.connect(lambda e: logger.error(f"计算新变量统计时出错: {e}"))
+            stats_worker.run()
+
+            self.progress.emit(5, 5, "完成！")
+            self.finished.emit()
+
+        except Exception as e:
+            logger.error(f"计算时间聚合变量 '{self.new_name}' 失败: {e}", exc_info=True)
+            self.error.emit(str(e))
+        finally:
+            if conn:
+                cursor = conn.cursor()
+                cursor.execute(f"DROP TABLE IF EXISTS {temp_table_name}")
+                conn.close()
 
 class BatchExportWorker(QThread):
     progress = pyqtSignal(int, int, str)

@@ -349,167 +349,105 @@ def get_data_processing_help_html() -> str:
         </style>
     </head>
     <body>
-        <ul>
-            <li>sum: 总和</li>
-            <li>std: 标准差</li>
-            <li>var: 方差</li>
-            <li>expression: 一个数学表达式，其结果将被聚合。表达式可以包含:
-                <ol>
-                    <li>任何原始数据变量 (如 <code>u</code>, <code>p</code>)。</li>
-                    <li>任何<b>已经计算好</b>的全局常量 (包括在此文本框中、位于<b>当前行之上</b>的常量)。</li>
-                    <li>所有标准数学函数 (<code>sqrt</code>, <code>sin</code> 等)。</li>
-                    <li>所有空间运算函数 (<code>grad_x</code>, <code>div</code>, <code>curl</code> 等)。</li>
-                </ol>
-            </li>
-        </ul>
         <h2>数据处理中心指南</h2>
         <p>
-            此选项卡是 InterVis 的“大脑”，它让您可以执行两种核心的计算任务，
+            此选项卡是 InterVis 的“大脑”，它让您可以执行<b>三种核心的计算任务</b>，
             从而极大地扩展您的分析能力。计算结果将被<b>永久保存</b>在项目的数据库中，
             供后续的可视化和进一步计算使用。
         </p>
 
-        <!-- ==================== 派生变量 ==================== -->
+        <!-- ==================== 逐帧派生变量 ==================== -->
         <div class="section-box">
-            <h3>1. 派生变量 (Derived Variables) - 创建新数据列</h3>
+            <h3>1. 逐帧派生变量 (Per-Frame Derived Variables)</h3>
             <p>
-                此功能用于在您的数据集中创建<b>全新的数据列</b>。
-                新列中的每个值都是基于<b>同一行（即同一个数据点、同一时刻）</b>的其他值计算得出的。
+                此功能在您的数据集中创建<b>新数据列</b>。新列中的每个值都是基于<b>同一行（即同一个数据点、同一时刻）</b>的其他值计算得出的。
             </p>
             
             <h4>核心思想与用途</h4>
             <ul>
-                <li><b>目的:</b> 计算那些<b>逐点变化</b>的物理量。</li>
+                <li><b>计算基础:</b> 空间点 (x, y) 在时刻 t 的值。</li>
+                <li><b>目的:</b> 计算那些<b>随时间和空间都变化</b>的物理量。</li>
                 <li><b>例子:</b>
                     <ul>
                         <li>速度大小: <code>sqrt(u*u + v*v)</code></li>
-                        <li>动量: <code>rho * u</code></li>
                         <li>动能: <code>0.5 * rho * (u*u + v*v)</code></li>
                         <li>马赫数: <code>sqrt(u*u+v*v) / a</code> (如果声速 <code>a</code> 是一个变量)</li>
                     </ul>
                 </li>
+                 <li><b>工作方式:</b> 通常使用高效的SQL在数据库中直接计算。</li>
             </ul>
-
-            <h4>工作方式</h4>
-            <div class="note">
-                <p>
-                    <b>关键点:</b> 这种计算是在数据库层面通过 <b>SQLite</b> 执行的。这意味着它非常高效，
-                    但您必须使用 <b>SQLite 兼容的函数和语法</b>。
-                    大多数标准数学函数（如 <code>sqrt()</code>, <code>pow(x,y)</code>）都是支持的。
-                    复杂的高级空间函数 (如 <code>curl</code>, <code>grad_x</code>) 在此处<b>不适用</b>。
-                </p>
-            </div>
+        </div>
+        
+        <!-- ==================== 时间聚合变量 ==================== -->
+        <div class="section-box">
+            <h3>2. <span class="new-feature">时间聚合变量</span> (Time-Aggregated Variables)</h3>
+            <p>
+                此功能也在您的数据集中创建<b>新数据列</b>，但其计算方式完全不同。它会为<b>每一个空间点 (x, y)</b>，汇总其<b>所有时间步</b>的数据，得出一个聚合值（如时间平均值），然后将这个值赋给该空间点在<b>所有时刻</b>的新列中。
+            </p>
             
-            <h4>操作指南</h4>
-            <ol>
-                <li><b>新变量名:</b> 输入一个有效的、描述性的名称 (例如: <code>kinetic_energy</code>)。名称只能包含字母、数字、下划线，且不能以数字开头。</li>
-                <li><b>计算公式:</b> 输入您的 SQLite 兼容公式。您可以使用数据中任何已存在的变量名。</li>
-                <li>点击“<b>计算并添加列到数据库</b>”按钮。程序将修改数据库表结构，并为所有数据行计算新值。</li>
-            </ol>
-            
-            <div class="warning">
-                <p>
-                    <b>重要提示:</b>
+            <h4>核心思想与用途</h4>
+            <ul>
+                <li><b>计算基础:</b> 空间点 (x, y) 在<b>所有</b>时刻 t 的值的集合。</li>
+                <li><b>目的:</b> 计算<b>不随时间变化</b>的统计场，例如定常分析或雷诺分解。</li>
+                <li><b>例子:</b>
                     <ul>
-                        <li>创建的变量是<b>永久性的</b>，会一直保存在项目数据库中，直到您重新导入整个项目。</li>
-                        <li>如果提供的变量名已存在，程序会询问您是否要覆盖它。覆盖操作会删除旧列并重新计算。</li>
-                        <li>计算过程可能需要一些时间，具体取决于您的数据集大小。</li>
+                        <li>计算每个点的<b>时间平均速度</b>: <code>u_time_avg = mean(u)</code></li>
+                        <li>计算每个点的<b>压力标准差</b>（衡量脉动强度）: <code>p_time_std = std(p)</code></li>
+                        <li>计算每个点的<b>最大湍动能</b>: <code>tke_time_max = max(0.5 * (u*u + v*v))</code></li>
                     </ul>
+                </li>
+                <li><b>工作方式:</b> 通过SQL的 <code>GROUP BY x, y</code> 功能实现。</li>
+            </ul>
+             <h4>定义格式</h4>
+            <p>格式为: <code>new_variable_name = aggregate_function(expression)</code></p>
+            <ul>
+                <li>
+                    <b><code>aggregate_function</code></b>:
+                    支持 <code>mean</code>, <code>sum</code>, <code>std</code>, <code>var</code>, <code>min</code>, <code>max</code>。
+                </li>
+                <li><b><code>expression</code></b>: 一个简单的数学表达式，如 <code>u</code> 或 <code>p*0.1</code>。</li>
+            </ul>
+            <div class="note">
+                <p><b>雷诺分解示例:</b>
+                <ol>
+                    <li>首先，使用此功能计算时间平均速度 <code>u_time_avg = mean(u)</code>。</li>
+                    <li>然后，使用上面的“逐帧派生变量”功能计算脉动速度: <code>u_fluctuation = u - u_time_avg</code>。</li>
+                </ol>
+                现在您就有了一个新的、随时间变化的“脉动速度”场可以进行可视化分析了。
                 </p>
             </div>
         </div>
 
         <!-- ==================== 全局常量 ==================== -->
         <div class="section-box">
-            <h3>2. 全局常量 (Global Constants) - 计算标量值</h3>
+            <h3>3. 全局常量 (Global Constants)</h3>
             <p>
                 此功能用于计算代表<b>整个数据集</b>（跨越所有时间、所有空间点）特征的<b>单个标量值</b>。
-                这些计算出的常量随后可以在<b>任何其他公式</b>中使用，包括可视化公式、派生变量公式，甚至可以用于定义其他常量。
             </p>
-
-            <h4>核心思想与计算模式</h4>
-            <p>引擎会自动分析您的公式，并选择两种最高效的计算路径之一：</p>
-            <ul>
-                <li>
-                    <b class="sql-mode">🚀 快速SQL模式:</b> 
-                    如果您的公式不包含任何空间运算函数 (<code>grad_x</code>, <code>curl</code> 等)，
-                    计算将完全在数据库内部通过一条聚合查询完成。这是<b>最快</b>的模式，几乎是瞬时的。
-                </li>
-                <li>
-                    <b class="parallel-mode">🐢 并行迭代模式:</b> 
-                    如果您的公式中检测到<b>任何空间运算函数</b>，引擎会自动切换到此模式。
-                    它会：
-                    <ol>
-                        <li>并行地遍历数据集的<b>每一帧</b>。</li>
-                        <li>在每一帧上，进行插值，计算空间场 (如涡量场)。</li>
-                        <li>对该帧的空间场结果进行聚合 (如求平均值)。</li>
-                        <li>最后，将所有帧的结果再次聚合 (取平均值)，得到最终的全局常量。</li>
-                    </ol>
-                    此模式会充分利用您所有的CPU核心，但对于大型数据集仍然可能需要一些时间。
-                </li>
-            </ul>
             
-            <h4>定义格式</h4>
-            <p>每一行定义一个常量，格式为: <code>new_constant_name = aggregate_function(expression)</code></p>
+            <h4>核心思想与用途</h4>
             <ul>
-                <li>
-                    <b><code>new_constant_name</code></b>:
-                    您为新常量起的名字 (例如: <code>tke_global_mean</code>)。命名规则同派生变量。
-                </li>
-                <li>
-                    <b><code>aggregate_function</code></b>:
-                    一个聚合函数，用于将表达式的大量计算结果汇集成一个单一值。支持:
+                <li><b>计算基础:</b> <b>所有</b>空间点 (x, y) 在<b>所有</b>时刻 t 的值的集合。</li>
+                <li><b>目的:</b> 计算一个能代表整个仿真过程的<b>单一数字</b>。</li>
+                <li><b>例子:</b>
                     <ul>
-                        <li><code>mean</code>: 平均值</li>
-                        <li><code>sum</code>: 总和</li>
-                        <li><code>std</code>: 标准差</li>
-                        <li><code>var</code>: 方差</li>
+                        <li>计算全局平均湍动能: <code>tke_global = mean(0.5 * (u**2 + v**2))</code></li>
+                        <li>计算整个流场的平均涡量: <code>avg_vorticity = mean(curl(u, v))</code></li>
                     </ul>
                 </li>
-                <li>
-                    <b><code>expression</code></b>:
-                    一个数学表达式，其结果将被聚合。表达式可以包含:
-                    <ol>
-                        <li>任何原始数据变量 (如 <code>u</code>, <code>p</code>)。</li>
-                        <li>任何<b>已经计算好</b>的全局常量 (包括在此文本框中、位于<b>当前行之上</b>的常量)。</li>
-                        <li>所有标准数学函数 (<code>sqrt</code>, <code>sin</code> 等)。</li>
-                        <li>所有空间运算函数 (<code>grad_x</code>, <code>div</code>, <code>curl</code> 等)。</li>
-                    </ol>
-                </li>
+                <li><b>工作方式:</b> 若不含空间运算，则使用单次SQL聚合。若包含空间运算（如<code>curl</code>），则会启动一个并行的、逐帧的计算过程。</li>
             </ul>
-
-            <h4>循序渐进的示例</h4>
-            <p>以下示例展示了如何一步步构建复杂的分析。假设您想计算雷诺应力和平均涡量。请按顺序将它们输入到文本框中。</p>
-            
-            <p>步骤 1: 计算全局平均速度 (使用 快速SQL模式)</p>
-            <p>u_global_mean = mean(u)</p>
-            <p>v_global_mean = mean(v)</p>
-            <br>
-            <p>步骤 2: 计算全局平均湍动能 (TKE) (使用 快速SQL模式)</p>
-            <p>tke_global_mean = mean(0.5 * (u<sup>2</sup> + v<sup>2</sup>))</p>
-            <br>
-            <p>步骤 3: 计算雷诺应力 (使用 快速SQL模式)</p>
-            <p>注意: 此处我们使用了上面刚刚定义的 u_global_mean 和 v_global_mean</p>
-            <p>reynolds_stress_uv = mean((u - u_global_mean) * (v - v_global_mean))</p>
-            <br>
-            <p>步骤 4: 计算全场平均涡量 (触发 并行迭代模式)</p>
-            <p>因为包含了 curl()，此计算会遍历所有帧</p>
-            <p>mean_vorticity = mean(curl(u, v))</p>
-            <br>
-            <p>步骤 5: 计算压力梯度方差 (触发 并行迭代模式)</p>
-            <p>这是一个更复杂的例子，计算了压力X向梯度的离散程度</p>
-            <p>pressure_gradient_variance = var(grad_x(p))</p>
-            <div class="note">
-                <p>
-                    <b>操作流程:</b>
-                    <ol>
-                        <li>在文本框中输入您的所有定义。</li>
-                        <li>点击“<b>保存定义并重新计算</b>”。</li>
-                        <li>程序会保存您的定义，然后按照从上到下的顺序计算每一个常量。</li>
-                        <li>计算结果会显示在下方的“统计结果与管理”区域，并立即可用于所有其他地方。</li>
-                    </ol>
-                </p>
-            </div>
+        </div>
+        
+        <div class="warning">
+            <p>
+                <b>总结与区分:</b>
+                <ul>
+                    <li><b>逐帧派生变量:</b> <code>f(point, time) -> value(point, time)</code>。结果随时间和空间变化。</li>
+                    <li><b>时间聚合变量:</b> <code>f(point, all_times) -> value(point)</code>。结果只随空间变化，不随时间变化。</li>
+                    <li><b>全局常量:</b> <code>f(all_points, all_times) -> single_value</code>。结果是一个不随任何因素变化的标量。</li>
+                </ul>
+            </p>
         </div>
     </body>
     </html>

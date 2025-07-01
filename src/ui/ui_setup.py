@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QSplitter, QGroupBox, QLabel, QComboBox, QLineEdit, QPushButton,
     QSlider, QSpinBox, QDoubleSpinBox, QCheckBox, QTextEdit,
-    QStatusBar, QToolBar, QScrollArea, QTabWidget, QFrame
+    QStatusBar, QToolBar, QScrollArea, QTabWidget, QFrame, QListWidget, QListWidgetItem
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QFont, QIcon
@@ -49,7 +49,6 @@ class UiMainWindow:
         self.tab_widget = QTabWidget()
         self.tab_widget.addTab(self._create_visualization_tab(parent_window), "可视化")
         self.tab_widget.addTab(self._create_analysis_tab(parent_window), "分析")
-        # NEW: Merged data processing tab
         self.tab_widget.addTab(self._create_data_processing_tab(parent_window), "数据处理")
         self.tab_widget.addTab(self._create_datamanagement_tab(parent_window), "数据管理")
         self.tab_widget.addTab(self._create_export_tab(parent_window), "导出与性能")
@@ -177,36 +176,53 @@ class UiMainWindow:
     def _create_analysis_tab(self, parent_window) -> QWidget:
         tab = QWidget(); layout = QVBoxLayout(tab); analysis_splitter = QSplitter(Qt.Orientation.Vertical)
         
+        # Main Probe Group
         probe_group = QGroupBox("数据探针"); probe_layout = QVBoxLayout(probe_group)
         coord_layout = QHBoxLayout(); coord_layout.addWidget(QLabel("鼠标坐标:")); self.probe_coord_label = QLabel("(0.00, 0.00)"); self.probe_coord_label.setFont(QFont("monospace")); coord_layout.addWidget(self.probe_coord_label); coord_layout.addStretch(); probe_layout.addLayout(coord_layout)
         self.probe_text = QTextEdit(); self.probe_text.setReadOnly(True); self.probe_text.setFont(QFont("Courier New", 9)); self.probe_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap); probe_layout.addWidget(self.probe_text)
         analysis_splitter.addWidget(probe_group)
 
+        # Tools and Floating Probe Container
         tools_container = QWidget(); tools_main_layout = QVBoxLayout(tools_container); tools_main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Interactive Tools Group
         tools_group = QGroupBox("分析工具"); tools_layout = QGridLayout(tools_group)
         self.pick_timeseries_btn = QPushButton("拾取时间序列点"); self.pick_timeseries_btn.setCheckable(True); tools_layout.addWidget(self.pick_timeseries_btn, 0, 0)
         self.draw_profile_btn = QPushButton("绘制剖面图"); self.draw_profile_btn.setCheckable(True); tools_layout.addWidget(self.draw_profile_btn, 0, 1)
         self.pick_by_coords_btn = QPushButton("按坐标拾取..."); tools_layout.addWidget(self.pick_by_coords_btn, 1, 0)
         self.draw_profile_by_coords_btn = QPushButton("按坐标绘制剖面..."); tools_layout.addWidget(self.draw_profile_by_coords_btn, 1, 1)
         self.analysis_help_btn = QPushButton("帮助 (?)"); self.analysis_help_btn.setToolTip("打开分析功能使用指南"); self.analysis_help_btn.clicked.connect(lambda: parent_window._show_help("analysis")); tools_layout.addWidget(self.analysis_help_btn, 2, 0, 1, 2)
-        tools_main_layout.addWidget(tools_group); tools_main_layout.addStretch(); analysis_splitter.addWidget(tools_container)
-        analysis_splitter.setSizes([300, 120]); layout.addWidget(analysis_splitter); return tab
+        tools_main_layout.addWidget(tools_group)
 
+        # Floating Probe Group
+        floating_probe_group = QGroupBox("悬浮探针显示"); fp_layout = QVBoxLayout(floating_probe_group)
+        fp_layout.addWidget(QLabel("勾选要在图表上悬浮显示的变量:"))
+        self.floating_probe_vars_list = QListWidget()
+        self.floating_probe_vars_list.setStyleSheet("QListWidget::item { margin: 3px; }")
+        fp_layout.addWidget(self.floating_probe_vars_list)
+        tools_main_layout.addWidget(floating_probe_group)
+
+        tools_main_layout.addStretch()
+        analysis_splitter.addWidget(tools_container)
+        
+        analysis_splitter.setSizes([300, 250])
+        layout.addWidget(analysis_splitter)
+        return tab
+        
     def _create_data_processing_tab(self, parent_window) -> QWidget:
         tab = QWidget(); layout = QVBoxLayout(tab); scroll_area = QScrollArea(); scroll_widget = QWidget(); scroll_layout = QVBoxLayout(scroll_widget)
         
-        # --- Main Info ---
         header_layout = QHBoxLayout()
-        info_label = QLabel("在此计算新的派生变量（数据列）或全局常量（标量）。"); info_label.setWordWrap(True)
+        info_label = QLabel("在此处通过多种方式计算新变量，结果将永久保存在项目中。"); info_label.setWordWrap(True)
         header_layout.addWidget(info_label, 1)
         self.dp_help_btn = QPushButton("?"); self.dp_help_btn.setFixedSize(25, 25); self.dp_help_btn.setToolTip("打开数据处理功能指南")
         self.dp_help_btn.clicked.connect(lambda: parent_window._show_help("data_processing"))
         header_layout.addWidget(self.dp_help_btn)
         scroll_layout.addLayout(header_layout)
 
-        # --- Derived Variables (New Columns) Group ---
-        compute_group = QGroupBox("派生变量 (新数据列)"); custom_layout = QVBoxLayout(compute_group)
-        info_label_1 = QLabel("基于<b>逐点数据</b>计算新变量，结果将作为<b>新列</b>永久保存在数据库中。"); info_label_1.setWordWrap(True); custom_layout.addWidget(info_label_1)
+        # --- Per-Frame Derived Variables (New Columns) Group ---
+        compute_group = QGroupBox("逐帧派生变量 (新数据列)"); custom_layout = QVBoxLayout(compute_group)
+        info_label_1 = QLabel("基于<b>每个数据点在各自时刻</b>的值计算新变量。"); info_label_1.setWordWrap(True); custom_layout.addWidget(info_label_1)
         form_layout = QGridLayout()
         form_layout.addWidget(QLabel("新变量名:"), 0, 0)
         self.new_variable_name_edit = QLineEdit(); self.new_variable_name_edit.setPlaceholderText("例: velocity_magnitude")
@@ -215,17 +231,31 @@ class UiMainWindow:
         self.new_variable_formula_edit = QLineEdit(); self.new_variable_formula_edit.setPlaceholderText("例: sqrt(u*u + v*v)")
         form_layout.addWidget(self.new_variable_formula_edit, 1, 1)
         custom_layout.addLayout(form_layout)
-        note_label = QLabel("<b>注意:</b> 公式必须使用 <b>SQLite兼容</b> 的语法和函数。"); note_label.setWordWrap(True); note_label.setStyleSheet("color: #555; font-size: 9pt;"); custom_layout.addWidget(note_label)
-        self.compute_and_add_btn = QPushButton("计算并添加列到数据库"); self.compute_and_add_btn.setEnabled(False)
+        self.compute_and_add_btn = QPushButton("计算并添加 (逐帧)"); self.compute_and_add_btn.setEnabled(False)
         custom_btn_layout = QHBoxLayout(); custom_btn_layout.addStretch(); custom_btn_layout.addWidget(self.compute_and_add_btn); custom_layout.addLayout(custom_btn_layout)
         scroll_layout.addWidget(compute_group)
 
+        # --- Time-Aggregated Variables ---
+        time_agg_group = QGroupBox("时间聚合变量 (新数据列)"); time_agg_layout = QVBoxLayout(time_agg_group)
+        info_label_2 = QLabel("基于<b>每个空间点在所有时刻</b>的值进行聚合计算。"); info_label_2.setWordWrap(True); time_agg_layout.addWidget(info_label_2)
+        time_agg_form = QGridLayout()
+        time_agg_form.addWidget(QLabel("新变量名:"), 0, 0)
+        self.new_time_agg_name_edit = QLineEdit(); self.new_time_agg_name_edit.setPlaceholderText("例: u_time_avg")
+        time_agg_form.addWidget(self.new_time_agg_name_edit, 0, 1)
+        time_agg_form.addWidget(QLabel("聚合公式:"), 1, 0)
+        self.new_time_agg_formula_edit = QLineEdit(); self.new_time_agg_formula_edit.setPlaceholderText("例: mean(u)")
+        time_agg_form.addWidget(self.new_time_agg_formula_edit, 1, 1)
+        time_agg_layout.addLayout(time_agg_form)
+        self.compute_and_add_time_agg_btn = QPushButton("计算并添加 (时间聚合)"); self.compute_and_add_time_agg_btn.setEnabled(False)
+        time_agg_btn_layout = QHBoxLayout(); time_agg_btn_layout.addStretch(); time_agg_btn_layout.addWidget(self.compute_and_add_time_agg_btn); time_agg_layout.addLayout(time_agg_btn_layout)
+        scroll_layout.addWidget(time_agg_group)
+
         # --- Global Constants (Scalars) Group ---
         custom_group = QGroupBox("全局常量 (标量值)"); custom_layout_2 = QVBoxLayout(custom_group)
-        custom_info = QLabel("基于<b>整个数据集</b>计算新的全局常量，每行一个。定义和结果将被永久保存。"); custom_info.setWordWrap(True); custom_layout_2.addWidget(custom_info)
+        custom_info = QLabel("基于<b>整个数据集所有点</b>进行聚合，计算单个标量值。"); custom_info.setWordWrap(True); custom_layout_2.addWidget(custom_info)
         self.custom_stats_input = QTextEdit(); self.custom_stats_input.setFont(QFont("Courier New", 9)); self.custom_stats_input.setPlaceholderText("tke_global = mean(0.5 * (u**2 + v**2))\navg_vorticity = mean(curl(u, v))")
-        self.custom_stats_input.setFixedHeight(120); custom_layout_2.addWidget(self.custom_stats_input)
-        self.save_and_calc_custom_stats_btn = QPushButton("保存定义并重新计算"); self.save_and_calc_custom_stats_btn.setEnabled(False); custom_btn_layout_2 = QHBoxLayout(); custom_btn_layout_2.addStretch(); custom_btn_layout_2.addWidget(self.save_and_calc_custom_stats_btn); custom_layout_2.addLayout(custom_btn_layout_2)
+        self.custom_stats_input.setFixedHeight(100); custom_layout_2.addWidget(self.custom_stats_input)
+        self.save_and_calc_custom_stats_btn = QPushButton("保存定义并计算 (全局)"); self.save_and_calc_custom_stats_btn.setEnabled(False); custom_btn_layout_2 = QHBoxLayout(); custom_btn_layout_2.addStretch(); custom_btn_layout_2.addWidget(self.save_and_calc_custom_stats_btn); custom_layout_2.addLayout(custom_btn_layout_2)
         scroll_layout.addWidget(custom_group)
 
         # --- Results and Basic Stats Group ---

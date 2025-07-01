@@ -1,3 +1,4 @@
+
 from PyQt6.QtGui import QIcon
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -5,8 +6,9 @@ import os
 import logging
 from typing import Optional
 import numpy as np
-from PyQt6.QtWidgets import QMainWindow, QMessageBox, QFileDialog, QLineEdit, QMenu, QInputDialog
+from PyQt6.QtWidgets import QMainWindow, QMessageBox, QFileDialog, QLineEdit, QMenu, QInputDialog, QToolTip
 from PyQt6.QtCore import Qt, QSettings, QPoint, QTimer
+from PyQt6.QtGui import QCursor
 
 from src.core.data_manager import DataManager
 from src.core.formula_engine import FormulaEngine
@@ -117,6 +119,7 @@ class MainWindow(QMainWindow):
         self.ui.plot_widget.profile_line_defined.connect(self._on_profile_line_defined)
         self.ui.plot_widget.plot_rendered.connect(self._on_plot_rendered)
         self.ui.plot_widget.interpolation_error.connect(self._on_interpolation_error)
+        self.ui.plot_widget.mouse_left_plot.connect(QToolTip.hideText)
         
         # Menu & Toolbar
         self.ui.open_data_dir_action.triggered.connect(self._change_project_directory)
@@ -171,7 +174,8 @@ class MainWindow(QMainWindow):
             self.ui.x_axis_formula, self.ui.y_axis_formula, self.ui.chart_title_edit,
             self.ui.heatmap_formula, self.ui.contour_formula,
             self.ui.vector_u_formula, self.ui.vector_v_formula,
-            self.ui.new_variable_formula_edit, self.ui.filter_text_edit
+            self.ui.new_variable_formula_edit, self.ui.filter_text_edit,
+            self.ui.new_time_agg_formula_edit # Added for new feature
         ]
 
     def _connect_auto_apply_widgets(self):
@@ -236,9 +240,15 @@ class MainWindow(QMainWindow):
         self._update_db_info()
         frame_count = self.data_manager.get_frame_count()
         if frame_count > 0:
+            all_vars = self.data_manager.get_variables()
             self.stats_handler.load_definitions_and_stats()
             self.playback_handler.update_time_axis_candidates()
-            self.formula_engine.update_allowed_variables(self.data_manager.get_variables())
+            self.formula_engine.update_allowed_variables(all_vars)
+            
+            # Populate floating probe list
+            self.ui.floating_probe_vars_list.clear()
+            self.ui.floating_probe_vars_list.addItems(sorted(all_vars))
+
             self.ui.time_slider.setMaximum(frame_count - 1)
             self.ui.video_start_frame.setMaximum(frame_count - 1); self.ui.video_end_frame.setMaximum(frame_count - 1); self.ui.video_end_frame.setValue(frame_count - 1)
             for w in [self.ui.time_avg_start_slider, self.ui.time_avg_start_spinbox, self.ui.time_avg_end_slider, self.ui.time_avg_end_spinbox]: w.setMaximum(frame_count - 1)
@@ -247,11 +257,13 @@ class MainWindow(QMainWindow):
             self.template_handler.populate_template_combobox()
             self.theme_handler.populate_theme_combobox()
             self.ui.compute_and_add_btn.setEnabled(True)
+            self.ui.compute_and_add_time_agg_btn.setEnabled(True)
             self._force_refresh_plot(reset_view=True)
             self.ui.status_bar.showMessage(f"项目加载成功，共 {frame_count} 帧数据。", 5000)
         else:
             self.ui.status_bar.showMessage("项目加载失败：数据库为空或无法读取。", 5000); QMessageBox.warning(self, "数据为空", "项目加载失败：数据库为空或无法读取。")
             self.ui.compute_and_add_btn.setEnabled(False)
+            self.ui.compute_and_add_time_agg_btn.setEnabled(False)
     
     def _update_db_info(self):
         info = self.data_manager.get_database_info()
@@ -386,9 +398,19 @@ class MainWindow(QMainWindow):
         self.ui.status_bar.showMessage(f"错误: {message}", 5000); QMessageBox.critical(self, "发生错误", message)
 
     def _on_mouse_moved(self, x, y): self.ui.probe_coord_label.setText(f"({x:.3e}, {y:.3e})")
+    
     def _on_probe_data(self, data):
+        self._update_main_probe_display(data)
+        self._update_floating_probe_display(data)
+
+    def _update_main_probe_display(self, data):
+        # Preserve scroll position
+        scrollbar = self.ui.probe_text.verticalScrollBar()
+        scroll_position = scrollbar.value()
+
         lines = []
-        if data.get('variables'): lines.extend([f"{'--- 最近原始数据点 ---':^40}"] + [f"{k:<18s} {v:12.6e}" if isinstance(v, (int, float)) else f"{k:<18s} {v}" for k, v in data['variables'].items()] + [""])
+        if data.get('variables'):
+            lines.extend([f"{'--- 最近原始数据点 ---':^40}"] + [f"{k:<18s} {v:12.6e}" if isinstance(v, (int, float)) else f"{k:<18s} {v}" for k, v in data['variables'].items()] + [""])
         if data.get('interpolated'):
             config = self.config_handler.get_current_config()
             lines.append(f"{'--- 鼠标位置插值数据 ---':^40}")
@@ -400,6 +422,42 @@ class MainWindow(QMainWindow):
                     val_str = f"{value:12.6e}" if isinstance(value, (int,float)) and not np.isnan(value) else 'N/A'
                     lines.append(f"{probe_map[key]:<25s} {val_str}")
         self.ui.probe_text.setPlainText("\n".join(lines))
+        scrollbar.setValue(scroll_position)
+
+    def _update_floating_probe_display(self, data):
+        checked_items = [self.ui.floating_probe_vars_list.item(i) for i in range(self.ui.floating_probe_vars_list.count()) if self.ui.floating_probe_vars_list.item(i).checkState() == Qt.CheckState.Checked]
+        
+        if not checked_items:
+            QToolTip.hideText()
+            return
+
+        probe_html_lines = ["<div style='background-color: #ffffdd; border: 1px solid black; padding: 4px; font-family: Monospace; font-size: 9pt;'>"]
+        
+        raw_vars = data.get('variables', {})
+        interp_vars = data.get('interpolated', {})
+
+        for item in checked_items:
+            var_name = item.text()
+            value = raw_vars.get(var_name, 'N/A')
+            
+            # Special handling for interpolated fields if raw doesn't exist (e.g., curl, div)
+            if value == 'N/A':
+                 # Check common interpolated names
+                 if var_name in interp_vars: value = interp_vars[var_name]
+                 elif f"{var_name}_data" in self.ui.plot_widget.interpolated_results:
+                     val = interp_vars.get(var_name)
+                     if val is not None: value = val
+            
+            val_str = f"{value:.4e}" if isinstance(value, (int, float)) and not np.isnan(value) else str(value)
+            probe_html_lines.append(f"<b>{var_name:<15}</b>: {val_str}")
+
+        probe_html_lines.append("</div>")
+        
+        if len(probe_html_lines) > 2: # Has at least one variable
+             QToolTip.showText(QCursor.pos(), "<br>".join(probe_html_lines), self.ui.plot_widget)
+        else:
+             QToolTip.hideText()
+
 
     def _on_value_picked(self, mode, value):
         target = self.ui.heatmap_vmin if mode == PickerMode.VMIN else self.ui.heatmap_vmax
