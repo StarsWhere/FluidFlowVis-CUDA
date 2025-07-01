@@ -1,3 +1,4 @@
+from PyQt6.QtGui import QIcon
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
@@ -52,6 +53,7 @@ class MainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
+        self.setWindowIcon(QIcon("png/icon.png")) # 设置主窗口图标
         
         self.settings = QSettings("StarsWhere", "InterVis")
         self.data_manager = DataManager()
@@ -322,7 +324,8 @@ class MainWindow(QMainWindow):
         self.ui.pick_timeseries_btn.setChecked(False)
         if self.timeseries_dialog and self.timeseries_dialog.isVisible(): self.timeseries_dialog.close()
         filter_clause = self.data_manager.global_filter_clause if self.ui.filter_enabled_checkbox.isChecked() else ""
-        self.timeseries_dialog = TimeSeriesDialog(coords, self.data_manager, filter_clause, self); self.timeseries_dialog.show()
+        self.timeseries_dialog = TimeSeriesDialog(coords, self.data_manager, filter_clause, self.output_dir, self)
+        self.timeseries_dialog.show()
 
     def _on_profile_line_defined(self, start_point, end_point):
         self.ui.draw_profile_btn.setChecked(False)

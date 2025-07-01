@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -33,7 +32,7 @@ class StatsHandler:
         self.ui.recalc_basic_stats_btn.clicked.connect(self.start_global_stats_calculation)
         self.ui.save_and_calc_custom_stats_btn.clicked.connect(self.start_custom_stats_calculation)
         self.ui.export_stats_btn.clicked.connect(self.export_global_stats)
-        self.ui.dp_help_btn.clicked.connect(lambda: self.main_window._show_help("data_processing"))
+        # REMOVED: self.ui.dp_help_btn.clicked.connect(...) to prevent double signal connection
 
     def reset_global_stats(self):
         """当数据重载时调用，重置统计信息和UI状态。"""

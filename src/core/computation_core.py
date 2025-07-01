@@ -16,18 +16,37 @@ from src.utils.gpu_utils import is_gpu_available, evaluate_formula_gpu
 logger = logging.getLogger(__name__)
 
 def _interpolate_field(points, values, grid_x, grid_y):
-    """辅助函数，执行一次插值。"""
+    """
+    辅助函数，执行一次插值，并使用最近邻方法填充边界外的NaN值。
+    """
     if values is None:
         return None
     valid_indices = ~np.isnan(points).any(axis=1) & ~np.isnan(values)
     filtered_points = points[valid_indices]
     filtered_values = values[valid_indices]
     
-    if filtered_points.size == 0 or filtered_values.size == 0:
-        return np.full_like(grid_x, np.nan)
-        
+    if filtered_points.shape[0] < 3:
+        logger.warning("有效插值点少于3个，无法进行线性插值，将回退到最近邻插值。")
+        if filtered_points.size == 0 or filtered_values.size == 0:
+            return np.full_like(grid_x, np.nan)
+        try:
+            return griddata(filtered_points, filtered_values, (grid_x, grid_y), method='nearest')
+        except QhullError:
+             raise ValueError("输入点共线或退化，无法生成插值网格。")
+
     try:
-        return griddata(filtered_points, filtered_values, (grid_x, grid_y), method='linear')
+        # 1. 执行主要的线性插值
+        grid = griddata(filtered_points, filtered_values, (grid_x, grid_y), method='linear')
+        
+        # 2. (关键优化) 检查并填充边界外的NaN值
+        if np.isnan(grid).any():
+            # 使用最近邻插值来填充线性插值无法覆盖的区域 (即凸包外的区域)
+            grid_nearest = griddata(filtered_points, filtered_values, (grid_x, grid_y), method='nearest')
+            nan_indices = np.isnan(grid)
+            grid[nan_indices] = grid_nearest[nan_indices]
+            
+        return grid
+
     except QhullError:
         logger.error("插值时发生QhullError，输入点可能共线。")
         raise ValueError("输入点共线或退化，无法生成2D插值网格。")
@@ -117,6 +136,7 @@ def _evaluate_spatial_formula_recursively(
     if op in ['grad_x', 'grad_y', 'laplacian']:
         if len(arg_grids) != 1: raise ValueError(f"{op}需要1个参数，但收到了{len(arg_grids)}")
         field = arg_grids[0]
+        if field is None: return None # Propagate None if interpolation failed
         # 使用np.gradient计算两个方向的梯度
         grad_gy, grad_gx = np.gradient(field, grid_y[:, 0], grid_x[0, :])
         if op == 'grad_x': return grad_gx
@@ -130,6 +150,7 @@ def _evaluate_spatial_formula_recursively(
     elif op in ['div', 'curl']:
         if len(arg_grids) != 2: raise ValueError(f"{op}需要2个参数，但收到了{len(arg_grids)}")
         u, v = arg_grids
+        if u is None or v is None: return None # Propagate None
         grad_u_y, grad_u_x = np.gradient(u, grid_y[:, 0], grid_x[0, :])
         grad_v_y, grad_v_x = np.gradient(v, grid_y[:, 0], grid_x[0, :])
         if op == 'div': return grad_u_x + grad_v_y

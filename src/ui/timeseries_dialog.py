@@ -1,4 +1,4 @@
-
+from PyQt6.QtGui import QIcon
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -19,11 +19,13 @@ logger = logging.getLogger(__name__)
 class TimeSeriesDialog(QDialog):
     """一个显示时间序列及其FFT的对话框。"""
     
-    def __init__(self, point_coords: Tuple[float, float], data_manager, filter_clause: str, parent=None):
+    def __init__(self, point_coords: Tuple[float, float], data_manager, filter_clause: str, output_dir: str, parent=None):
         super().__init__(parent)
+        self.setWindowIcon(QIcon("png/icon.png")) # 设置窗口图标
         self.dm = data_manager
         self.point_coords = point_coords
         self.filter_clause = filter_clause
+        self.output_dir = output_dir
         self.current_df = None
         
         self.setWindowTitle(f"时间序列分析 @ (X: {point_coords[0]:.2e}, Y: {point_coords[1]:.2e})")
@@ -143,21 +145,19 @@ class TimeSeriesDialog(QDialog):
     def export_fft_results(self):
         if not hasattr(self, 'xf') or not hasattr(self, 'yf') or self.xf is None or self.yf is None:
             logger.warning("没有可导出的 FFT 结果。请先计算 FFT。")
+            QMessageBox.warning(self, "无数据", "没有可导出的 FFT 结果。请先计算 FFT。")
             return
 
         import pandas as pd
         
-        output_dir = getattr(self.dm, 'output_dir', os.path.join(os.getcwd(), 'output'))
-        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(self.output_dir, exist_ok=True)
 
         selected_variable = self.variable_combo.currentText()
         x_coord, y_coord = self.point_coords
         
-        default_filename = f"fft_results_x{x_coord:.2e}_y{y_coord:.2e}_{selected_variable}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        file_path, _ = QFileDialog.getSaveFileName(self, "保存 FFT 结果", os.path.join(output_dir, default_filename), "CSV Files (*.csv)")
-        
-        if not file_path:
-            return
+        # 自动生成文件名并直接保存
+        filename = f"fft_results_x{x_coord:.2e}_y{y_coord:.2e}_{selected_variable}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        file_path = os.path.join(self.output_dir, filename)
 
         try:
             N = len(self.yf)

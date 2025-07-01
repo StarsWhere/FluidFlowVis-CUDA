@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
@@ -100,10 +99,10 @@ class DataManager(QObject):
         self.set_time_variable('frame_index' if 'frame_index' in self.get_variables() else self.get_time_candidates()[0])
         logger.info("数据库设置完成。")
 
-    def refresh_schema_info(self):
+    def refresh_schema_info(self, include_id=False):
         """当数据库表结构发生变化时（如添加列），强制刷新元数据。"""
         self._variables = None; self._frame_count = None; self._sorted_time_values = None
-        self.get_variables(); self.get_frame_count()
+        self.get_variables(include_id=include_id); self.get_frame_count()
         logger.info("DataManager schema info has been refreshed.")
 
     def set_global_filter(self, filter_text: str):
@@ -161,7 +160,7 @@ class DataManager(QObject):
         
         try:
             conn = self.get_db_connection()
-            all_known_vars = self.get_variables()
+            all_known_vars = self.get_variables(include_id=True)
             if not all_known_vars: return pd.DataFrame()
 
             cols_to_select = ", ".join([f'"{var}"' for var in all_known_vars])
@@ -266,7 +265,7 @@ class DataManager(QObject):
             "global_filter": self.global_filter_clause
         }
 
-    def get_variables(self) -> List[str]:
+    def get_variables(self, include_id: bool = False) -> List[str]:
         if self._variables is None:
             if not self.is_database_ready(): return []
             try:
@@ -274,9 +273,10 @@ class DataManager(QObject):
                 cursor = conn.execute("PRAGMA table_info(timeseries_data);")
                 all_cols = [row[1] for row in cursor.fetchall()]
                 conn.close()
-                excluded_cols = {'id'}
+                excluded_cols = set() if include_id else {'id'}
                 self._variables = sorted([col for col in all_cols if col not in excluded_cols])
-            except Exception: self._variables = []
+            except Exception:
+                self._variables = []
         return self._variables
 
     def get_time_candidates(self) -> List[str]:

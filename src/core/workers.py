@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -14,6 +13,7 @@ import numpy as np
 from typing import List, Dict, Any, Tuple
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from scipy.interpolate import interpn
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
@@ -25,7 +25,74 @@ from src.core.computation_core import compute_gridded_field
 
 logger = logging.getLogger(__name__)
 
+
 # --- Helper function for parallel processing (must be at top level) ---
+
+def _parallel_spatial_derived_var_calc(args: Tuple) -> List[Tuple[float, int]]:
+    """
+    为单个帧计算空间公式，并将结果映射回原始点ID。
+    此函数设计用于在单独的进程中运行。
+    """
+    time_value, db_path, time_variable, new_var_formula, x_formula, y_formula, grid_res, all_globals = args
+    # 每个子进程创建自己的实例
+    dm = DataManager()
+    dm.setup_project_directory(os.path.dirname(db_path))
+    dm.set_time_variable(time_variable)
+    formula_engine = FormulaEngine()
+    formula_engine.update_allowed_variables(dm.get_variables())
+    formula_engine.update_custom_global_variables(all_globals)
+    
+    try:
+        # 在get_frame_data之前刷新schema，确保'id'列可用
+        dm.refresh_schema_info(include_id=True)
+        frame_data = dm.get_frame_data(dm._get_sorted_time_values().index(time_value))
+
+        if frame_data is None or frame_data.empty:
+            return []
+
+        # 使用核心计算函数获取最终的网格化场
+        computation_result = compute_gridded_field(
+            frame_data, new_var_formula, x_formula, y_formula, formula_engine, grid_res, use_gpu=False
+        )
+        
+        result_grid = computation_result.get('result_data')
+        grid_x = computation_result.get('grid_x')
+        grid_y = computation_result.get('grid_y')
+
+        if result_grid is None or grid_x is None or grid_y is None or np.all(np.isnan(result_grid)) :
+            logger.warning(f"时间为 {time_value} 的帧未能为公式 '{new_var_formula}' 生成有效的网格")
+            return []
+            
+        # 获取此帧的原始坐标以对网格进行采样
+        original_x = formula_engine.evaluate_formula(frame_data, x_formula)
+        original_y = formula_engine.evaluate_formula(frame_data, y_formula)
+        points_to_sample = np.vstack([original_y, original_x]).T
+        
+        # 用于interpn的网格坐标
+        grid_coords = (grid_y[:, 0], grid_x[0, :])
+        
+        # 在原始数据点位置对计算出的网格进行采样
+        sampled_values = interpn(grid_coords, result_grid, points_to_sample, method='linear', bounds_error=False, fill_value=np.nan)
+        
+        # 将原始ID与新计算的值组合
+        if 'id' not in frame_data.columns:
+            logger.error(f"致命错误：在时间为 {time_value} 的帧数据中未找到 'id' 列。无法映射结果。")
+            return []
+            
+        point_ids = frame_data['id'].values
+        
+        # 为UPDATE查询返回一个 (new_value, point_id) 列表
+        update_data = []
+        for i in range(len(point_ids)):
+            if not np.isnan(sampled_values[i]):
+                update_data.append((float(sampled_values[i]), int(point_ids[i])))
+        
+        return update_data
+
+    except Exception as e:
+        logger.error(f"时间值为 {time_value} 的子进程在空间计算期间失败: {e}", exc_info=True)
+        return []
+
 def _parallel_spatial_calc(args: Tuple) -> Tuple[Any, float]:
     """
     可被序列化并由子进程执行的函数。
@@ -100,6 +167,7 @@ class DatabaseImportWorker(QThread):
                     {", ".join(cols_def_parts)}
                 );
             """
+            conn.execute("DROP TABLE IF EXISTS timeseries_data;") # Ensure fresh start
             conn.execute(table_def)
             conn.commit()
 
@@ -111,13 +179,14 @@ class DatabaseImportWorker(QThread):
                 df['frame_index'] = i
                 df['source_file'] = filename
                 # Ensure columns match the table schema order
-                df = df[['frame_index', 'source_file'] + all_cols]
-                df.to_sql('timeseries_data', conn, if_exists='append', index=False)
+                df_ordered = df[['frame_index', 'source_file'] + all_cols]
+                df_ordered.to_sql('timeseries_data', conn, if_exists='append', index=False)
             
             if self.is_cancelled: conn.close(); os.remove(self.dm.db_path); return
 
             self.progress.emit(len(csv_files) + 1, len(csv_files) + 2, "创建索引...")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_frame ON timeseries_data (frame_index);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_coords ON timeseries_data (x, y);")
             conn.commit(); conn.close()
             
             self.log_message.emit("导入完成，正在计算基础统计数据...")
@@ -132,8 +201,11 @@ class DatabaseImportWorker(QThread):
         except Exception as e:
             logger.error(f"数据库导入失败: {e}", exc_info=True)
             self.error.emit(str(e))
-            if os.path.exists(self.dm.db_path):
-                try: os.remove(self.dm.db_path)
+            if self.dm.db_path and os.path.exists(self.dm.db_path):
+                try: 
+                    # Ensure connection is closed before removing
+                    if 'conn' in locals() and conn: conn.close()
+                    os.remove(self.dm.db_path)
                 except Exception as ce: logger.error(f"清理失败的DB文件时出错: {ce}")
 
 
@@ -144,23 +216,36 @@ class DerivedVariableWorker(QThread):
 
     def __init__(self, data_manager: DataManager, new_name: str, formula: str, parent=None):
         super().__init__(parent)
-        self.dm = data_manager; self.new_name = new_name; self.formula = formula
+        self.dm = data_manager
+        self.new_name = new_name
+        self.formula = formula
+        self.formula_engine = FormulaEngine()
 
     def run(self):
+        conn = None
+        safe_name = f'"{self.new_name}"'
         try:
-            self.progress.emit(0, 3, "步骤 1/3: 修改数据库表结构...")
             conn = self.dm.get_db_connection()
-            safe_name = f'"{self.new_name}"'
-            conn.execute(f"ALTER TABLE timeseries_data ADD COLUMN {safe_name} REAL;")
-            conn.commit()
-            
-            self.progress.emit(1, 3, "步骤 2/3: 批量计算新列数据...")
-            update_query = f"UPDATE timeseries_data SET {safe_name} = ({self.formula});"
-            logger.info(f"执行SQL更新: {update_query}")
-            conn.execute(update_query)
-            conn.commit(); conn.close()
+            cursor = conn.cursor()
 
+            cursor.execute("PRAGMA table_info(timeseries_data);")
+            if any(col[1] == self.new_name for col in cursor.fetchall()):
+                logger.info(f"已存在的列 '{self.new_name}' 已被删除，将重新计算。")
+                cursor.execute(f"ALTER TABLE timeseries_data DROP COLUMN {safe_name};")
+
+            self.progress.emit(0, 3, "步骤 1/3: 修改数据库表结构...")
+            cursor.execute(f"ALTER TABLE timeseries_data ADD COLUMN {safe_name} REAL;")
+            conn.commit()
+
+            if any(f in self.formula for f in self.formula_engine.spatial_functions):
+                logger.info(f"检测到空间运算，切换到逐帧计算模式: {self.formula}")
+                self._run_spatial_computation(conn, safe_name)
+            else:
+                logger.info(f"使用快速SQL模式计算: {self.formula}")
+                self._run_sql_computation(conn, safe_name)
+            
             self.progress.emit(2, 3, f"步骤 3/3: 计算新变量 '{self.new_name}' 的统计数据...")
+            self.dm.refresh_schema_info()
             stats_worker = GlobalStatsWorker(self.dm, [self.new_name])
             stats_worker.error.connect(lambda e: logger.error(f"计算新变量统计时出错: {e}"))
             stats_worker.run()
@@ -171,6 +256,62 @@ class DerivedVariableWorker(QThread):
         except Exception as e:
             logger.error(f"计算派生变量 '{self.new_name}' 失败: {e}", exc_info=True)
             self.error.emit(str(e))
+            if conn and self.new_name:
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute(f"ALTER TABLE timeseries_data DROP COLUMN {safe_name};")
+                    conn.commit()
+                    logger.info(f"计算失败后，已清理添加的列 '{self.new_name}'。")
+                except Exception as cleanup_e:
+                    logger.error(f"清理失败列时出错: {cleanup_e}")
+        finally:
+            if conn:
+                conn.close()
+    
+    def _run_sql_computation(self, conn, safe_name):
+        self.progress.emit(1, 3, "步骤 2/3: 批量计算新列数据 (SQL)...")
+        update_query = f"UPDATE timeseries_data SET {safe_name} = ({self.formula});"
+        logger.info(f"执行SQL更新: {update_query}")
+        conn.execute(update_query)
+        conn.commit()
+
+    def _run_spatial_computation(self, conn, safe_name):
+        self.progress.emit(1, 3, "步骤 2/3: 准备并行空间计算...")
+
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(timeseries_data);")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'id' not in columns:
+            raise RuntimeError("数据表 'timeseries_data' 必须包含 'id' 主键才能进行空间变量更新。")
+
+        time_values = self.dm._get_sorted_time_values()
+        total_frames = len(time_values)
+        if total_frames == 0: return
+
+        all_globals = self.dm.global_stats.copy()
+        x_formula, y_formula = 'x', 'y'
+        grid_res = (150, 150)
+
+        tasks = [(t_val, self.dm.db_path, self.dm.time_variable, self.formula, x_formula, y_formula, grid_res, all_globals) for t_val in time_values]
+        all_update_data = []
+        processed_count = 0
+        
+        with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+            future_to_frame = {executor.submit(_parallel_spatial_derived_var_calc, task): task[0] for task in tasks}
+            for future in as_completed(future_to_frame):
+                frame_results = future.result()
+                if frame_results: all_update_data.extend(frame_results)
+                processed_count += 1
+                self.progress.emit(1, 3, f"步骤 2/3: 并行计算帧 {processed_count}/{total_frames}...")
+
+        if not all_update_data:
+            raise ValueError("空间运算未能对任何点计算出有效结果。请检查公式和数据。")
+
+        self.progress.emit(1, 3, f"步骤 2/3: 将 {len(all_update_data)} 个计算结果写回数据库...")
+        update_query = f"UPDATE timeseries_data SET {safe_name} = ? WHERE id = ?"
+        cursor.executemany(update_query, all_update_data)
+        conn.commit()
+
 
 class BatchExportWorker(QThread):
     progress = pyqtSignal(int, int, str)
@@ -236,7 +377,7 @@ class GlobalStatsWorker(QThread):
     def run(self):
         try:
             # Filter out non-numeric columns like 'source_file'
-            numeric_vars = [v for v in self.vars_to_calc if v != 'source_file']
+            numeric_vars = [v for v in self.vars_to_calc if v != 'source_file' and v != 'id']
             if not numeric_vars:
                 self.finished.emit()
                 return

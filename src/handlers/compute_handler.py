@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -65,18 +64,15 @@ class ComputeHandler:
         if self.compute_progress_dialog:
             self.compute_progress_dialog.accept()
 
-        self.dm.refresh_schema_info()
-        self.dm.load_global_stats() # Reload to get new stats
-        self.formula_engine.update_allowed_variables(self.dm.get_variables())
-        self.formula_engine.update_custom_global_variables(self.dm.global_stats)
-        self.main_window.stats_handler.update_stats_display() 
-        self.main_window.playback_handler.update_time_axis_candidates() # Update time axis combo
-        
         new_name = self.ui.new_variable_name_edit.text().strip()
-        QMessageBox.information(self.main_window, "计算完成", f"新变量 '{new_name}' 已成功计算并添加到数据库，其基础统计数据也已更新。")
+        QMessageBox.information(self.main_window, "计算完成", f"新变量 '{new_name}' 已成功计算并添加到数据库。正在刷新应用程序状态...")
         
-        self.ui.new_variable_name_edit.clear(); self.ui.new_variable_formula_edit.clear()
-        self.main_window._trigger_auto_apply()
+        # Perform a full "soft reload" to update all UI and data components
+        self.main_window._load_project_data()
+        
+        # Clear the input fields for the next operation
+        self.ui.new_variable_name_edit.clear()
+        self.ui.new_variable_formula_edit.clear()
 
     def on_computation_error(self, error_msg: str):
         """当Worker遇到错误时调用。"""
