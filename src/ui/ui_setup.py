@@ -21,7 +21,7 @@ from src.core.constants import VectorPlotType, StreamlineColor, PickerMode
 class UiMainWindow:
     """此类负责创建和布局主窗口的所有UI组件。"""
     def setup_ui(self, main_window: QMainWindow, formula_engine):
-        main_window.setWindowTitle("InterVis v3.4-ProFinal")
+        main_window.setWindowTitle("InterVis v3.5-ProFinal")
         main_window.setGeometry(100, 100, 1600, 950)
         
         central_widget = QWidget()

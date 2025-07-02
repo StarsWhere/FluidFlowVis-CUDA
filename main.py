@@ -22,13 +22,13 @@ def main():
     try:
         app = QApplication(sys.argv)
         app.setApplicationName("InterVis")
-        app.setApplicationVersion("3.4-ProFinal") # 版本号更新
+        app.setApplicationVersion("3.5-ProFinal") # 版本号更新
         app.setOrganizationName("StarsWhere")
         
         main_window = MainWindow()
         main_window.show()
         
-        logger.info("InterVis v3.4-ProFinal 启动成功")
+        logger.info("InterVis v3.5-ProFinal 启动成功")
         sys.exit(app.exec())
         
     except Exception as e:
