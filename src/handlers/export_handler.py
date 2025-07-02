@@ -37,7 +37,7 @@ class ExportHandler:
         self.ui.batch_export_btn.clicked.connect(self.start_batch_export)
         self.ui.set_output_dir_action.triggered.connect(self._change_output_directory)
         self.ui.change_output_dir_btn.clicked.connect(self._change_output_directory)
-        self.ui.export_data_csv_btn.clicked.connect(self.export_filtered_data_to_csv)
+        self.ui.export_stats_btn.clicked.connect(self.export_filtered_data_to_csv)
 
     def set_output_dir(self, directory: str):
         self.output_dir = directory

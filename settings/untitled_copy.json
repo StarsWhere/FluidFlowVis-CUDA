@@ -11,21 +11,21 @@
     },
     "heatmap": {
         "enabled": true,
-        "formula": "p",
-        "colormap": "coolwarm",
+        "formula": "",
+        "colormap": "viridis",
         "vmin": null,
         "vmax": null
     },
     "contour": {
-        "enabled": false,
-        "formula": "p",
+        "enabled": true,
+        "formula": "",
         "levels": 10,
         "colors": "black",
-        "linewidths": 0.8,
+        "linewidths": 1.0,
         "show_labels": true
     },
     "vector": {
-        "enabled": false,
+        "enabled": true,
         "type": "STREAMLINE",
         "u_formula": "",
         "v_formula": "",
@@ -41,8 +41,8 @@
     },
     "analysis": {
         "filter": {
-            "enabled": true,
-            "text": "`x` <= 0.0001"
+            "enabled": false,
+            "text": ""
         },
         "time_average": {
             "enabled": false,
@@ -57,12 +57,12 @@
         "dpi": 300,
         "video_fps": 15,
         "video_start_frame": 0,
-        "video_end_frame": 9,
+        "video_end_frame": 0,
         "video_grid_w": 300,
         "video_grid_h": 300
     },
     "performance": {
-        "gpu": true,
+        "gpu": false,
         "cache": 100
     }
 }

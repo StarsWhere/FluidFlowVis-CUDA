@@ -1,273 +1,197 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-派生变量计算处理器
+后台工作线程模块
 """
+import os
+import json
 import logging
+import pandas as pd
+import sqlite3
 import re
-from typing import List, Tuple
-from collections import deque
-from PyQt6.QtWidgets import QMessageBox
-from PyQt6.QtCore import QEventLoop
-from src.ui.dialogs import StatsProgressDialog
-from src.core.workers import DerivedVariableWorker, TimeAggregatedVariableWorker
+import numpy as np
+from typing import List, Dict, Any, Tuple
+from datetime import datetime
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
+from scipy.interpolate import interpn
+import shutil
+
+from PyQt6.QtCore import QThread, pyqtSignal
+
+import pyarrow.parquet as pq
+import pyarrow.dataset as ds
+import pyarrow as pa
+
+from src.core.data_manager import DataManager
+from src.core.statistics_calculator import StatisticsCalculator
+from src.visualization.video_exporter import VideoExportWorker
+from src.core.formula_engine import FormulaEngine
+from src.core.computation_core import compute_gridded_field
 
 logger = logging.getLogger(__name__)
 
-class ComputeHandler:
-    """处理与动态计算新变量并将其添加到数据库相关的逻辑。"""
 
-    def __init__(self, main_window, ui, data_manager, formula_engine):
-        self.main_window = main_window
-        self.ui = ui
-        self.dm = data_manager
-        self.formula_engine = formula_engine
-        
-        self.compute_progress_dialog = None
-        self.compute_worker = None
+# --- Helper functions for parallel processing (must be at top level) ---
+# NOTE: These are still placeholders and will be re-implemented later.
+def _parallel_spatial_calc(args: Tuple) -> Tuple[Any, float]:
+    return 0, np.nan
 
-    def connect_signals(self):
-        """连接此处理器管理的UI组件的信号。"""
-        self.ui.compute_and_add_btn.clicked.connect(self.start_derived_variable_computation)
-        self.ui.compute_and_add_time_agg_btn.clicked.connect(self.start_time_aggregated_computation)
-        self.ui.compute_combined_btn.clicked.connect(self.start_combined_computation)
 
-    def _parse_definitions(self, text_content: str):
-        """从多行文本中解析定义。"""
-        lines = [line.strip() for line in text_content.split('\n') if line.strip() and not line.strip().startswith('#')]
-        definitions = []
-        for line in lines:
-            if '=' not in line:
-                raise ValueError(f"定义无效 (缺少 '='): {line}")
-            name, formula = line.split('=', 1)
-            name, formula = name.strip(), formula.strip()
+class DatabaseImportWorker(QThread):
+    """[UNCHANGED] Scans CSVs and imports them into a partitioned Parquet dataset."""
+    progress = pyqtSignal(int, int, str)
+    log_message = pyqtSignal(str)
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
 
-            if not name or not formula:
-                raise ValueError(f"在 '{line}' 中，变量名和公式不能为空。")
-            if not name.isidentifier():
-                raise ValueError(f"变量名 '{name}' 无效。只能包含字母、数字和下划线，且不能以数字开头。")
-            
-            # 允许覆盖现有变量，但需要用户确认
-            if name in self.dm.get_variables():
-                reply = QMessageBox.question(self.main_window, "变量已存在", f"变量 '{name}' 已存在于数据库中。您想覆盖它吗？\n\n覆盖将删除旧数据并用新计算的值替换。", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
-                if reply == QMessageBox.StandardButton.Cancel:
-                    raise InterruptedError(f"用户取消了对 '{name}' 的覆盖。")
-            
-            definitions.append((name, formula))
-        return definitions
-
-    def _topologically_sort_definitions(self, definitions: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
-        """
-        对定义列表进行拓扑排序，以确保依赖项在被使用之前计算。
-        """
-        # Graph where key is a variable and value is a list of variables that depend on it.
-        adj = {name: [] for name, _ in definitions}
-        # In-degree count for each variable.
-        in_degree = {name: 0 for name, _ in definitions}
-        # Map name to its formula
-        formulas = dict(definitions)
-        # Set of new variables being defined
-        new_vars = set(formulas.keys())
-
-        for name, formula in definitions:
-            # Find what other *new* variables this formula depends on
-            used_vars = self.formula_engine.get_used_variables(formula)
-            dependencies = used_vars.intersection(new_vars)
-            
-            for dep in dependencies:
-                if dep != name:
-                    adj[dep].append(name)
-                    in_degree[name] += 1
-        
-        # Queue for nodes with no incoming edges (dependencies are met)
-        queue = deque([name for name, count in in_degree.items() if count == 0])
-        
-        sorted_defs = []
-        while queue:
-            u = queue.popleft()
-            sorted_defs.append((u, formulas[u]))
-            
-            if u in adj:
-                for v in adj[u]:
-                    in_degree[v] -= 1
-                    if in_degree[v] == 0:
-                        queue.append(v)
-                        
-        if len(sorted_defs) != len(definitions):
-            cyclic_vars = {name for name, count in in_degree.items() if count > 0}
-            raise ValueError(f"检测到循环依赖，无法解析计算顺序。涉及的变量: {', '.join(cyclic_vars)}")
-            
-        logger.info(f"原始定义顺序: {[d[0] for d in definitions]}")
-        logger.info(f"拓扑排序后顺序: {[d[0] for d in sorted_defs]}")
-        
-        return sorted_defs
-
-    def start_derived_variable_computation(self):
-        """启动后台任务以计算和添加新的逐帧变量列。"""
-        if self.dm.get_frame_count() == 0:
-            QMessageBox.warning(self.main_window, "无数据", "请先加载数据。")
-            return
-            
-        definitions_text = self.ui.new_variable_formula_edit.toPlainText().strip()
-        if not definitions_text:
-            QMessageBox.warning(self.main_window, "输入错误", "请输入至少一个逐帧派生变量的定义。")
-            return
-        
-        try:
-            definitions = self._parse_definitions(definitions_text)
-            if not definitions: return
-            sorted_definitions = self._topologically_sort_definitions(definitions)
-        except (ValueError, InterruptedError) as e:
-            QMessageBox.warning(self.main_window, "输入错误", str(e))
-            return
-        
-        self.compute_progress_dialog = StatsProgressDialog(self.main_window, "正在计算逐帧变量")
-        self.compute_worker = DerivedVariableWorker(self.dm, self.formula_engine, sorted_definitions)
-        
-        self.compute_worker.progress.connect(self.on_progress_update)
-        self.compute_worker.finished.connect(self.on_computation_finished)
-        self.compute_worker.error.connect(self.on_computation_error)
-        
-        self.compute_worker.start()
-        self.compute_progress_dialog.exec()
-        
-    def start_time_aggregated_computation(self):
-        """启动后台任务以计算和添加新的时间聚合变量列。"""
-        if self.dm.get_frame_count() == 0:
-            QMessageBox.warning(self.main_window, "无数据", "请先加载数据。")
-            return
-            
-        definitions_text = self.ui.new_time_agg_formula_edit.toPlainText().strip()
-        if not definitions_text:
-            QMessageBox.warning(self.main_window, "输入错误", "请输入至少一个时间聚合变量的定义。")
-            return
-
-        try:
-            definitions = self._parse_definitions(definitions_text)
-            if not definitions: return
-            
-            for _, formula in definitions:
-                if not re.fullmatch(r'\s*(\w+)\s*\((.*)\)\s*', formula, re.DOTALL):
-                    raise ValueError(f"公式格式无效: '{formula}'. 时间聚合公式必须是 '聚合函数(表达式)'，例如 'mean(u)'。")
-            
-            sorted_definitions = self._topologically_sort_definitions(definitions)
-        except (ValueError, InterruptedError) as e:
-            QMessageBox.warning(self.main_window, "输入错误", str(e))
-            return
-
-        self.compute_progress_dialog = StatsProgressDialog(self.main_window, "正在计算时间聚合变量")
-        self.compute_worker = TimeAggregatedVariableWorker(self.dm, self.formula_engine, sorted_definitions)
-        
-        self.compute_worker.progress.connect(self.on_progress_update)
-        self.compute_worker.finished.connect(self.on_computation_finished)
-        self.compute_worker.error.connect(self.on_computation_error)
-        
-        self.compute_worker.start()
-        self.compute_progress_dialog.exec()
+    def __init__(self, data_manager: DataManager, parent=None):
+        super().__init__(parent)
+        self.dm = data_manager; self.is_cancelled = False
     
-    def start_combined_computation(self):
-        """解析并顺序执行组合计算任务。"""
-        if self.dm.get_frame_count() == 0:
-            QMessageBox.warning(self.main_window, "无数据", "请先加载数据。")
-            return
+    def run(self):
+        try:
+            logger.info(f"后台Parquet数据集创建开始: 从 {self.dm.project_directory}")
+            csv_files = sorted([f for f in os.listdir(self.dm.project_directory) if f.lower().endswith('.csv')])
+            if not csv_files: self.error.emit("目录中未找到任何CSV文件。"); return
 
-        text = self.ui.combined_formula_edit.toPlainText().strip()
-        if not text:
-            QMessageBox.warning(self.main_window, "输入错误", "请输入组合计算的定义。")
-            return
+            dataset_name = f"raw_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            dataset_uri = os.path.join(self.dm.datasets_root_dir, dataset_name)
+            os.makedirs(dataset_uri, exist_ok=True)
+            self.log_message.emit(f"正在创建新的Parquet数据集: {dataset_name}")
 
-        blocks = []
-        current_type = None
-        current_block_lines = []
-        for line in text.split('\n'):
-            line_strip = line.strip().lower()
-            if line_strip == '#--- per-frame ---#':
-                if current_type is not None and any(l.strip() for l in current_block_lines):
-                    blocks.append((current_type, "\n".join(current_block_lines)))
-                current_type = 'per-frame'
-                current_block_lines = []
-            elif line_strip == '#--- time-aggregated ---#':
-                if current_type is not None and any(l.strip() for l in current_block_lines):
-                    blocks.append((current_type, "\n".join(current_block_lines)))
-                current_type = 'time-aggregated'
-                current_block_lines = []
-            elif current_type is not None and line.strip() and not line.strip().startswith('#'):
-                current_block_lines.append(line)
-        
-        if current_type is not None and any(l.strip() for l in current_block_lines):
-            blocks.append((current_type, "\n".join(current_block_lines)))
+            first_file_schema = None; total_files = len(csv_files)
+            for i, filename in enumerate(csv_files):
+                if self.is_cancelled: break
+                self.progress.emit(i + 1, total_files, f"正在转换: {filename}")
+                
+                filepath = os.path.join(self.dm.project_directory, filename)
+                df = pd.read_csv(filepath); df['frame_index'] = i
+                table = pa.Table.from_pandas(df, preserve_index=False)
+                
+                if first_file_schema is None: first_file_schema = table.schema
 
-        if not blocks:
-            QMessageBox.warning(self.main_window, "解析错误", "未找到任何有效的计算块。请使用 '#--- PER-FRAME ---#' 或 '#--- TIME-AGGREGATED ---#' 来定义块。")
-            return
+                pq.write_to_dataset(table, root_path=dataset_uri, partition_cols=['frame_index'],
+                                    schema=first_file_schema, existing_data_behavior='overwrite_or_ignore')
+
+            if self.is_cancelled: shutil.rmtree(dataset_uri); self.error.emit("用户取消了导入操作。"); return
             
-        self.compute_progress_dialog = StatsProgressDialog(self.main_window, "正在执行组合计算")
-        
-        for i, (block_type, defs_text) in enumerate(blocks):
-            self.compute_progress_dialog.update_progress(i, len(blocks), f"执行块 {i+1}/{len(blocks)} ({block_type})...")
+            self.log_message.emit("正在注册数据集元数据...")
+            self.dm.register_dataset(dataset_name, dataset_uri, first_file_schema)
+            self.log_message.emit("基础统计计算将在后续步骤中实现。")
+            self.finished.emit(dataset_uri)
+        except Exception as e:
+            logger.error(f"创建Parquet数据集失败: {e}", exc_info=True); self.error.emit(str(e))
+            if 'dataset_uri' in locals() and os.path.exists(dataset_uri): shutil.rmtree(dataset_uri)
+
+
+class DerivedVariableWorker(QThread):
+    """[REWRITTEN] Reads a source Parquet dataset, computes new variables, and writes a new Parquet dataset."""
+    progress = pyqtSignal(int, int, str)
+    # Returns: output_uri, output_name, output_schema
+    finished = pyqtSignal(str, str, object)
+    error = pyqtSignal(str)
+
+    def __init__(self, source_dataset_uri: str, output_dataset_uri: str, definitions: List[Tuple[str, str]], formula_engine: FormulaEngine, parent=None):
+        super().__init__(parent)
+        self.source_uri = source_dataset_uri
+        self.output_uri = output_dataset_uri
+        self.output_name = os.path.basename(output_dataset_uri)
+        self.definitions = definitions
+        self.formula_engine = formula_engine
+
+    def run(self):
+        try:
+            source_dataset = ds.dataset(self.source_uri, format="parquet", partitioning=["frame_index"])
+            source_schema = source_dataset.schema
             
-            try:
-                definitions = self._parse_definitions(defs_text)
-                if not definitions: continue
-                sorted_definitions = self._topologically_sort_definitions(definitions)
-            except (ValueError, InterruptedError) as e:
-                self.compute_progress_dialog.close()
-                QMessageBox.warning(self.main_window, "解析错误", f"块 {i+1} 中存在错误: {e}")
-                return
+            # 1. Determine the new schema
+            new_schema = source_schema
+            for name, formula in self.definitions:
+                if name not in new_schema.names:
+                    new_schema = new_schema.append(pa.field(name, pa.float64()))
 
-            worker = None
-            if block_type == 'per-frame':
-                worker = DerivedVariableWorker(self.dm, self.formula_engine, sorted_definitions)
-            else:
-                for _, formula in sorted_definitions:
-                    if not re.fullmatch(r'\s*(\w+)\s*\((.*)\)\s*', formula, re.DOTALL):
-                        QMessageBox.warning(self.main_window, "输入错误", f"时间聚合公式格式无效: '{formula}'")
-                        self.compute_progress_dialog.close()
-                        return
-                worker = TimeAggregatedVariableWorker(self.dm, self.formula_engine, sorted_definitions)
-
-            event_loop = QEventLoop()
-            error_message = []
+            # 2. Process fragments one by one
+            fragments = list(source_dataset.get_fragments())
+            total_fragments = len(fragments)
             
-            worker.finished.connect(event_loop.quit)
-            worker.error.connect(error_message.append)
-            worker.error.connect(event_loop.quit)
-            
-            worker.progress.connect(lambda cur, tot, msg, b_type=block_type, b_idx=i: self.compute_progress_dialog.update_progress(b_idx, len(blocks), f"块 {b_idx+1}({b_type}): {msg}"))
+            for i, fragment in enumerate(fragments):
+                self.progress.emit(i + 1, total_fragments, f"处理帧 {i+1}/{total_fragments}")
+                
+                # Read fragment into a pandas DataFrame
+                table = fragment.to_table()
+                df = table.to_pandas()
+                
+                # Attach partition key back as a column
+                partition_value = int(str(fragment.partition_expression).split("=")[1].strip())
+                df['frame_index'] = partition_value
 
-            worker.start()
-            self.compute_progress_dialog.show()
-            event_loop.exec()
+                # Update formula engine with current data columns
+                self.formula_engine.update_allowed_variables(list(df.columns))
 
-            if error_message:
-                self.on_computation_error(f"块 {i+1} ({block_type}) 执行失败: \n{error_message[0]}")
-                return
+                # Calculate all new variables for this fragment
+                for new_name, formula in self.definitions:
+                    # evaluate_formula now directly works on the dataframe
+                    df[new_name] = self.formula_engine.evaluate_formula(df, formula)
+                
+                # Convert back to pyarrow Table with the new, full schema
+                output_table = pa.Table.from_pandas(df, schema=new_schema, preserve_index=False)
+                
+                # Write to the output dataset
+                pq.write_to_dataset(
+                    output_table,
+                    root_path=self.output_uri,
+                    partition_cols=['frame_index'],
+                    schema=new_schema,
+                    existing_data_behavior='overwrite_or_ignore'
+                )
 
-            logger.info(f"计算块 {i+1} ('{block_type}') 成功。正在刷新数据管理器状态...")
-            self.dm.refresh_schema_info()
-            self.formula_engine.update_allowed_variables(self.dm.get_variables())
+            logger.info(f"成功创建派生数据集: {self.output_uri}")
+            self.finished.emit(self.output_uri, self.output_name, new_schema)
 
-        self.compute_progress_dialog.close()
-        QMessageBox.information(self.main_window, "计算完成", "所有组合计算任务已成功完成。")
-        self.main_window._load_project_data()
-        self.ui.combined_formula_edit.clear()
+        except Exception as e:
+            logger.error(f"创建派生数据集 '{self.output_name}' 失败: {e}", exc_info=True)
+            self.error.emit(str(e))
+            # Clean up partially created dataset
+            if os.path.exists(self.output_uri):
+                shutil.rmtree(self.output_uri)
 
 
-    def on_progress_update(self, current, total, message):
-        if self.compute_progress_dialog:
-            self.compute_progress_dialog.update_progress(current, total, message)
-            
-    def on_computation_finished(self):
-        if self.compute_progress_dialog:
-            self.compute_progress_dialog.accept()
+# NOTE: The following workers are now obsolete in their current form.
+# They will be completely rewritten in the next steps. For now, they are
+# left here to avoid breaking imports, but they should not be called.
 
-        QMessageBox.information(self.main_window, "计算完成", f"新变量已成功计算并添加到数据库。正在刷新应用程序状态...")
-        self.main_window._load_project_data()
-        self.ui.new_variable_formula_edit.clear()
-        self.ui.new_time_agg_formula_edit.clear()
+class TimeAggregatedVariableWorker(QThread):
+    progress = pyqtSignal(int, int, str)
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+    def __init__(self, *args, **kwargs): super().__init__(); self.error.emit("功能已禁用，待重构。")
+    def run(self): pass
 
-    def on_computation_error(self, error_msg: str):
-        if self.compute_progress_dialog:
-            self.compute_progress_dialog.close()
-        QMessageBox.critical(self.main_window, "计算失败", f"计算新变量时发生错误: \n{error_msg}")
+class BatchExportWorker(QThread):
+    progress = pyqtSignal(int, int, str)
+    log_message = pyqtSignal(str)
+    summary_ready = pyqtSignal(str) 
+    def __init__(self, *args, **kwargs): super().__init__(); self.summary_ready.emit("功能已禁用，待重构。")
+    def run(self): pass
+
+class GlobalStatsWorker(QThread):
+    progress = pyqtSignal(int, int, str)
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+    def __init__(self, *args, **kwargs): super().__init__(); self.error.emit("功能已禁用，待重构。")
+    def run(self): pass
+
+class CustomGlobalStatsWorker(QThread):
+    progress = pyqtSignal(int, int, str)
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+    def __init__(self, *args, **kwargs): super().__init__(); self.error.emit("功能已禁用，待重构。")
+    def run(self): pass
+
+class DataExportWorker(QThread):
+    progress = pyqtSignal(int, int, str)
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+    def __init__(self, *args, **kwargs): super().__init__(); self.error.emit("功能已禁用，待重构。")
+    def run(self): pass

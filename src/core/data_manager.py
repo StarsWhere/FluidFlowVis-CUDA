@@ -1,524 +1,271 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
+import re
 import pandas as pd
 import logging
 import sqlite3
-from typing import Optional, List, Dict, Any, Generator, Tuple
+import shutil
+from typing import Optional, List, Dict, Any, Tuple
 from collections import OrderedDict
 from PyQt6.QtCore import QObject, pyqtSignal
 
+import pyarrow.parquet as pq
+import pyarrow.dataset as ds
+import pyarrow.compute as pc
+import pyarrow as pa
+
 logger = logging.getLogger(__name__)
 
-DB_FILENAME = "_intervis_data.db"
-METADATA_TABLE_NAME = "intervis_metadata"
-CUSTOM_CONSTANTS_TABLE_NAME = "intervis_custom_constants"
-VARIABLE_DEFINITIONS_TABLE_NAME = "intervis_variable_definitions" # 新增
+METADATA_DB_FILENAME = "_intervis_metadata.db"
+DATASETS_DIR_NAME = "datasets"
+PROJECT_METADATA_TABLE = "project_metadata"
+DATASETS_TABLE = "datasets"
+VARIABLES_TABLE = "variables"
+
 
 class DataManager(QObject):
-    """
-    负责数据库的连接、查询和数据缓存。
-    """
+    """负责管理项目中的多个Parquet数据集，并与元数据数据库交互。"""
     error_occurred = pyqtSignal(str)
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.project_directory: Optional[str] = None
-        self.db_path: Optional[str] = None
-        
-        self.cache: OrderedDict[int, pd.DataFrame] = OrderedDict()
-        self.cache_max_size = 100
-        
-        self._variables: Optional[List[str]] = None
-        self._frame_count: Optional[int] = None
-        self._sorted_time_values: Optional[List] = None
-        
-        self.time_variable: str = "frame_index" # Default time variable
-        
-        self.global_stats: Dict[str, float] = {}
-        self.custom_global_formulas: Dict[str, str] = {}
-        
-        self.global_filter_clause: str = ""
+        self.project_directory: Optional[str] = None; self.metadata_db_path: Optional[str] = None
+        self.datasets_root_dir: Optional[str] = None
+        self.cache: OrderedDict[tuple, pd.DataFrame] = OrderedDict(); self.cache_max_size = 100
+        self.active_dataset_uri: Optional[str] = None; self.active_dataset_schema: Optional[pa.Schema] = None
+        self._frame_count: Optional[int] = None; self._sorted_time_values: Optional[List] = None
+        self._time_value_map: Optional[Dict] = None
+        self.time_variable: str = "frame_index"; self.global_stats: Dict[str, float] = {}
+        self.filter_expression: Optional[pc.Expression] = None
 
     def setup_project_directory(self, directory: str) -> bool:
-        """设置项目目录并检查数据库状态。"""
         self.project_directory = directory
-        self.db_path = os.path.join(self.project_directory, DB_FILENAME)
-        
-        if not os.path.isdir(self.project_directory):
-            msg = f"项目目录不存在: {self.project_directory}"
-            logger.error(msg)
-            self.error_occurred.emit(msg)
-            return False
-        
-        self.clear_all()
-        logger.info(f"项目目录已设置为: {self.project_directory}")
-        return True
-
-    def is_database_ready(self) -> bool:
-        """检查数据库文件是否存在且有效。"""
-        if self.db_path and os.path.exists(self.db_path):
-            try:
-                conn = sqlite3.connect(self.db_path)
-                cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='timeseries_data';")
-                if cursor.fetchone() is None:
-                    conn.close(); return False
-                conn.close(); return True
-            except sqlite3.DatabaseError:
-                logger.warning(f"数据库文件 {self.db_path} 已损坏或无效。")
-                return False
-        return False
-        
-    def get_db_connection(self) -> sqlite3.Connection:
-        """返回一个新的数据库连接。调用者负责关闭连接。"""
-        if not self.db_path: raise ConnectionError("数据库路径未设置。")
-        # 增加超时时间以应对潜在的短暂锁定
-        return sqlite3.connect(self.db_path, timeout=15)
-    
-    def create_database_tables(self, conn: sqlite3.Connection):
-        """创建所有必需的表，如果它们不存在的话。"""
-        cursor = conn.cursor()
-        cursor.execute(f"""
-        CREATE TABLE IF NOT EXISTS {METADATA_TABLE_NAME} (
-            key TEXT PRIMARY KEY,
-            value REAL NOT NULL
-        );
-        """)
-        cursor.execute(f"""
-        CREATE TABLE IF NOT EXISTS {CUSTOM_CONSTANTS_TABLE_NAME} (
-            id INTEGER PRIMARY KEY,
-            definition TEXT NOT NULL UNIQUE
-        );
-        """)
-        # 新增：创建变量定义表
-        cursor.execute(f"""
-        CREATE TABLE IF NOT EXISTS {VARIABLE_DEFINITIONS_TABLE_NAME} (
-            name TEXT PRIMARY KEY,
-            formula TEXT NOT NULL,
-            type TEXT NOT NULL
-        );
-        """)
-        conn.commit()
-        logger.info("数据库元数据、自定义常量和变量定义表已确认存在。")
-
-
-    def post_import_setup(self):
-        """导入完成后，强制重新加载元数据。"""
-        self.refresh_schema_info()
-        self.load_global_stats() # Load stats from db
-        # Set default time variable after schema is known
-        self.set_time_variable('frame_index' if 'frame_index' in self.get_variables() else self.get_time_candidates()[0])
-        logger.info("数据库设置完成。")
-
-    def refresh_schema_info(self, include_id=False):
-        """当数据库表结构发生变化时（如添加列），强制刷新元数据。"""
-        self._variables = None; self._frame_count = None; self._sorted_time_values = None
-        self.get_variables(include_id=include_id); self.get_frame_count()
-        logger.info("DataManager schema info has been refreshed.")
-
-    def set_global_filter(self, filter_text: str):
-        """设置并验证全局过滤器。"""
-        if not filter_text.strip():
-            self.global_filter_clause = ""
-            logger.info("全局过滤器已清除。")
-            self.cache.clear()
-            return
-        
-        # 简单的安全检查
-        test_query = f"SELECT 1 FROM timeseries_data WHERE {filter_text} LIMIT 1;"
-        try:
-            conn = self.get_db_connection()
-            conn.execute(test_query)
-            conn.close()
+        self.metadata_db_path = os.path.join(self.project_directory, METADATA_DB_FILENAME)
+        self.datasets_root_dir = os.path.join(self.project_directory, DATASETS_DIR_NAME)
+        os.makedirs(self.datasets_root_dir, exist_ok=True); self.clear_all()
+        try: self.create_metadata_tables()
         except Exception as e:
-            raise ValueError(f"过滤器语法无效: {e}")
-            
-        self.global_filter_clause = f"AND ({filter_text})"
-        logger.info(f"全局过滤器已设置为: {self.global_filter_clause}")
-        self.cache.clear()
+            msg = f"初始化元数据数据库失败: {e}"; logger.error(msg, exc_info=True)
+            self.error_occurred.emit(msg); return False
+        logger.info(f"项目目录已设置为: {self.project_directory}"); return True
 
+    def is_project_ready(self) -> bool:
+        if self.metadata_db_path and os.path.exists(self.metadata_db_path) and self.datasets_root_dir and os.path.isdir(self.datasets_root_dir):
+            with self.get_db_connection() as conn:
+                try: return conn.execute(f"SELECT COUNT(id) FROM {DATASETS_TABLE}").fetchone()[0] > 0
+                except sqlite3.Error: return False
+        return False
+
+    def get_db_connection(self) -> sqlite3.Connection:
+        if not self.metadata_db_path: raise ConnectionError("元数据数据库路径未设置。")
+        return sqlite3.connect(self.metadata_db_path, timeout=15)
+
+    def create_metadata_tables(self):
+        with self.get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"CREATE TABLE IF NOT EXISTS {PROJECT_METADATA_TABLE} (key TEXT PRIMARY KEY, value REAL NOT NULL);")
+            cursor.execute(f"CREATE TABLE IF NOT EXISTS {DATASETS_TABLE} (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, uri TEXT NOT NULL, parent_id INTEGER, created_at TEXT NOT NULL, FOREIGN KEY (parent_id) REFERENCES {DATASETS_TABLE}(id) ON DELETE CASCADE);")
+            cursor.execute(f"CREATE TABLE IF NOT EXISTS {VARIABLES_TABLE} (id INTEGER PRIMARY KEY, dataset_id INTEGER NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, formula TEXT, FOREIGN KEY (dataset_id) REFERENCES {DATASETS_TABLE}(id) ON DELETE CASCADE);")
+            conn.commit()
+
+    def register_dataset(self, name: str, uri: str, schema: pa.Schema, parent_id: Optional[int] = None, variable_source: str = "raw") -> int:
+        with self.get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"INSERT INTO {DATASETS_TABLE} (name, uri, parent_id, created_at) VALUES (?, ?, ?, datetime('now', 'localtime'))", (name, uri, parent_id))
+            dataset_id = cursor.lastrowid
+            var_records = [(dataset_id, var_name, variable_source, None) for var_name in schema.names if var_name != 'frame_index']
+            cursor.executemany(f"INSERT INTO {VARIABLES_TABLE} (dataset_id, name, type, formula) VALUES (?, ?, ?, ?)", var_records)
+            conn.commit()
+            return dataset_id
+
+    def set_active_dataset(self, uri: Optional[str] = None):
+        if not uri: # If URI is none, load the latest one
+            with self.get_db_connection() as conn:
+                latest_uri = conn.execute(f"SELECT uri FROM {DATASETS_TABLE} ORDER BY id DESC LIMIT 1").fetchone()
+                uri = latest_uri[0] if latest_uri else None
+        
+        if not uri: self.active_dataset_uri = None; return
+
+        self.active_dataset_uri = uri; self.cache.clear()
+        self.active_dataset_schema = None; self._frame_count = None
+        self._sorted_time_values = None; self._time_value_map = None
+        
+        self._get_active_schema(); self.set_time_variable(self.time_variable)
+        logger.info(f"活动数据集已设置为: {self.active_dataset_uri}")
+
+    def _get_active_dataset_object(self) -> Optional[ds.Dataset]:
+        if not self.active_dataset_uri: return None
+        try: return ds.dataset(self.active_dataset_uri, format="parquet", partitioning=["frame_index"])
+        except Exception as e:
+            logger.error(f"无法加载Parquet数据集 at '{self.active_dataset_uri}': {e}", exc_info=True)
+            self.error_occurred.emit(f"无法加载Parquet数据集: {e}"); return None
+
+    def _get_active_schema(self) -> pa.Schema:
+        if self.active_dataset_schema is None:
+            dataset = self._get_active_dataset_object()
+            if dataset: self.active_dataset_schema = dataset.schema
+        return self.active_dataset_schema
+
+    def get_variables(self) -> List[str]:
+        schema = self._get_active_schema()
+        return schema.names if schema else []
+
+    def get_time_candidates(self) -> List[str]:
+        schema = self._get_active_schema()
+        if not schema: return []
+        return ['frame_index'] + [name for name in schema.names if pa.types.is_numeric(schema.field(name).type) and name != 'frame_index']
+        
     def set_time_variable(self, variable_name: str):
-        """设置用于时间演化的变量。"""
-        if variable_name not in self.get_variables():
-            msg = f"尝试将时间变量设置为不存在的列: {variable_name}"
-            logger.error(msg)
-            self.error_occurred.emit(msg)
-            return
-            
-        logger.info(f"时间轴变量已更改为: '{variable_name}'")
-        self.time_variable = variable_name
-        self._frame_count = None
-        self._sorted_time_values = None
-        self.cache.clear()
+        if variable_name not in self.get_variables(): variable_name = 'frame_index'
+        self.time_variable = variable_name; self._sorted_time_values = None
+        self._time_value_map = None; self.cache.clear(); self.get_frame_count()
 
     def _get_sorted_time_values(self) -> List:
-        if self._sorted_time_values is None:
-            if not self.is_database_ready(): return []
+        if self._sorted_time_values is not None: return self._sorted_time_values
+        dataset = self._get_active_dataset_object()
+        if not dataset: self._sorted_time_values = []; return []
+        
+        if self.time_variable == 'frame_index':
+            partitions = [int(f.path.split('=')[-1]) for f in dataset.get_fragments()]
+            self._sorted_time_values = sorted(partitions); self._time_value_map = {val: val for val in self._sorted_time_values}
+        else:
             try:
-                conn = self.get_db_connection()
-                query = f'SELECT DISTINCT "{self.time_variable}" FROM timeseries_data ORDER BY "{self.time_variable}" ASC;'
-                df_times = pd.read_sql_query(query, conn)
-                conn.close()
-                self._sorted_time_values = df_times[self.time_variable].tolist()
+                logger.info(f"为时间轴变量 '{self.time_variable}' 构建排序映射...")
+                table = dataset.to_table(columns=[self.time_variable, 'frame_index'])
+                df_sorted = table.to_pandas().sort_values(by=self.time_variable).drop_duplicates(subset=[self.time_variable], keep='first')
+                self._sorted_time_values = df_sorted[self.time_variable].tolist()
+                self._time_value_map = pd.Series(df_sorted['frame_index'].values, index=df_sorted[self.time_variable]).to_dict()
             except Exception as e:
-                logger.error(f"无法获取时间变量 '{self.time_variable}' 的唯一值: {e}")
-                self._sorted_time_values = []
+                logger.error(f"为时间轴变量 '{self.time_variable}' 读取数据失败: {e}"); self.error_occurred.emit(f"无法使用 '{self.time_variable}'作为时间轴。")
+                self.time_variable = 'frame_index'; return self._get_sorted_time_values()
         return self._sorted_time_values
+
+    def get_frame_count(self) -> int:
+        if self._frame_count is None: self._frame_count = len(self._get_sorted_time_values())
+        return self._frame_count
 
     def get_frame_data(self, frame_index: int) -> Optional[pd.DataFrame]:
         time_values = self._get_sorted_time_values()
         if not (0 <= frame_index < len(time_values)): return None
         
         time_value = time_values[frame_index]
-        # Use a tuple as a key, including filter and time variable for cache invalidation
-        cache_key = (frame_index, self.global_filter_clause, self.time_variable)
+        cache_key = (self.active_dataset_uri, frame_index, self.time_variable, str(self.filter_expression))
+        if cache_key in self.cache: self.cache.move_to_end(cache_key); return self.cache[cache_key]
         
-        if cache_key in self.cache:
-            self.cache.move_to_end(cache_key)
-            return self.cache[cache_key]
-        
+        dataset = self._get_active_dataset_object();
+        if not dataset: return None
+
         try:
-            conn = self.get_db_connection()
-            # [FIX] Ensure ALL available columns are selected to make all variables available for computation.
-            all_known_vars = self.get_variables(include_id=True)
-            if not all_known_vars: 
-                conn.close()
-                return pd.DataFrame()
+            if self.time_variable == 'frame_index': filter_exp = (ds.field('frame_index') == time_value)
+            else: physical_frame_index = self._time_value_map[time_value]; filter_exp = (ds.field('frame_index') == physical_frame_index)
 
-            cols_to_select = ", ".join([f'"{var}"' for var in all_known_vars])
-            query = f'SELECT {cols_to_select} FROM timeseries_data WHERE "{self.time_variable}" = ? {self.global_filter_clause}'
+            final_filter = filter_exp & self.filter_expression if self.filter_expression is not None else filter_exp
             
-            data = pd.read_sql_query(query, conn, params=(time_value,))
-            conn.close()
-
-            self.cache[cache_key] = data
-            self._enforce_cache_limit()
-            return data
+            table = dataset.to_table(filter=final_filter)
+            df = table.to_pandas()
+            if 'frame_index' not in df.columns: df['frame_index'] = self._time_value_map[time_value] if self.time_variable != 'frame_index' else time_value
+            self.cache[cache_key] = df; self._enforce_cache_limit(); return df
         except Exception as e:
-            msg = f"从数据库加载帧 {frame_index} (时间值: {time_value}) 数据失败: {e}"
-            logger.error(msg, exc_info=True)
-            self.error_occurred.emit(f"加载帧 {frame_index} 失败 (可能由于过滤器语法错误)。\n错误: {e}")
-            return None
+            msg = f"从Parquet加载帧 {frame_index} 失败: {e}"; logger.error(msg, exc_info=True); self.error_occurred.emit(msg); return None
 
     def get_time_averaged_data(self, start_frame: int, end_frame: int) -> Optional[pd.DataFrame]:
         time_values = self._get_sorted_time_values()
-        if not (0 <= start_frame < len(time_values) and 0 <= end_frame < len(time_values) and start_frame <= end_frame):
-            return None
-            
-        start_time = time_values[start_frame]
-        end_time = time_values[end_frame]
+        if not (0 <= start_frame < len(time_values) and 0 <= end_frame < len(time_values) and start_frame <= end_frame): return None
+        dataset = self._get_active_dataset_object();
+        if not dataset: return None
         
         try:
-            conn = self.get_db_connection()
-            variables = self.get_variables()
+            phys_indices = [self._time_value_map.get(t, t) for t in time_values[start_frame:end_frame+1]]
+            frame_filter = ds.field('frame_index').isin(phys_indices)
+            final_filter = frame_filter & self.filter_expression if self.filter_expression is not None else frame_filter
             
-            # Aggregate all variables except for spatial coordinates and the time variable itself.
-            vars_to_avg = [var for var in variables if var not in ['x', 'y', self.time_variable, 'frame_index', 'id', 'source_file']]
-            avg_cols = ", ".join([f'AVG("{var}") as "{var}"' for var in vars_to_avg])
-            
-            query = f"""
-                SELECT x, y, {avg_cols}
-                FROM timeseries_data
-                WHERE "{self.time_variable}" BETWEEN ? AND ? {self.global_filter_clause}
-                GROUP BY x, y
-            """
-            
-            df = pd.read_sql_query(query, conn, params=(start_time, end_time))
-            conn.close()
+            vars_to_avg = [name for name in self.get_variables() if name not in ['x', 'y', self.time_variable, 'frame_index']]
+            aggregations = [(var, "mean") for var in vars_to_avg]
+            avg_table = dataset.to_table(filter=final_filter).group_by(['x', 'y']).aggregate(aggregations)
+            df = avg_table.to_pandas(); df.columns = [c.replace('_mean', '') for c in df.columns]
             return df
-        except Exception as e:
-            msg = f"计算时间平均场失败: {e}"
-            logger.error(msg, exc_info=True)
-            self.error_occurred.emit(f"时间平均计算失败 (可能由于过滤器语法错误)。\n错误: {e}")
-            return None
+        except Exception as e: msg = f"计算时间平均场失败: {e}"; logger.error(msg, exc_info=True); self.error_occurred.emit(msg); return None
 
     def get_timeseries_at_point(self, variable: str, point_coords: Tuple[float, float], tolerance: float) -> Optional[pd.DataFrame]:
-        if variable not in self.get_variables():
-            raise ValueError(f"变量 '{variable}' 不存在。")
+        if variable not in self.get_variables(): raise ValueError(f"变量 '{variable}' 不存在。")
+        dataset = self._get_active_dataset_object();
+        if not dataset: return None
         
         x, y = point_coords
-        x_min, x_max = x - tolerance, x + tolerance
-        y_min, y_max = y - tolerance, y + tolerance
+        point_filter = (pc.abs(ds.field('x') - x) <= tolerance) & (pc.abs(ds.field('y') - y) <= tolerance)
+        final_filter = point_filter & self.filter_expression if self.filter_expression is not None else point_filter
 
         try:
-            conn = self.get_db_connection()
-            query = f"""
-                SELECT "{self.time_variable}", AVG("{variable}") as "{variable}"
-                FROM timeseries_data
-                WHERE x BETWEEN ? AND ? AND y BETWEEN ? AND ? {self.global_filter_clause}
-                GROUP BY "{self.time_variable}"
-                ORDER BY "{self.time_variable}" ASC
-            """
-            df = pd.read_sql_query(query, conn, params=(x_min, x_max, y_min, y_max))
-            conn.close()
+            table = dataset.to_table(filter=final_filter, columns=[self.time_variable, variable])
+            df = table.group_by(self.time_variable).aggregate([(variable, "mean")]).to_pandas()
+            df.rename(columns={f'{variable}_mean': variable}, inplace=True); df.sort_values(by=self.time_variable, inplace=True)
             return df
-        except Exception as e:
-            msg = f"获取时间序列数据失败: {e}"
-            logger.error(msg, exc_info=True)
-            self.error_occurred.emit(f"时间序列查询失败。\n错误: {e}")
-            return None
+        except Exception as e: msg = f"获取时间序列数据失败: {e}"; logger.error(msg, exc_info=True); self.error_occurred.emit(msg); return None
+
+    def set_global_filter(self, filter_string: str):
+        if not filter_string.strip(): self.filter_expression = None; self.cache.clear(); return
+        try:
+            # Simple parser for "VAR OP VAL (AND ...)" syntax
+            expression = None
+            for part in filter_string.split(" AND "):
+                part = part.strip().replace('`', '')
+                match = re.match(r"(\w+)\s*([<>=!]+)\s*(-?[\d.eE]+)", part)
+                if not match: raise ValueError(f"无法解析过滤条件: '{part}'")
+                var, op, val = match.groups()
+                val = float(val)
+                op_map = {'>': pc.greater, '>=': pc.greater_equal, '<': pc.less, '<=': pc.less_equal, '==': pc.equal, '!=': pc.not_equal}
+                if op not in op_map: raise ValueError(f"不支持的操作符: '{op}'")
+                
+                term = op_map[op](ds.field(var), val)
+                expression = expression & term if expression is not None else term
+            self.filter_expression = expression
+            self.cache.clear()
+            logger.info(f"全局过滤器已设置为: {self.filter_expression}")
+        except Exception as e: raise ValueError(f"设置过滤器失败: {e}")
+
+    def get_all_datasets_info(self) -> List[Dict]:
+        with self.get_db_connection() as conn:
+            return conn.execute(f"SELECT id, name, uri, parent_id, created_at FROM {DATASETS_TABLE} ORDER BY id").fetchall()
+
+    def delete_dataset(self, dataset_id: int):
+        with self.get_db_connection() as conn:
+            uri_to_delete = conn.execute(f"SELECT uri FROM {DATASETS_TABLE} WHERE id=?", (dataset_id,)).fetchone()
+            if not uri_to_delete: raise FileNotFoundError("在数据库中找不到要删除的数据集ID。")
+            
+            # Delete DB entry (cascades to variables table)
+            conn.execute(f"DELETE FROM {DATASETS_TABLE} WHERE id=?", (dataset_id,))
+            conn.commit()
+            
+            # Delete files from disk
+            if os.path.isdir(uri_to_delete[0]):
+                shutil.rmtree(uri_to_delete[0])
+                logger.info(f"已从磁盘删除数据集: {uri_to_delete[0]}")
+
+    def save_global_stats(self, stats: Dict[str, float]):
+        if not self.metadata_db_path: return
+        with self.get_db_connection() as conn:
+            conn.executemany(f"INSERT OR REPLACE INTO {PROJECT_METADATA_TABLE} (key, value) VALUES (?, ?)", list(stats.items()))
+            conn.commit()
+        self.global_stats.update(stats)
+
+    def load_global_stats(self):
+        with self.get_db_connection() as conn: self.global_stats = dict(conn.execute(f"SELECT key, value FROM {PROJECT_METADATA_TABLE}").fetchall())
 
     def _enforce_cache_limit(self):
-        while len(self.cache) > self.cache_max_size:
-            self.cache.popitem(last=False)
-
-    def set_cache_size(self, size: int):
-        self.cache_max_size = max(1, size)
-        self._enforce_cache_limit()
-        logger.info(f"缓存大小已设置为: {self.cache_max_size}")
-
-    def get_frame_count(self) -> int:
-        if self._frame_count is None:
-            self._frame_count = len(self._get_sorted_time_values())
-        return self._frame_count
-
+        while len(self.cache) > self.cache_max_size: self.cache.popitem(last=False)
+    def set_cache_size(self, size: int): self.cache_max_size = max(1, size); self._enforce_cache_limit()
     def get_frame_info(self, i: int) -> Optional[Dict[str, Any]]: 
         time_values = self._get_sorted_time_values()
         if not (0 <= i < len(time_values)): return None
-        return {'path': f'db_frame_{i}', 'timestamp': time_values[i]}
-
+        return {'path': f'dataset_frame_{i}', 'timestamp': time_values[i]}
     def get_cache_info(self) -> Dict: return {'size': len(self.cache), 'max_size': self.cache_max_size}
-
     def get_database_info(self) -> Dict[str, Any]:
-        return {
-            "db_path": self.db_path,
-            "is_ready": self.is_database_ready(),
-            "frame_count": self.get_frame_count(),
-            "variables": self.get_variables(),
-            "global_filter": self.global_filter_clause
-        }
-
-    def get_variables(self, include_id: bool = False) -> List[str]:
-        if self._variables is None:
-            if not self.is_database_ready(): return []
-            try:
-                conn = self.get_db_connection()
-                cursor = conn.execute("PRAGMA table_info(timeseries_data);")
-                all_cols = [row[1] for row in cursor.fetchall()]
-                conn.close()
-                excluded_cols = set() if include_id else {'id'}
-                self._variables = sorted([col for col in all_cols if col not in excluded_cols])
-            except Exception:
-                self._variables = []
-        return self._variables
-
-    def get_time_candidates(self) -> List[str]:
-        """获取可用作时间轴的变量列表 (所有数值型变量)。"""
-        if not self.is_database_ready(): return []
-        # 'frame_index' is always a candidate
-        candidates = ['frame_index']
-        # In a real scenario, you might query dtype, but for simplicity we list all except non-numeric ones
-        # For this implementation, we assume all columns other than 'source_file' are numeric
-        all_vars = self.get_variables()
-        for var in all_vars:
-            if var != 'frame_index' and var != 'source_file' and var != 'id':
-                candidates.append(var)
-        return candidates
-
-    def save_global_stats(self, stats: Dict[str, float]):
-        if not self.db_path: return
-        try:
-            conn = self.get_db_connection()
-            cursor = conn.cursor()
-            data_to_insert = list(stats.items())
-            cursor.executemany(f"INSERT OR REPLACE INTO {METADATA_TABLE_NAME} (key, value) VALUES (?, ?)", data_to_insert)
-            conn.commit()
-            conn.close()
-            logger.info(f"成功将 {len(stats)} 条统计数据保存到数据库。")
-            self.global_stats.update(stats)
-        except Exception as e:
-            logger.error(f"保存全局统计数据失败: {e}", exc_info=True)
-
-    def load_global_stats(self):
-        if not self.is_database_ready(): return
-        try:
-            conn = self.get_db_connection()
-            cursor = conn.execute(f"SELECT key, value FROM {METADATA_TABLE_NAME}")
-            self.global_stats = dict(cursor.fetchall())
-            conn.close()
-            logger.info(f"从数据库加载了 {len(self.global_stats)} 条全局统计数据。")
-        except Exception as e:
-            logger.error(f"加载全局统计数据失败: {e}", exc_info=True)
-            self.global_stats = {}
-
-    def save_custom_definitions(self, definitions: List[str]):
-        if not self.db_path: return
-        try:
-            conn = self.get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute(f"DELETE FROM {CUSTOM_CONSTANTS_TABLE_NAME}") # Clear old definitions
-            data_to_insert = [(d,) for d in definitions]
-            if data_to_insert:
-                cursor.executemany(f"INSERT INTO {CUSTOM_CONSTANTS_TABLE_NAME} (definition) VALUES (?)", data_to_insert)
-            conn.commit()
-            conn.close()
-            logger.info(f"成功将 {len(definitions)} 条自定义常量定义保存到数据库。")
-        except Exception as e:
-            logger.error(f"保存自定义常量定义失败: {e}", exc_info=True)
-
-    def load_custom_definitions(self) -> List[str]:
-        if not self.is_database_ready(): return []
-        try:
-            conn = self.get_db_connection()
-            cursor = conn.execute(f"SELECT definition FROM {CUSTOM_CONSTANTS_TABLE_NAME} ORDER BY id")
-            definitions = [row[0] for row in cursor.fetchall()]
-            conn.close()
-            logger.info(f"从数据库加载了 {len(definitions)} 条自定义常量定义。")
-            return definitions
-        except Exception as e:
-            logger.error(f"加载自定义常量定义失败: {e}", exc_info=True)
-            return []
-
-    def delete_global_stats(self, stat_names: List[str]):
-        """删除指定名称的全局常量值。"""
-        if not self.db_path or not stat_names:
-            return
-        try:
-            conn = self.get_db_connection()
-            cursor = conn.cursor()
-            placeholders = ','.join('?' for _ in stat_names)
-            query = f"DELETE FROM {METADATA_TABLE_NAME} WHERE key IN ({placeholders})"
-            cursor.execute(query, stat_names)
-            conn.commit()
-            conn.close()
-            logger.info(f"已从数据库中删除全局常量值: {stat_names}")
-            # Also remove from memory
-            for name in stat_names:
-                self.global_stats.pop(name, None)
-        except Exception as e:
-            logger.error(f"删除全局统计数据失败: {e}", exc_info=True)
-
-    def save_variable_definition(self, name: str, formula: str, type_str: str):
-        if not self.db_path: return
-        try:
-            conn = self.get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                f"INSERT OR REPLACE INTO {VARIABLE_DEFINITIONS_TABLE_NAME} (name, formula, type) VALUES (?, ?, ?)",
-                (name, formula, type_str)
-            )
-            conn.commit()
-            conn.close()
-            logger.info(f"已保存变量定义: {name} ({type_str})")
-        except Exception as e:
-            logger.error(f"保存变量 '{name}' 的定义失败: {e}", exc_info=True)
-
-    def load_variable_definitions(self) -> Dict[str, Dict[str, str]]:
-        if not self.is_database_ready(): return {}
-        try:
-            conn = self.get_db_connection()
-            cursor = conn.execute(f"SELECT name, formula, type FROM {VARIABLE_DEFINITIONS_TABLE_NAME}")
-            definitions = {row[0]: {'formula': row[1], 'type': row[2]} for row in cursor.fetchall()}
-            conn.close()
-            logger.info(f"从数据库加载了 {len(definitions)} 条变量定义。")
-            return definitions
-        except Exception as e:
-            logger.error(f"加载变量定义失败: {e}", exc_info=True)
-            return {}
-
+        return {"db_path": self.metadata_db_path, "is_ready": self.is_project_ready(), "frame_count": self.get_frame_count(), "variables": self.get_variables(), "active_dataset": self.active_dataset_uri}
     def clear_all(self):
-        self._variables = None; self._frame_count = None; self._sorted_time_values = None
-        self.time_variable = "frame_index"
-        self.cache.clear(); self.clear_global_stats()
-        self.global_filter_clause = ""
-        logger.info("DataManager 状态已清除。")
-
-    def clear_global_stats(self):
-        self.global_stats.clear(); self.custom_global_formulas.clear()
-        logger.info("内存中的全局统计数据已清除。")
-        
-    def delete_variable(self, var_name: str):
-        """
-        从数据库中删除一个变量列及其关联的元数据，使用单一连接和事务。
-        """
-        core_vars = {'x', 'y', 'id', 'frame_index', 'source_file'}
-        if var_name in core_vars:
-            raise ValueError(f"无法删除核心变量 '{var_name}'。")
-
-        conn = self.get_db_connection()
-        try:
-            # SQLite的ALTER TABLE语句会隐式提交事务，所以必须单独执行。
-            logger.info(f"正在从 timeseries_data 表中删除列: {var_name}")
-            conn.execute(f'ALTER TABLE timeseries_data DROP COLUMN "{var_name}";')
-
-            # 在一个新事务中处理所有元数据表的更改
-            cursor = conn.cursor()
-            cursor.execute("BEGIN TRANSACTION;")
-
-            # 1. 删除关联的全局统计数据
-            stats_pattern_to_delete = f"{var_name}_global_%"
-            logger.info(f"正在从 {METADATA_TABLE_NAME} 表中删除键匹配 '{stats_pattern_to_delete}' 的统计数据")
-            cursor.execute(f"DELETE FROM {METADATA_TABLE_NAME} WHERE key LIKE ?", (stats_pattern_to_delete,))
-            
-            # 2. 从变量定义表中删除
-            logger.info(f"正在删除变量 '{var_name}' 的定义")
-            cursor.execute(f"DELETE FROM {VARIABLE_DEFINITIONS_TABLE_NAME} WHERE name = ?", (var_name,))
-            
-            conn.commit() # 提交元数据更改
-            logger.info(f"成功删除变量 '{var_name}' 及其关联数据。")
-
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"删除变量 '{var_name}' 失败: {e}", exc_info=True)
-            raise RuntimeError(f"数据库操作失败: {e}")
-        finally:
-            conn.close()
-        
-        # 3. 刷新内存中的缓存和状态
-        self.refresh_schema_info()
-        self.load_global_stats()
-
-    def rename_variable(self, old_name: str, new_name: str):
-        """
-        在数据库中重命名一个变量列及其关联的元数据，使用单一连接和事务。
-        """
-        core_vars = {'x', 'y', 'id', 'frame_index', 'source_file'}
-        if old_name in core_vars:
-            raise ValueError(f"无法重命名核心变量 '{old_name}'。")
-        if not new_name.isidentifier():
-            raise ValueError(f"新名称 '{new_name}' 不是一个有效的标识符。")
-        if new_name in self.get_variables():
-            raise ValueError(f"变量名 '{new_name}' 已存在。")
-
-        conn = self.get_db_connection()
-        try:
-            # 同样，先执行非事务性的 RENAME COLUMN
-            logger.info(f"正在重命名列 '{old_name}' 为 '{new_name}'")
-            conn.execute(f'ALTER TABLE timeseries_data RENAME COLUMN "{old_name}" TO "{new_name}";')
-
-            # 在一个新事务中处理所有元数据表的更改
-            cursor = conn.cursor()
-            cursor.execute("BEGIN TRANSACTION;")
-            
-            # 1. 更新关联的全局统计数据键
-            stats_pattern = f"{old_name}_global_%"
-            logger.info(f"正在更新匹配 '{stats_pattern}' 的统计数据键")
-            cursor.execute(f"SELECT key FROM {METADATA_TABLE_NAME} WHERE key LIKE ?", (stats_pattern,))
-            keys_to_update = [row[0] for row in cursor.fetchall()]
-            
-            updates = []
-            for old_key in keys_to_update:
-                new_key = old_key.replace(f"{old_name}_global_", f"{new_name}_global_", 1)
-                updates.append((new_key, old_key))
-            
-            if updates:
-                cursor.executemany(f"UPDATE {METADATA_TABLE_NAME} SET key = ? WHERE key = ?", updates)
-                logger.info(f"已更新 {len(updates)} 个统计数据键。")
-
-            # 2. 更新变量定义表中的名称
-            logger.info(f"正在更新变量定义表中的 '{old_name}'")
-            cursor.execute(f"UPDATE {VARIABLE_DEFINITIONS_TABLE_NAME} SET name = ? WHERE name = ?", (new_name, old_name))
-
-            conn.commit()
-            logger.info(f"成功重命名变量 '{old_name}' 为 '{new_name}'。")
-
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"重命名变量 '{old_name}' 失败: {e}", exc_info=True)
-            raise RuntimeError(f"数据库操作失败: {e}")
-        finally:
-            conn.close()
-
-        # 3. 刷新内存状态
-        self.refresh_schema_info()
-        self.load_global_stats()
+        self.active_dataset_uri=None; self.active_dataset_schema=None; self._variables=None; self._frame_count=None; self._sorted_time_values=None; self._time_value_map=None; self.time_variable="frame_index"; self.cache.clear(); self.global_stats.clear(); self.filter_expression=None; logger.info("DataManager 状态已清除。")
+    def delete_project_data(self):
+        self.clear_all()
+        if self.metadata_db_path and os.path.exists(self.metadata_db_path): os.remove(self.metadata_db_path)
+        if self.datasets_root_dir and os.path.isdir(self.datasets_root_dir): shutil.rmtree(self.datasets_root_dir)
+        os.makedirs(self.datasets_root_dir, exist_ok=True); self.create_metadata_tables()

@@ -290,8 +290,8 @@ def get_formula_help_html(base_variables: List[str], custom_global_variables: Di
 
 def get_data_processing_help_html() -> str:
     """
-    为“数据处理”选项卡生成统一的、极其详细的帮助文档。
-    这是另一个核心帮助文档，解释了三种不同的计算模式和批量处理。
+    [REWRITTEN] 为“数据处理”选项卡生成统一的、极其详细的帮助文档。
+    该版本反映了新的基于Parquet数据集的“转换”工作流。
     """
     return """
     <html>
@@ -300,76 +300,35 @@ def get_data_processing_help_html() -> str:
             body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; line-height: 1.6; color: #333; }}
             h2 {{ color: #28a745; border-bottom: 2px solid #28a745; padding-bottom: 5px; margin-top: 25px; }}
             h3 {{ color: #28a745; border-bottom: 1px solid #ccc; padding-bottom: 5px; margin-top: 20px; }}
-            code {{
-                background-color: #f0f0f0;
-                padding: 3px 6px;
-                border: 1px solid #ddd;
-                border-radius: 4px;
-                font-family: "Courier New", Courier, monospace;
-                font-size: 0.95em;
-            }}
-            ul, ol {{ padding-left: 25px; }}
-            li {{ margin-bottom: 8px; }}
-            .note {{
-                border-left: 4px solid #17a2b8; /* Info blue */
-                padding: 10px 15px;
-                background-color: #e2f3f5;
-                margin-top: 15px;
-                margin-bottom: 15px;
-                border-radius: 4px;
-            }}
-            .warning {{
-                border-left: 4px solid #f0ad4e; /* Warning yellow */
-                padding: 10px 15px;
-                background-color: #fcf8e3;
-                margin-top: 15px;
-                margin-bottom: 15px;
-                border-radius: 4px;
-            }}
-            .new-feature {{
-                color: #d9534f; /* Danger red */
-                font-weight: bold;
-                font-style: italic;
-            }}
-            .section-box {{
-                border: 1px solid #ccc;
-                border-radius: 5px;
-                padding: 20px;
-                margin-top: 25px;
-                background-color: #fff;
-            }}
-            .code-block {{
-                background-color: #f5f5f5;
-                border: 1px solid #ddd;
-                padding: 15px;
-                margin-top: 10px;
-                border-radius: 5px;
-                font-family: "Courier New", Courier, monospace;
-                white-space: pre-wrap;
-                word-break: break-all;
-            }}
+            code {{ background-color: #f0f0f0; padding: 3px 6px; border: 1px solid #ddd; border-radius: 4px; font-family: "Courier New", Courier, monospace; font-size: 0.95em; }}
+            ul, ol {{ padding-left: 25px; }} li {{ margin-bottom: 8px; }}
+            .note {{ border-left: 4px solid #17a2b8; padding: 10px 15px; background-color: #e2f3f5; margin-top: 15px; margin-bottom: 15px; border-radius: 4px; }}
+            .warning {{ border-left: 4px solid #f0ad4e; padding: 10px 15px; background-color: #fcf8e3; margin-top: 15px; margin-bottom: 15px; border-radius: 4px; }}
+            .new-feature {{ color: #d9534f; font-weight: bold; font-style: italic; }}
+            .section-box {{ border: 1px solid #ccc; border-radius: 5px; padding: 20px; margin-top: 25px; background-color: #fff; }}
+            .code-block {{ background-color: #f5f5f5; border: 1px solid #ddd; padding: 15px; margin-top: 10px; border-radius: 5px; font-family: "Courier New", Courier, monospace; white-space: pre-wrap; word-break: break-all; }}
         </style>
     </head>
     <body>
-        <h2>数据处理中心指南</h2>
+        <h2>数据处理中心指南 <span class="new-feature">(Parquet后端)</span></h2>
         <p>
-            此选项卡是 InterVis 的“大脑”，它让您可以执行<b>四种核心的计算任务</b>，
-            从而极大地扩展您的分析能力。计算结果将被<b>永久保存</b>在项目的数据库中，
-            供后续的可视化和进一步计算使用。
+            此选项卡是 InterVis 的“大脑”。在新的Parquet架构下，数据处理不再是“修改”数据，而是“<b>创建新的数据集</b>”。
+            每次计算都会从一个源数据集读取数据，然后生成一个包含新变量的、全新的数据集。
         </p>
+        <div class="warning">
+            <p><b>核心理念: 数据不变性 (Immutability)</b></p>
+            <p>
+                原始数据集永远不会被更改。所有的数据处理操作都会生成一个新的、版本化的数据集。
+                这保证了数据处理流程的<b>可复现性</b>和<b>安全性</b>。
+            </p>
+        </div>
 
         <!-- ==================== 逐帧派生变量 ==================== -->
         <div class="section-box">
-            <h3>1. 逐帧派生变量 (Per-Frame Derived Variables)</h3>
+            <h3>1. 创建派生变量数据集 (Derived Variables Dataset)</h3>
             <p>
-                此功能在您的数据集中创建<b>新数据列</b>。新列中的每个值都是基于<b>同一行（即同一个数据点、同一时刻）</b>的其他值计算得出的。
+                此功能会读取当前活动的数据集，根据您提供的公式计算新变量，并将<b>所有原始变量和新变量</b>一起写入一个新的Parquet数据集中。
             </p>
-            
-            <h4>核心思想与用途</h4>
-            <ul>
-                <li><b>计算基础:</b> 空间点 (x, y) 在时刻 t 的值。</li>
-                <li><b>目的:</b> 计算那些<b>随时间和空间都变化</b>的物理量。</li>
-            </ul>
             
             <h4><span class="new-feature">定义格式 (支持批量)</span></h4>
             <p>在输入框中，每行输入一个定义，格式为: <code>new_variable_name = formula</code></p>
@@ -381,132 +340,31 @@ vorticity = curl(u, v)</div>
                 <p><b><span class="new-feature">自动依赖排序:</span></b></p>
                 <p>
                     您<b>无需</b>按计算顺序列出您的定义。InterVis会自动分析变量之间的依赖关系，
-                    并以正确的顺序执行计算。例如，以下定义是完全有效的，即使 <code>tke</code> 在 <code>velocity_magnitude</code> 之前定义:
-                </p>
-                <div class="code-block"># InterVis 会先计算 velocity_magnitude, 再计算 tke
-tke = 0.5 * rho * velocity_magnitude**2
-velocity_magnitude = sqrt(u**2 + v**2)</div>
-            </div>
-        </div>
-        
-        <!-- ==================== 时间聚合变量 ==================== -->
-        <div class="section-box">
-            <h3>2. <span class="new-feature">时间聚合变量</span> (Time-Aggregated Variables)</h3>
-            <p>
-                此功能也在您的数据集中创建<b>新数据列</b>，但其计算方式完全不同。它会为<b>每一个空间点 (x, y)</b>，汇总其<b>所有时间步</b>的数据，得出一个聚合值（如时间平均值），然后将这个值赋给该空间点在<b>所有时刻</b>的新列中。
-            </p>
-            
-            <h4>核心思想与用途</h4>
-            <ul>
-                <li><b>计算基础:</b> 空间点 (x, y) 在<b>所有</b>时刻 t 的值的集合。</li>
-                <li><b>目的:</b> 计算<b>不随时间变化</b>的统计场，例如定常分析或雷诺分解。</li>
-            </ul>
-
-            <h4><span class="new-feature">定义格式 (支持批量和自动排序)</span></h4>
-            <p>每行一个定义，格式为: <code>new_variable_name = aggregate_function(expression)</code>。同样支持自动依赖排序。</p>
-            <ul>
-                <li>
-                    <b><code>aggregate_function</code></b>:
-                    支持 <code>mean</code>, <code>sum</code>, <code>std</code>, <code>var</code>, <code>min</code>, <code>max</code>。
-                </li>
-                <li><b><code>expression</code></b>: 一个简单的数学表达式，如 <code>u</code> 或 <code>p*0.1</code>。</li>
-            </ul>
-            <div class="code-block">u_time_avg = mean(u)
-v_time_avg = mean(v)
-p_fluctuation_strength = std(p)</div>
-             <div class="note">
-                <p><b>雷诺分解示例:</b>
-                <ol>
-                    <li>首先，使用此功能计算时间平均速度 <code>u_time_avg = mean(u)</code>。</li>
-                    <li>然后，使用上面的“逐帧派生变量”功能计算脉动速度: <code>u_fluctuation = u - u_time_avg</code>。</li>
-                </ol>
-                现在您就有了一个新的、随时间变化的“脉动速度”场可以进行可视化分析了。
+                    并以正确的顺序执行计算。
                 </p>
             </div>
-        </div>
-
-        <!-- ==================== 组合批量计算 ==================== -->
-        <div class="section-box" style="border-color: #d9534f; border-width: 2px;">
-            <h3 style="color: #d9534f;">3. <span class="new-feature">组合批量计算 (高级)</span></h3>
-            <p>
-                此功能是上述两种计算模式的强大结合，允许您在一个任务中定义<b>一系列按顺序执行的计算步骤</b>。
-                这对于需要多步推导的复杂分析（例如，计算雷诺应力产生项）至关重要，因为它确保了后续计算可以使用前面步骤中刚刚生成的新变量。
-            </p>
-            
-            <h4>核心思想与用途</h4>
-            <ul>
-                <li><b>计算基础:</b> 混合使用“逐帧”和“时间聚合”计算。</li>
-                <li><b>目的:</b> 自动执行依赖于先前计算结果的多步骤分析流程。</li>
-            </ul>
-
-            <h4><span class="new-feature">定义格式</span></h4>
-            <p>使用特殊的注释行来分隔不同类型的计算块。<b>执行将严格按照从上到下的顺序进行。</b> 每个块内部的定义也会被自动排序。</p>
-            <ul>
-                <li><b><code>#--- PER-FRAME ---#</code></b>: 在此标记下的所有定义都将作为<b>逐帧派生变量</b>进行计算。</li>
-                <li><b><code>#--- TIME-AGGREGATED ---#</code></b>: 在此标记下的所有定义都将作为<b>时间聚合变量</b>进行计算。</li>
-            </ul>
-            <div class="code-block"># 这是一个计算雷诺分解的复杂示例
-
-#--- PER-FRAME ---#
-# 第一步：计算每个点的瞬时速度大小
-velocity_magnitude = sqrt(u**2 + v**2)
-
-#--- TIME-AGGREGATED ---#
-# 第二步：计算整个时间序列上的平均速度大小
-# 注意：这里的 velocity_magnitude 是上一步刚刚创建的
-avg_velocity_magnitude = mean(velocity_magnitude)
-
-#--- PER-FRAME ---#
-# 第三步：计算每个点的速度脉动量
-# 注意：这里的 avg_velocity_magnitude 是第二步创建的，它是一个不随时间变化的场
-velocity_fluctuation = velocity_magnitude - avg_velocity_magnitude
-</div>
-             <div class="warning">
-                <p><b>工作流程:</b></p>
-                <ol>
-                    <li>InterVis 将首先执行第一个 <code>#--- PER-FRAME ---#</code> 块。</li>
-                    <li>完成后，它会更新数据库和变量列表。新变量 <code>velocity_magnitude</code> 现在可用了。</li>
-                    <li>然后，它会执行 <code>#--- TIME-AGGREGATED ---#</code> 块，此时它可以访问 <code>velocity_magnitude</code>。</li>
-                    <li>完成后，再次更新状态。新变量 <code>avg_velocity_magnitude</code> 现在可用了。</li>
-                    <li>最后，它执行第三个块，完成整个计算链。</li>
-                </ol>
-                <p>这种顺序执行的能力避免了手动分步计算，极大地提高了复杂分析的效率。</p>
-            </div>
-        </div>
-
-        <!-- ==================== 全局常量 ==================== -->
-        <div class="section-box">
-            <h3>4. 全局常量 (Global Constants)</h3>
-            <p>
-                此功能用于计算代表<b>整个数据集</b>（跨越所有时间、所有空间点）特征的<b>单个标量值</b>。
-            </p>
-            
-            <h4>核心思想与用途</h4>
-            <ul>
-                <li><b>计算基础:</b> <b>所有</b>空间点 (x, y) 在<b>所有</b>时刻 t 的值的集合。</li>
-                <li><b>目的:</b> 计算一个能代表整个仿真过程的<b>单一数字</b>，用于后续的公式计算或图表标题。</li>
-            </ul>
-
-            <h4><span class="new-feature">定义格式 (支持批量和自动排序)</span></h4>
-            <p>与上面类似，每行一个定义，并支持自动依赖排序。</p>
-            <div class="code-block"># 计算全局平均湍动能
-tke_global_mean = mean(0.5 * rho * (u**2 + v**2))
-# 计算基于上面结果的某个特征长度
-# (假设 length_scale 是一个已知的原始变量)
-some_reynolds_number = u_global_mean * length_scale / nu
-</div>
+            <h4>工作流程:</h4>
+            <ol>
+                <li>点击“计算并创建数据集”。</li>
+                <li>系统提示您为新的数据集命名 (例如 `data_with_vorticity`)。</li>
+                <li>一个后台任务会启动，读取源数据集的所有帧。</li>
+                <li>对于每一帧，它计算所有新变量。</li>
+                <li>然后，它将旧变量和新变量一起写入新数据集目录 (`datasets/data_with_vorticity/`)。</li>
+                <li>完成后，您可以从“数据管理”选项卡切换到这个新的数据集进行可视化。</li>
+            </ol>
         </div>
         
-        <div class="warning">
+        <!-- ==================== 其他功能 (待重构) ==================== -->
+        <div class="section-box" style="background-color: #f8f9fa;">
+            <h3>后续功能 (重构中)</h3>
             <p>
-                <b>总结与区分:</b>
-                <ul>
-                    <li><b>1. 逐帧派生变量:</b> <code>f(point, time) -> value(point, time)</code>。结果随时间和空间变化。</li>
-                    <li><b>2. 时间聚合变量:</b> <code>f(point, all_times) -> value(point)</code>。结果只随空间变化，不随时间变化。</li>
-                    <li><b>3. 组合批量计算:</b> 混合以上两种模式，按顺序执行。</li>
-                    <li><b>4. 全局常量:</b> <code>f(all_points, all_times) -> single_value</code>。结果是一个不随任何因素变化的标量。</li>
-                </ul>
+                以下功能正在为新的Parquet架构进行重构，并将在后续更新中可用：
             </p>
+            <ul>
+                <li><b>时间聚合数据集:</b> 从一个源数据集生成一个时间平均场数据集。</li>
+                <li><b>全局常量计算:</b> 基于整个数据集计算单个标量值。</li>
+                <li><b>组合批量计算:</b> 允许定义一个多步骤的数据转换流水线，自动生成一系列中间数据集。</li>
+            </ul>
         </div>
     </body>
     </html>
@@ -974,6 +832,77 @@ def get_theme_help_html() -> str:
             您可以基于此文件进行修改，这是一个快速创建自定义主题的起点。
         </p>
         
+    </body>
+    </html>
+    """
+
+def get_data_management_help_html() -> str:
+    """[NEW] 为新的“数据管理”选项卡生成帮助HTML内容。"""
+    return """
+    <html>
+    <head>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; line-height: 1.6; color: #333; }
+            h2 { color: #fd7e14; border-bottom: 2px solid #fd7e14; padding-bottom: 5px; margin-top: 25px; }
+            h3 { color: #fd7e14; border-bottom: 1px solid #ccc; padding-bottom: 5px; margin-top: 20px; }
+            code { background-color: #f0f0f0; padding: 3px 6px; border: 1px solid #ddd; border-radius: 4px; font-family: "Courier New", Courier, monospace; font-size: 0.95em; }
+            ul, ol { padding-left: 25px; } li { margin-bottom: 8px; }
+            .note { border-left: 4px solid #17a2b8; padding: 10px 15px; background-color: #e2f3f5; margin-top: 15px; margin-bottom: 15px; border-radius: 4px; }
+            .warning { border-left: 4px solid #f0ad4e; padding: 10px 15px; background-color: #fcf8e3; margin-top: 15px; margin-bottom: 15px; border-radius: 4px; }
+            .active-item { background-color: #d4edda; font-weight: bold; }
+        </style>
+    </head>
+    <body>
+        <h2>数据管理指南 (Parquet后端)</h2>
+        <p>
+            此选项卡的核心是<b>数据集浏览器</b>。由于应用现在采用“数据不变性”原则，您所有的操作（如计算派生变量）都会生成新的数据集。此浏览器可以帮助您管理这些数据集。
+        </p>
+
+        <h3>数据集浏览器</h3>
+        <p>这是一个树状视图，展示了您项目中所有的数据集及其派生关系。</p>
+        <ul>
+            <li><b>树状结构:</b> 原始数据集（从CSV导入）位于顶层。从它派生出的计算结果会作为它的子节点显示，形成一个清晰的<b>数据血缘（Data Lineage）</b>。</li>
+            <li><b class="active-item">活动数据集:</b> 当前用于可视化的数据集会以绿色背景高亮显示。</li>
+            <li><b>列信息:</b>
+                <ul>
+                    <li><b>数据集名称:</b> 您在创建时指定的唯一名称。</li>
+                    <li><b>创建时间:</b> 数据集生成的具体时间。</li>
+                    <li><b>父级ID:</b> 该数据集所衍生的源数据集的ID。</li>
+                    <li><b>ID:</b> 数据集在元数据中的唯一标识符。</li>
+                </ul>
+            </li>
+        </ul>
+        
+        <h4>操作按钮</h4>
+        <ul>
+            <li><b>切换到选中项:</b> 将浏览器中选定的数据集设为<b>活动数据集</b>。主界面的可视化将立即刷新以显示该数据集的内容。</li>
+            <li><b>重命名选中项...:</b> (待实现) 未来版本将允许您重命名数据集。</li>
+            <li><b>删除选中项:</b> <span class.warning"><b>这是一个危险操作！</b></span> 它将从元数据中移除该数据集记录，并从磁盘上<b>永久删除</b>其对应的所有Parquet文件。如果删除的是一个父数据集，其所有子数据集也会被一并删除。</li>
+        </ul>
+
+        <h3>全局数据过滤器</h3>
+        <p>
+            这是一个强大的功能，允许您对<b>当前活动的数据集</b>应用一个筛选条件。
+            一旦启用，所有后续的可视化、统计计算和数据导出都将<b>只考虑满足条件的数据点</b>。
+        </p>
+        <ul>
+            <li>
+                <b>语法:</b> 使用一种简化的表达式。支持多个条件通过 `AND` 连接。
+                <br><b>格式:</b> <code>变量名 操作符 数值</code>, 例如: <code>p > 101325 AND x < 0.5</code>
+            </li>
+            <li>
+                <b><span class="new-feature">辅助构建器:</span></b> 点击 "构建..." 按钮，可以使用可视化界面来添加条件，无需手动编写。
+            </li>
+            <li><b>应用:</b> 输入或构建表达式后，必须点击“<b>应用</b>”按钮才能生效。清除表达式并点击“应用”可以取消过滤。</li>
+        </ul>
+        <div class="note">
+            <p><b>重要提示:</b>
+                <ul>
+                    <li>应用或更改过滤器后，所有内存缓存都将失效，数据会从Parquet文件重新加载。</li>
+                    <li>为了确保看到过滤后数据的最佳视图，建议点击主工具栏的“<b>重置视图</b>”按钮。</li>
+                </ul>
+            </p>
+        </div>
     </body>
     </html>
     """
