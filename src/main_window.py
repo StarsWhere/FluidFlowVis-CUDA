@@ -1,10 +1,9 @@
-
 from PyQt6.QtGui import QIcon
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
 import logging
-from typing import Optional
+from typing import Optional, List
 import numpy as np
 from PyQt6.QtWidgets import QMainWindow, QMessageBox, QFileDialog, QLineEdit, QMenu, QInputDialog, QToolTip, QListWidgetItem, QTableWidgetItem, QApplication
 from PyQt6.QtCore import Qt, QSettings, QPoint, QTimer
@@ -414,8 +413,16 @@ class MainWindow(QMainWindow):
         self.profile_dialog.show()
 
     def _apply_visualization_settings(self):
-        if self.data_manager.get_frame_count() == 0: return
+        """
+        [OPTIMIZED] 应用可视化设置。
+        现在此方法会计算所需变量并将其传递给数据加载函数。
+        """
+        if self.data_manager.get_frame_count() == 0:
+            return
+        
         config = self.config_handler.get_current_config()
+        
+        # 应用设置到绘图控件
         self.ui.plot_widget.set_config(
             heatmap_config=config['heatmap'], contour_config=config['contour'],
             vector_config=config['vector'], analysis=config['analysis'],
@@ -423,25 +430,62 @@ class MainWindow(QMainWindow):
             chart_title=config['axes']['title'], aspect_ratio_config=config['axes']['aspect_config'],
             grid_resolution=(config['export']['video_grid_w'], config['export']['video_grid_h']), use_gpu=config['performance']['gpu']
         )
+        
         is_time_avg = config['analysis']['time_average']['enabled']
+        
         if is_time_avg:
             start, end = config['analysis']['time_average']['start_frame'], config['analysis']['time_average']['end_frame']
-            if start >= end: self.ui.status_bar.showMessage("时间平均范围无效：起始帧必须小于结束帧。", 3000); return
+            if start >= end:
+                self.ui.status_bar.showMessage("时间平均范围无效：起始帧必须小于结束帧。", 3000)
+                return
+            # 注意：时间平均目前仍会加载所有变量进行平均，这是一个待办的进一步优化点
             data = self.data_manager.get_time_averaged_data(start, end)
-            self.ui.plot_widget.update_data(data); self._update_frame_info(is_time_avg=True, start=start, end=end)
+            self.ui.plot_widget.update_data(data)
+            self._update_frame_info(is_time_avg=True, start=start, end=end)
         else:
-            self._load_frame(self.current_frame_index)
+            # [OPTIMIZED] 瞬时场模式：计算并传递所需变量
+            required_vars = set()
+            formulas = [
+                config['axes'].get('x_formula', 'x'),
+                config['axes'].get('y_formula', 'y')
+            ]
+            if config['heatmap'].get('enabled'):
+                formulas.append(config['heatmap'].get('formula'))
+            if config['contour'].get('enabled'):
+                formulas.append(config['contour'].get('formula'))
+            if config['vector'].get('enabled'):
+                formulas.append(config['vector'].get('u_formula'))
+                formulas.append(config['vector'].get('v_formula'))
+            
+            for f in filter(None, formulas):
+                required_vars.update(self.formula_engine.get_used_variables(f))
+
+            logger.info(f"可视化刷新，按需加载变量: {required_vars}")
+            self._load_frame(self.current_frame_index, required_columns=list(required_vars))
+            
         self.ui.status_bar.showMessage("可视化设置已更新。", 2000)
 
-    def _load_frame(self, frame_index: int):
-        if not (0 <= frame_index < self.data_manager.get_frame_count()): return
-        data = self.data_manager.get_frame_data(frame_index)
+    def _load_frame(self, frame_index: int, required_columns: Optional[List[str]] = None):
+        """
+        [OPTIMIZED] 加载单帧数据。
+        新增 `required_columns` 参数以支持按需加载。
+        """
+        if not (0 <= frame_index < self.data_manager.get_frame_count()):
+            return
+            
+        data = self.data_manager.get_frame_data(frame_index, required_columns=required_columns)
+        
         if data is not None:
             self.current_frame_index = frame_index
-            self.ui.time_slider.blockSignals(True); self.ui.time_slider.setValue(frame_index); self.ui.time_slider.blockSignals(False)
+            self.ui.time_slider.blockSignals(True)
+            self.ui.time_slider.setValue(frame_index)
+            self.ui.time_slider.blockSignals(False)
+            
             self.ui.plot_widget.update_data(data)
             self._update_frame_info()
-            if self.ui.plot_widget.last_mouse_coords: self.ui.plot_widget.get_probe_data_at_coords(*self.ui.plot_widget.last_mouse_coords)
+            
+            if self.ui.plot_widget.last_mouse_coords:
+                self.ui.plot_widget.get_probe_data_at_coords(*self.ui.plot_widget.last_mouse_coords)
 
     def _update_frame_info(self, is_time_avg: bool = False, start: int = 0, end: int = 0):
         if is_time_avg:

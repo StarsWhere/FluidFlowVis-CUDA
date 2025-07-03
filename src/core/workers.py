@@ -31,22 +31,22 @@ logger = logging.getLogger(__name__)
 
 def _parallel_simple_derived_var_calc(args: Tuple) -> List[Tuple[float, int]]:
     """
-    为单个帧计算简单（非空间）公式，并将结果映射回原始点ID。
-    此函数设计用于在单独的进程中运行。
+    [OPTIMIZED] 为单个帧计算简单（非空间）公式，并将结果映射回原始点ID。
+    现在此函数接收 `required_columns` 以实现按需加载。
     """
-    time_value, db_path, time_variable, new_var_formula, all_globals = args
+    time_value, db_path, time_variable, new_var_formula, all_globals, required_columns = args
     # 每个子进程创建自己的实例
     dm = DataManager()
     dm.setup_project_directory(os.path.dirname(db_path))
     dm.set_time_variable(time_variable)
     formula_engine = FormulaEngine()
-    formula_engine.update_allowed_variables(dm.get_variables())
+    # 必须先更新允许的变量列表，FormulaEngine才能正确解析
+    formula_engine.update_allowed_variables(dm.get_variables(include_id=True))
     formula_engine.update_custom_global_variables(all_globals)
 
     try:
-        # 在get_frame_data之前刷新schema，确保'id'列可用
-        dm.refresh_schema_info(include_id=True)
-        frame_data = dm.get_frame_data(dm._get_sorted_time_values().index(time_value))
+        # 按需加载数据
+        frame_data = dm.get_frame_data(dm._get_sorted_time_values().index(time_value), required_columns=required_columns)
 
         if frame_data is None or frame_data.empty:
             return []
@@ -73,24 +73,20 @@ def _parallel_simple_derived_var_calc(args: Tuple) -> List[Tuple[float, int]]:
 
 def _parallel_spatial_derived_var_calc(args: Tuple) -> List[Tuple[float, int]]:
     """
-    为单个帧计算空间公式，并将结果映射回原始点ID。
-    此函数设计用于在单独的进程中运行。
+    [OPTIMIZED] 为单个帧计算空间公式，并将结果映射回原始点ID。
+    现在此函数接收 `required_columns` 以实现按需加载。
     """
-    time_value, db_path, time_variable, new_var_formula, x_formula, y_formula, grid_res, all_globals = args
+    time_value, db_path, time_variable, new_var_formula, x_formula, y_formula, grid_res, all_globals, required_columns = args
     try:
         # 每个子进程创建自己的实例
         dm = DataManager()
         dm.setup_project_directory(os.path.dirname(db_path))
         dm.set_time_variable(time_variable)
         formula_engine = FormulaEngine()
-        # 在刷新schema之前更新变量，以防公式依赖于新变量
-        all_vars_from_db = dm.get_variables()
-        formula_engine.update_allowed_variables(all_vars_from_db)
+        formula_engine.update_allowed_variables(dm.get_variables(include_id=True))
         formula_engine.update_custom_global_variables(all_globals)
         
-        # 在get_frame_data之前刷新schema，确保'id'列可用
-        dm.refresh_schema_info(include_id=True)
-        frame_data = dm.get_frame_data(dm._get_sorted_time_values().index(time_value))
+        frame_data = dm.get_frame_data(dm._get_sorted_time_values().index(time_value), required_columns=required_columns)
 
         if frame_data is None or frame_data.empty:
             return []
@@ -113,20 +109,16 @@ def _parallel_spatial_derived_var_calc(args: Tuple) -> List[Tuple[float, int]]:
         original_y = formula_engine.evaluate_formula(frame_data, y_formula)
         points_to_sample = np.vstack([original_y, original_x]).T
         
-        # 用于interpn的网格坐标
         grid_coords = (grid_y[:, 0], grid_x[0, :])
         
-        # 在原始数据点位置对计算出的网格进行采样
         sampled_values = interpn(grid_coords, result_grid, points_to_sample, method='linear', bounds_error=False, fill_value=np.nan)
         
-        # 将原始ID与新计算的值组合
         if 'id' not in frame_data.columns:
             logger.error(f"致命错误：在时间为 {time_value} 的帧数据中未找到 'id' 列。无法映射结果。")
             return []
             
         point_ids = frame_data['id'].values
         
-        # 为UPDATE查询返回一个 (new_value, point_id) 列表
         update_data = []
         for i in range(len(point_ids)):
             if not np.isnan(sampled_values[i]):
@@ -135,7 +127,6 @@ def _parallel_spatial_derived_var_calc(args: Tuple) -> List[Tuple[float, int]]:
         return update_data
 
     except Exception as e:
-        # 添加更详细的日志记录
         logger.error(f"时间值为 {time_value} 的子进程在空间计算期间失败。公式: '{new_var_formula}'. 错误: {e}", exc_info=True)
         return []
 
@@ -145,16 +136,16 @@ def _parallel_spatial_calc(args: Tuple) -> Tuple[Any, float]:
     """
     time_value, db_path, time_variable, inner_expr, agg_func, base_globals = args
     try:
-        # 每个子进程创建自己的 DataManager 和 FormulaEngine 实例
         dm = DataManager()
         dm.setup_project_directory(os.path.dirname(db_path))
-        dm.set_time_variable(time_variable) # Ensure correct time axis
+        dm.set_time_variable(time_variable)
         formula_engine = FormulaEngine()
         formula_engine.update_allowed_variables(dm.get_variables())
         formula_engine.update_custom_global_variables(base_globals)
         
-        # Fetch data for a specific time value
-        frame_data = dm.get_frame_data(dm._get_sorted_time_values().index(time_value))
+        required_columns = formula_engine.get_used_variables(inner_expr)
+        
+        frame_data = dm.get_frame_data(dm._get_sorted_time_values().index(time_value), required_columns=list(required_columns))
         if frame_data is None or frame_data.empty:
             return time_value, np.nan
         
@@ -176,7 +167,6 @@ def _parallel_spatial_calc(args: Tuple) -> Tuple[Any, float]:
 # --- End of helper function ---
 
 class DatabaseImportWorker(QThread):
-    """扫描CSV，导入数据库，并自动计算基础统计数据。"""
     progress = pyqtSignal(int, int, str)
     log_message = pyqtSignal(str)
     finished = pyqtSignal()
@@ -185,7 +175,7 @@ class DatabaseImportWorker(QThread):
     def __init__(self, data_manager: DataManager, formula_engine: FormulaEngine, parent=None):
         super().__init__(parent)
         self.dm = data_manager
-        self.formula_engine = formula_engine # Store the FormulaEngine instance
+        self.formula_engine = formula_engine
         self.is_cancelled = False
     
     def run(self):
@@ -204,7 +194,6 @@ class DatabaseImportWorker(QThread):
             conn = self.dm.get_db_connection()
             self.dm.create_database_tables(conn)
             
-            # Add frame_index and source_file columns to the definition
             cols_def_parts = [f'"{col}" REAL' for col in all_cols]
             table_def = f"""
                 CREATE TABLE timeseries_data (
@@ -214,18 +203,16 @@ class DatabaseImportWorker(QThread):
                     {", ".join(cols_def_parts)}
                 );
             """
-            conn.execute("DROP TABLE IF EXISTS timeseries_data;") # Ensure fresh start
+            conn.execute("DROP TABLE IF EXISTS timeseries_data;")
             conn.execute(table_def)
             conn.commit()
 
             for i, filename in enumerate(csv_files):
                 if self.is_cancelled: break
                 self.progress.emit(i + 1, len(csv_files) + 2, f"正在导入: {filename}")
-                # Load all original columns
                 df = pd.read_csv(os.path.join(self.dm.project_directory, filename), dtype={col: float for col in numeric_cols})
                 df['frame_index'] = i
                 df['source_file'] = filename
-                # Ensure columns match the table schema order
                 df_ordered = df[['frame_index', 'source_file'] + all_cols]
                 df_ordered.to_sql('timeseries_data', conn, if_exists='append', index=False)
             
@@ -238,8 +225,7 @@ class DatabaseImportWorker(QThread):
             
             self.log_message.emit("导入完成，正在计算基础统计数据...")
             self.dm.refresh_schema_info()
-            # Calculate stats for all numeric columns found
-            stats_worker = GlobalStatsWorker(self.dm, self.formula_engine, self.dm.get_time_candidates()) # Pass formula_engine
+            stats_worker = GlobalStatsWorker(self.dm, self.formula_engine, self.dm.get_time_candidates())
             stats_worker.progress.connect(lambda cur, tot, msg: self.progress.emit(len(csv_files) + 2, len(csv_files) + 2, f"统计: {msg}"))
             stats_worker.error.connect(self.error.emit)
             stats_worker.finished.connect(lambda: self.finished.emit())
@@ -302,19 +288,25 @@ class DerivedVariableWorker(QThread):
                 
                 is_spatial = any(re.search(r'\b' + re.escape(f) + r'\s*\(', formula) for f in self.formula_engine.spatial_functions)
 
+                # [OPTIMIZED] 确定计算所需的列
+                required_columns = self.formula_engine.get_used_variables(formula)
+                logger.info(f"计算 '{new_name}' (公式: {formula}) 需要变量: {required_columns}")
+                
                 if is_spatial:
-                    logger.info(f"检测到空间运算，为 '{new_name}' 切换到逐帧插值计算模式。")
-                    self._run_parallel_computation(conn, new_name, formula, is_spatial=True, step_info=(i, total_steps))
+                    logger.info(f"为 '{new_name}' 切换到逐帧插值计算模式。")
+                    self._run_parallel_computation(conn, new_name, formula, is_spatial=True, step_info=(i, total_steps), required_columns=list(required_columns))
                 else:
-                    logger.info(f"为 '{new_name}' 使用逐帧并行计算模式（支持复杂函数）。")
-                    self._run_parallel_computation(conn, new_name, formula, is_spatial=False, step_info=(i, total_steps))
+                    logger.info(f"为 '{new_name}' 使用逐帧并行计算模式。")
+                    self._run_parallel_computation(conn, new_name, formula, is_spatial=False, step_info=(i, total_steps), required_columns=list(required_columns))
                 
                 self.dm.save_variable_definition(new_name, formula, "per-frame")
+                # 刷新 Schema 信息，以便后续步骤可以使用这个新变量
                 self.dm.refresh_schema_info()
                 self.formula_engine.update_allowed_variables(self.dm.get_variables())
 
+                # 为新计算出的变量生成统计数据
                 stats_worker = GlobalStatsWorker(self.dm, self.formula_engine, [new_name])
-                stats_worker.error.connect(lambda e: logger.error(f"计算 '{new_name}' 统计时出错: {e}"))
+                stats_worker.error.connect(lambda e: logger.error(f"计算 '{new_name}' 的统计数据时出错: {e}"))
                 stats_worker.run()
             
             self.progress.emit(total_steps, total_steps, "全部完成！")
@@ -327,7 +319,7 @@ class DerivedVariableWorker(QThread):
             if conn:
                 conn.close()
 
-    def _run_parallel_computation(self, conn, new_name, formula, is_spatial, step_info):
+    def _run_parallel_computation(self, conn, new_name, formula, is_spatial, step_info, required_columns):
         current_step, total_steps = step_info
         safe_name = f'"{new_name}"'
         cursor = conn.cursor()
@@ -343,12 +335,16 @@ class DerivedVariableWorker(QThread):
         self.dm.load_global_stats()
         all_globals = self.dm.global_stats.copy()
 
+        # [OPTIMIZED] 将必需的列列表传递给并行任务
         if is_spatial:
             x_formula, y_formula, grid_res = 'x', 'y', (150, 150)
-            tasks = [(t_val, self.dm.db_path, self.dm.time_variable, formula, x_formula, y_formula, grid_res, all_globals) for t_val in time_values]
+            # 确保空间运算所需的基础坐标被包含
+            required_columns.extend(self.formula_engine.get_used_variables(x_formula))
+            required_columns.extend(self.formula_engine.get_used_variables(y_formula))
+            tasks = [(t_val, self.dm.db_path, self.dm.time_variable, formula, x_formula, y_formula, grid_res, all_globals, list(set(required_columns))) for t_val in time_values]
             worker_func = _parallel_spatial_derived_var_calc
         else:
-            tasks = [(t_val, self.dm.db_path, self.dm.time_variable, formula, all_globals) for t_val in time_values]
+            tasks = [(t_val, self.dm.db_path, self.dm.time_variable, formula, all_globals, list(set(required_columns))) for t_val in time_values]
             worker_func = _parallel_simple_derived_var_calc
 
         all_update_data = []
@@ -472,7 +468,6 @@ class TimeAggregatedVariableWorker(QThread):
                 conn.commit()
 
                 self.progress.emit(i, total_steps, f"({i+1}.4) 将聚合值写回主表...")
-                # [FIXED] Reverted to the highly efficient UPDATE FROM syntax for SQLite.
                 update_query = f"""
                     UPDATE timeseries_data
                     SET {safe_name} = T.agg_value
@@ -512,46 +507,89 @@ class BatchExportWorker(QThread):
     log_message = pyqtSignal(str)
     summary_ready = pyqtSignal(str) 
 
-    def __init__(self, config_files: List[str], data_manager: DataManager, output_dir: str, parent=None):
-        super().__init__(parent); self.config_files, self.dm, self.output_dir = config_files, data_manager, output_dir; self.is_cancelled = False
+    def __init__(self, config_files: List[str], data_manager: DataManager, output_dir: str, formula_engine: FormulaEngine, parent=None):
+        super().__init__(parent)
+        self.config_files = config_files
+        self.dm = data_manager
+        self.output_dir = output_dir
+        self.formula_engine = formula_engine
+        self.is_cancelled = False
 
     def run(self):
         successful, failed, skipped, total = 0, 0, 0, len(self.config_files)
+        self.formula_engine.update_allowed_variables(self.dm.get_variables())
+
         for i, filepath in enumerate(self.config_files):
             if self.is_cancelled: break
             filename = os.path.basename(filepath)
-            self.progress.emit(i, total, filename); self.log_message.emit(f"读取配置: {filename}")
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f: config = json.load(f)
+            self.progress.emit(i, total, filename)
+            self.log_message.emit(f"读取配置: {filename}")
 
-                is_time_avg = config.get('analysis',{}).get('time_average',{}).get('enabled', False)
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+
+                is_time_avg = config.get('analysis', {}).get('time_average', {}).get('enabled', False)
                 if is_time_avg:
                     self.log_message.emit(f"跳过: {filename} (配置为时间平均场模式)")
                     skipped += 1
                     continue
 
+                required_vars = set()
+                formulas = [
+                    config['axes'].get('x_formula', 'x'),
+                    config['axes'].get('y_formula', 'y')
+                ]
+                if config.get('heatmap', {}).get('enabled'):
+                    formulas.append(config['heatmap'].get('formula'))
+                if config.get('contour', {}).get('enabled'):
+                    formulas.append(config['contour'].get('formula'))
+                if config.get('vector', {}).get('enabled'):
+                    formulas.append(config['vector'].get('u_formula'))
+                    formulas.append(config['vector'].get('v_formula'))
+
+                for f in filter(None, formulas):
+                    required_vars.update(self.formula_engine.get_used_variables(f))
+                
+                self.log_message.emit(f"  └ 依赖变量: {required_vars if required_vars else '无'}")
+
                 export_cfg = config.get("export", {})
                 p_conf = {
-                    'x_axis_formula': config.get('axes',{}).get('x_formula','x'), 'y_axis_formula': config.get('axes',{}).get('y_formula','y'),
-                    'chart_title': config.get('axes',{}).get('title',''), 'use_gpu': config.get('performance',{}).get('gpu',False),
-                    'heatmap_config': config.get('heatmap',{}), 'contour_config': config.get('contour',{}), 'vector_config': config.get('vector',{}),
-                    'analysis': config.get('analysis',{}),
-                    'grid_resolution': (export_cfg.get("video_grid_w",300), export_cfg.get("video_grid_h",300)),
-                    'export_dpi': export_cfg.get("dpi",300), 'global_scope': self.dm.global_stats
+                    'x_axis_formula': config.get('axes', {}).get('x_formula', 'x'),
+                    'y_axis_formula': config.get('axes', {}).get('y_formula', 'y'),
+                    'chart_title': config.get('axes', {}).get('title', ''),
+                    'use_gpu': config.get('performance', {}).get('gpu', False),
+                    'heatmap_config': config.get('heatmap', {}),
+                    'contour_config': config.get('contour', {}),
+                    'vector_config': config.get('vector', {}),
+                    'analysis': config.get('analysis', {}),
+                    'grid_resolution': (export_cfg.get("video_grid_w", 300), export_cfg.get("video_grid_h", 300)),
+                    'export_dpi': export_cfg.get("dpi", 300),
+                    'global_scope': self.dm.global_stats,
+                    'required_variables': list(required_vars)
                 }
-                s_f, e_f, fps = export_cfg.get("video_start_frame",0), export_cfg.get("video_end_frame",self.dm.get_frame_count()-1), export_cfg.get("video_fps",15)
-                if s_f >= e_f: raise ValueError("起始帧需小于结束帧")
+                
+                s_f, e_f, fps = export_cfg.get("video_start_frame", 0), export_cfg.get("video_end_frame", self.dm.get_frame_count() - 1), export_cfg.get("video_fps", 15)
+                if s_f >= e_f:
+                    raise ValueError("起始帧需小于结束帧")
 
                 out_fname = os.path.join(self.output_dir, f"batch_{os.path.splitext(filename)[0]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
                 self.log_message.emit(f"准备导出: {os.path.basename(out_fname)}")
                 
                 vid_worker = VideoExportWorker(self.dm, p_conf, out_fname, s_f, e_f, fps)
                 vid_worker.progress_updated.connect(lambda cur, tot, msg: self.log_message.emit(f"  └ {msg}"))
-                vid_worker.run(); vid_worker.wait()
+                vid_worker.run()
+                vid_worker.wait()
 
-                if vid_worker.success: self.log_message.emit(f"成功: {filename}"); successful += 1
-                else: self.log_message.emit(f"失败: {filename}. 原因: {vid_worker.message}"); failed += 1
-            except Exception as e: self.log_message.emit(f"处理 '{filename}' 时发生严重错误: {e}"); failed += 1
+                if vid_worker.success:
+                    self.log_message.emit(f"成功: {filename}")
+                    successful += 1
+                else:
+                    self.log_message.emit(f"失败: {filename}. 原因: {vid_worker.message}")
+                    failed += 1
+            except Exception as e:
+                self.log_message.emit(f"处理 '{filename}' 时发生严重错误: {e}")
+                failed += 1
         
         summary_message = f"成功导出 {successful} 个视频，失败 {failed} 个，跳过 {skipped} 个。"
         self.summary_ready.emit(summary_message)
@@ -572,26 +610,32 @@ class GlobalStatsWorker(QThread):
 
     def run(self):
         try:
-            numeric_vars = [v for v in self.vars_to_calc if v != 'source_file' and v != 'id']
+            numeric_vars = [v for v in self.vars_to_calc if v != 'source_file' and v != 'id' and v in self.dm.get_variables()]
             if not numeric_vars:
+                logger.info("在GlobalStatsWorker中没有找到有效的数值变量进行计算。")
                 self.finished.emit()
                 return
 
-            queries = self.calculator.get_global_stats_queries(numeric_vars)
-            if not queries: self.finished.emit(); return
+            self.progress.emit(0, 1, f"正在为 {len(numeric_vars)} 个变量计算基础统计...")
+            query = self.calculator.get_global_stats_query(numeric_vars)
+            if not query:
+                self.finished.emit()
+                return
             
-            stats_results = {}
             conn = self.dm.get_db_connection()
-            total = len(queries)
-            for i, (var, query) in enumerate(queries.items()):
-                self.progress.emit(i + 1, total, f"变量: {var}")
-                res = conn.execute(query).fetchone()
-                mean, sum_val, min_val, max_val, var_val, std_val = res if res and all(r is not None for r in res) else (0,0,0,0,0,0)
-                stats_results.update({f"{var}_global_mean": mean, f"{var}_global_sum": sum_val, f"{var}_global_min": min_val, f"{var}_global_max": max_val, f"{var}_global_var": var_val, f"{var}_global_std": std_val})
-
+            df_stats = pd.read_sql_query(query, conn)
             conn.close()
-            self.dm.save_global_stats(stats_results)
+
+            if not df_stats.empty:
+                stats_results = df_stats.iloc[0].to_dict()
+                stats_results = {k: v for k, v in stats_results.items() if pd.notna(v)}
+                self.dm.save_global_stats(stats_results)
+            else:
+                logger.warning("全局统计查询未返回任何结果。")
+
+            self.progress.emit(1, 1, "统计计算完成！")
             self.finished.emit()
+
         except Exception as e:
             logger.error(f"全局统计计算失败: {e}", exc_info=True)
             self.error.emit(str(e))
@@ -672,7 +716,6 @@ class CustomGlobalStatsWorker(QThread):
         return np.mean(frame_results)
 
 class DataExportWorker(QThread):
-    """后台导出数据到CSV的线程。"""
     progress = pyqtSignal(int, int, str)
     finished = pyqtSignal()
     error = pyqtSignal(str)

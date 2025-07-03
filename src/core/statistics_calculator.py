@@ -15,28 +15,30 @@ class StatisticsCalculator:
     def __init__(self, data_manager):
         self.data_manager = data_manager
 
-    def get_global_stats_queries(self, vars_to_calc: List[str]) -> Dict[str, str]:
-        """为指定的数值变量生成计算全局统计量的SQL查询。"""
+    def get_global_stats_query(self, vars_to_calc: List[str]) -> str:
+        """
+        [OPTIMIZED] 为所有指定的数值变量生成一个单一的、批量的SQL查询来计算全局统计量。
+        """
         if not vars_to_calc:
-            return {}
-        queries = {}
+            return ""
+
+        select_parts = []
         for var in vars_to_calc:
             safe_var = f'"{var}"'
-            # Using SQLite's built-in functions for variance/stddev is generally fine and fast.
-            # AVG(X*X) - AVG(X)*AVG(X) is a more stable way to calculate variance in a single pass.
+            # 使用更稳定的单通方差计算公式: AVG(X*X) - AVG(X)*AVG(X)
             variance_formula = f"(AVG({safe_var} * {safe_var}) - AVG({safe_var}) * AVG({safe_var}))"
-            queries[var] = f"""
-                SELECT 
-                    AVG({safe_var}),
-                    SUM({safe_var}),
-                    MIN({safe_var}),
-                    MAX({safe_var}),
-                    {variance_formula},
-                    SQRT({variance_formula})
-                FROM timeseries_data
-            """
-        logger.info(f"为 {len(vars_to_calc)} 个变量生成了基础统计SQL查询。")
-        return queries
+            select_parts.extend([
+                f"AVG({safe_var}) as {var}_global_mean",
+                f"SUM({safe_var}) as {var}_global_sum",
+                f"MIN({safe_var}) as {var}_global_min",
+                f"MAX({safe_var}) as {var}_global_max",
+                f"{variance_formula} as {var}_global_var",
+                f"SQRT({variance_formula}) as {var}_global_std"
+            ])
+        
+        query = "SELECT " + ", ".join(select_parts) + " FROM timeseries_data"
+        logger.info(f"为 {len(vars_to_calc)} 个变量生成了批量统计SQL查询。")
+        return query
     
     def parse_definition(self, definition: str) -> Tuple[str, str, str]:
         """解析单条定义，返回 name, formula, 和 aggregation_function。"""

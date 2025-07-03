@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os, logging, time, numpy as np
@@ -71,9 +70,14 @@ class VideoExportWorker(QThread):
                 shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def _render_frame(self, idx, temp_dir):
+        """
+        [OPTIMIZED] 渲染单帧。
+        现在使用 `required_variables` 从 `p_conf` 来按需加载数据。
+        """
         if self.is_cancelled: return None
         try:
-            data = self.dm.get_frame_data(idx)
+            required_vars = self.p_conf.get('required_variables')
+            data = self.dm.get_frame_data(idx, required_columns=required_vars)
             if data is None: raise ValueError(f"无法为帧 {idx} 加载数据")
 
             frame_conf = self.p_conf.copy()
@@ -91,6 +95,8 @@ class VideoExportWorker(QThread):
                     frame_conf['chart_title'] = raw_title
             
             plotter = HeadlessPlotter(frame_conf)
+            # 传递所有变量名列表给绘图器，用于公式引擎的变量识别，
+            # 但实际传入的数据(data)是经过按需加载的，只包含必要的列。
             image_array = plotter.render_frame(data, self.dm.get_variables())
             
             import imageio

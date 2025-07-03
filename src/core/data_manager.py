@@ -165,28 +165,47 @@ class DataManager(QObject):
                 self._sorted_time_values = []
         return self._sorted_time_values
 
-    def get_frame_data(self, frame_index: int) -> Optional[pd.DataFrame]:
+    def get_frame_data(self, frame_index: int, required_columns: Optional[List[str]] = None) -> Optional[pd.DataFrame]:
+        """
+        加载指定帧的数据。
+        [OPTIMIZED] 新增 `required_columns` 参数以实现按需加载。
+        """
         time_values = self._get_sorted_time_values()
-        if not (0 <= frame_index < len(time_values)): return None
-        
+        if not (0 <= frame_index < len(time_values)):
+            return None
+
         time_value = time_values[frame_index]
-        # Use a tuple as a key, including filter and time variable for cache invalidation
-        cache_key = (frame_index, self.global_filter_clause, self.time_variable)
         
+        # [OPTIMIZED] 缓存键现在必须包含请求的列，以避免返回不完整的数据
+        required_cols_tuple = tuple(sorted(required_columns)) if required_columns else None
+        cache_key = (frame_index, self.global_filter_clause, self.time_variable, required_cols_tuple)
+
         if cache_key in self.cache:
             self.cache.move_to_end(cache_key)
             return self.cache[cache_key]
-        
+
         try:
             conn = self.get_db_connection()
-            # [FIX] Ensure ALL available columns are selected to make all variables available for computation.
-            all_known_vars = self.get_variables(include_id=True)
-            if not all_known_vars: 
+            db_vars = self.get_variables(include_id=True)
+            
+            # [OPTIMIZED] 构建要查询的列列表
+            if required_columns:
+                # 核心列是绘图和计算的基础，必须始终加载
+                core_cols = {'x', 'y', self.time_variable, 'id', 'frame_index'}
+                cols_to_select_set = set(required_columns).union(core_cols)
+                # 只选择数据库中实际存在的列
+                final_cols = [var for var in cols_to_select_set if var in db_vars]
+                cols_to_select_str = ", ".join([f'"{var}"' for var in final_cols])
+            else:
+                # 如果未指定，则加载所有列（旧行为，用于数据导出等）
+                cols_to_select_str = ", ".join([f'"{var}"' for var in db_vars])
+
+            if not cols_to_select_str:
+                logger.warning("按需加载的列计算结果为空，无法查询数据。")
                 conn.close()
                 return pd.DataFrame()
 
-            cols_to_select = ", ".join([f'"{var}"' for var in all_known_vars])
-            query = f'SELECT {cols_to_select} FROM timeseries_data WHERE "{self.time_variable}" = ? {self.global_filter_clause}'
+            query = f'SELECT {cols_to_select_str} FROM timeseries_data WHERE "{self.time_variable}" = ? {self.global_filter_clause}'
             
             data = pd.read_sql_query(query, conn, params=(time_value,))
             conn.close()
