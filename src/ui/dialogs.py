@@ -1,3 +1,4 @@
+# src/ui/dialogs.py
 
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -10,7 +11,7 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar,
     QPushButton, QTextEdit, QListWidget, QDialogButtonBox, QMessageBox,
-    QComboBox, QInputDialog, QLineEdit
+    QComboBox, QInputDialog, QLineEdit, QListWidgetItem
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QIcon
@@ -316,3 +317,40 @@ class FilterBuilderDialog(QDialog):
             return True
         except ValueError:
             return False
+
+class VariableSelectionDialog(QDialog):
+    """
+    [NEW] 一个用于让用户选择一个或多个变量（列）进行导出的对话框。
+    """
+    def __init__(self, all_variables: List[str], parent=None):
+        super().__init__(parent)
+        self.setWindowIcon(QIcon("png/icon.png"))
+        self.setWindowTitle("选择要导出的变量")
+        self.setMinimumSize(400, 500)
+        
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("请选择要包含在导出文件中的变量列:"))
+        
+        self.list_widget = QListWidget()
+        self.list_widget.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.list_widget.addItems(sorted(all_variables))
+        layout.addWidget(self.list_widget)
+        
+        buttons_layout = QHBoxLayout()
+        self.select_all_btn = QPushButton("全选")
+        self.select_all_btn.clicked.connect(self.list_widget.selectAll)
+        self.deselect_all_btn = QPushButton("全不选")
+        self.deselect_all_btn.clicked.connect(self.list_widget.clearSelection)
+        buttons_layout.addWidget(self.select_all_btn)
+        buttons_layout.addWidget(self.deselect_all_btn)
+        buttons_layout.addStretch()
+        layout.addLayout(buttons_layout)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def get_selected_variables(self) -> List[str]:
+        """返回用户选择的变量列表。"""
+        return [item.text() for item in self.list_widget.selectedItems()]

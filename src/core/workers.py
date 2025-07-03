@@ -1,3 +1,5 @@
+# src/core/workers.py
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -23,6 +25,13 @@ from src.core.statistics_calculator import StatisticsCalculator
 from src.visualization.video_exporter import VideoExportWorker
 from src.core.formula_engine import FormulaEngine
 from src.core.computation_core import compute_gridded_field
+
+try:
+    import pyarrow
+    PYARROW_AVAILABLE = True
+except ImportError:
+    PYARROW_AVAILABLE = False
+
 
 logger = logging.getLogger(__name__)
 
@@ -720,42 +729,80 @@ class DataExportWorker(QThread):
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, data_manager, filepath, filter_clause, parent=None):
+    def __init__(self, data_manager: DataManager, filepath: str, filter_clause: str, selected_variables: List[str], parent=None):
         super().__init__(parent)
         self.dm = data_manager
         self.filepath = filepath
         self.filter_clause = filter_clause.replace("AND", "", 1).strip() if filter_clause.startswith("AND") else filter_clause
+        self.selected_variables = selected_variables
 
     def run(self):
         try:
             conn = self.dm.get_db_connection()
             
             count_query = f"SELECT COUNT(*) FROM timeseries_data"
-            if self.filter_clause: count_query += f" WHERE {self.filter_clause}"
+            if self.filter_clause:
+                count_query += f" WHERE {self.filter_clause}"
             total_rows = conn.execute(count_query).fetchone()[0]
-            if total_rows == 0: self.error.emit("没有符合过滤条件的数据可导出。"); return
+            if total_rows == 0:
+                self.error.emit("没有符合过滤条件的数据可导出。")
+                conn.close()
+                return
 
-            query = "SELECT * FROM timeseries_data"
-            if self.filter_clause: query += f" WHERE {self.filter_clause}"
+            if not self.selected_variables:
+                self.error.emit("没有选择任何要导出的变量列。")
+                conn.close()
+                return
+
+            cols_to_select_str = ", ".join([f'"{var}"' for var in self.selected_variables])
+            query = f"SELECT {cols_to_select_str} FROM timeseries_data"
+            if self.filter_clause:
+                query += f" WHERE {self.filter_clause}"
             
             logger.info(f"开始导出数据，查询: {query}")
             
             chunksize = 50000
             chunks = pd.read_sql_query(query, conn, chunksize=chunksize)
             
-            is_first_chunk = True
-            rows_written = 0
-            for i, chunk in enumerate(chunks):
-                mode = 'w' if is_first_chunk else 'a'
-                header = is_first_chunk
-                chunk.to_csv(self.filepath, mode=mode, header=header, index=False)
-                is_first_chunk = False
-                rows_written += len(chunk)
-                self.progress.emit(rows_written, total_rows, f"已导出 {rows_written}/{total_rows} 行")
+            # --- Parquet 导出逻辑 ---
+            if self.filepath.lower().endswith('.parquet'):
+                if not PYARROW_AVAILABLE:
+                    self.error.emit("Parquet 导出失败: 需要安装 'pyarrow' 库。\n请运行: pip install pyarrow")
+                    conn.close()
+                    return
+                
+                # Parquet 不支持分块追加，因此我们将收集所有块然后一次性写入
+                all_chunks = []
+                rows_read = 0
+                for chunk in chunks:
+                    all_chunks.append(chunk)
+                    rows_read += len(chunk)
+                    self.progress.emit(rows_read, total_rows, f"已读取 {rows_read}/{total_rows} 行到内存")
+                
+                if not all_chunks:
+                    self.error.emit("没有数据可写入 Parquet 文件。")
+                    conn.close()
+                    return
+
+                self.progress.emit(total_rows, total_rows, "正在将数据写入 Parquet 文件...")
+                full_df = pd.concat(all_chunks, ignore_index=True)
+                full_df.to_parquet(self.filepath, engine='pyarrow', compression='snappy')
+
+            # --- CSV 导出逻辑 ---
+            else:
+                is_first_chunk = True
+                rows_written = 0
+                for i, chunk in enumerate(chunks):
+                    mode = 'w' if is_first_chunk else 'a'
+                    header = is_first_chunk
+                    chunk.to_csv(self.filepath, mode=mode, header=header, index=False)
+                    is_first_chunk = False
+                    rows_written += len(chunk)
+                    self.progress.emit(rows_written, total_rows, f"已导出 {rows_written}/{total_rows} 行")
 
             conn.close()
             self.finished.emit()
 
         except Exception as e:
-            logger.error(f"导出数据到CSV失败: {e}", exc_info=True)
+            logger.error(f"导出数据失败: {e}", exc_info=True)
             self.error.emit(str(e))

@@ -1,3 +1,5 @@
+# src/handlers/export_handler.py
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -6,11 +8,11 @@
 import os
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 from PyQt6.QtWidgets import QMessageBox, QFileDialog
 from src.visualization.video_exporter import VideoExportDialog
-from src.ui.dialogs import BatchExportDialog, ConfigSelectionDialog, ImportDialog as ProgressDialog
+from src.ui.dialogs import BatchExportDialog, ConfigSelectionDialog, VariableSelectionDialog, ImportDialog as ProgressDialog
 from src.core.workers import BatchExportWorker, DataExportWorker
 from src.core.formula_engine import FormulaEngine # 引入FormulaEngine
 
@@ -39,7 +41,7 @@ class ExportHandler:
         self.ui.batch_export_btn.clicked.connect(self.start_batch_export)
         self.ui.set_output_dir_action.triggered.connect(self._change_output_directory)
         self.ui.change_output_dir_btn.clicked.connect(self._change_output_directory)
-        self.ui.export_data_csv_btn.clicked.connect(self.export_filtered_data_to_csv)
+        self.ui.export_data_csv_btn.clicked.connect(self.export_data) # MODIFIED
 
     def set_output_dir(self, directory: str):
         self.output_dir = directory
@@ -132,26 +134,45 @@ class ExportHandler:
         self.batch_export_dialog.show()
         self.batch_export_worker.start()
 
-    def export_filtered_data_to_csv(self):
+    def export_data(self):
+        """
+        [MODIFIED] 导出数据，支持选择变量和文件格式。
+        """
         if self.dm.get_frame_count() == 0:
-            QMessageBox.warning(self.main_window, "无数据", "请先加载数据再导出。"); return
-        
-        default_name = f"filtered_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        filepath = os.path.join(self.output_dir, default_name)
-
-        reply = QMessageBox.question(self.main_window, "确认导出",
-                                     f"将把当前过滤的数据导出到以下文件：\n\n{filepath}\n\n是否继续？",
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
-
-        if reply != QMessageBox.StandardButton.Yes:
+            QMessageBox.warning(self.main_window, "无数据", "请先加载数据再导出。")
             return
-        
+
+        # 1. 弹出对话框让用户选择变量
+        all_vars = self.dm.get_variables(include_id=True)
+        var_dialog = VariableSelectionDialog(all_vars, self.main_window)
+        if not var_dialog.exec():
+            return  # 用户取消
+
+        selected_vars = var_dialog.get_selected_variables()
+        if not selected_vars:
+            QMessageBox.information(self.main_window, "无选择", "您没有选择任何要导出的变量。")
+            return
+
+        # 2. 弹出文件保存对话框，让用户选择格式
+        default_name = f"exported_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        file_filter = "Parquet 文件 (*.parquet);;CSV 文件 (*.csv)"
+        filepath, selected_filter = QFileDialog.getSaveFileName(
+            self.main_window,
+            "导出数据到文件",
+            os.path.join(self.output_dir, default_name),
+            file_filter
+        )
+
+        if not filepath:
+            return # 用户取消
+
+        # 3. 准备并启动工作线程
         progress = ProgressDialog(self.main_window, "正在导出数据...")
         filter_clause = self.dm.global_filter_clause if self.ui.filter_enabled_checkbox.isChecked() else ""
         
-        self.data_export_worker = DataExportWorker(self.dm, filepath, filter_clause)
+        self.data_export_worker = DataExportWorker(self.dm, filepath, filter_clause, selected_vars)
         self.data_export_worker.progress.connect(progress.update_progress)
-        self.data_export_worker.finished.connect(lambda: QMessageBox.information(self.main_window, "成功", f"数据已成功导出到:\n{filepath}"))
+        self.data_export_worker.finished.connect(lambda f=filepath: QMessageBox.information(self.main_window, "成功", f"数据已成功导出到:\n{f}"))
         self.data_export_worker.finished.connect(progress.accept)
         self.data_export_worker.error.connect(lambda msg: QMessageBox.critical(self.main_window, "导出失败", msg))
         self.data_export_worker.error.connect(progress.accept)

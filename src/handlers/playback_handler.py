@@ -1,3 +1,4 @@
+# src/handlers/playback_handler.py
 
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -64,6 +65,7 @@ class PlaybackHandler:
 
         self.stop_playback()
         self.dm.set_time_variable(new_time_var)
+        self.dm.ensure_index_on(new_time_var) # [OPTIMIZED] 确保在新列上创建索引
         
         frame_count = self.dm.get_frame_count()
         self.ui.time_slider.setMaximum(frame_count - 1 if frame_count > 0 else 0)

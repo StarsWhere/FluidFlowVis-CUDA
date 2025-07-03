@@ -641,6 +641,14 @@ def get_analysis_help_html() -> str:
                 margin-bottom: 15px;
                 border-radius: 4px;
             }
+            .success {
+                border-left: 4px solid #28a745; /* Success green */
+                padding: 10px 15px;
+                background-color: #eaf6ec;
+                margin-top: 15px;
+                margin-bottom: 15px;
+                border-radius: 4px;
+            }
             .new-feature {
                 color: #007bff; /* Primary blue */
                 font-weight: bold;
@@ -690,6 +698,32 @@ def get_analysis_help_html() -> str:
                         <li>复杂的过滤器可能会轻微影响加载速度。</li>
                     </ul>
                 </p>
+            </div>
+        </div>
+
+        <!-- ==================== 数据导出 ==================== -->
+        <div class="section-box">
+            <h3><span class="new-feature">数据导出</span> (位于“数据管理”选项卡)</h3>
+            <p>
+                此功能允许您将当前数据集（可选择应用全局过滤器）导出为文件，并提供了高度的灵活性。
+            </p>
+            <h4>操作步骤:</h4>
+            <ol>
+                <li>点击“数据管理”选项卡下的“<b>导出数据...</b>”按钮。</li>
+                <li>
+                    <b>选择变量:</b> 一个新对话框会弹出，列出所有可用的数据变量。您可以按住 <code>Ctrl</code> 或 <code>Shift</code> 键选择您想要导出的一个或多个变量列。
+                </li>
+                <li>
+                    <b>选择格式:</b> 点击“OK”后，会弹出文件保存对话框。您可以在此处指定文件名，并从下拉菜单中选择文件类型：
+                    <ul>
+                        <li><code>.csv</code>: 传统的逗号分隔值文本文件，通用性好。</li>
+                        <li><code>.parquet</code>: 高性能的列式二进制文件格式。对于大型数据集，它通常比CSV文件<b>更小</b>且读写<b>更快</b>。推荐在进行后续数据分析时使用此格式。</li>
+                    </ul>
+                </li>
+                <li>导出过程将在后台进行，并有进度条显示。</li>
+            </ol>
+            <div class="success">
+                <p><b>最佳实践:</b> 当您需要将数据导入其他分析工具（如Python Pandas, R, MATLAB）时，优先选择 <b>Parquet</b> 格式可以大大提高效率。</p>
             </div>
         </div>
         

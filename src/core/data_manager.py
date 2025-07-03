@@ -1,3 +1,5 @@
+# src/core/data_manager.py
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
@@ -147,6 +149,23 @@ class DataManager(QObject):
         self._frame_count = None
         self._sorted_time_values = None
         self.cache.clear()
+
+    def ensure_index_on(self, column_name: str):
+        """
+        [NEW] 确保指定的列上存在索引以优化查询。
+        """
+        if not self.is_database_ready() or not column_name.isidentifier():
+            return
+        try:
+            conn = self.get_db_connection()
+            # 使用 IF NOT EXISTS 避免重复创建和错误
+            index_name = f"idx_dynamic_{column_name}"
+            query = f'CREATE INDEX IF NOT EXISTS "{index_name}" ON timeseries_data ("{column_name}");'
+            conn.execute(query)
+            conn.close()
+            logger.info(f"已确认在列 '{column_name}' 上存在索引。")
+        except Exception as e:
+            logger.error(f"为列 '{column_name}' 创建动态索引失败: {e}")
 
     def _get_sorted_time_values(self) -> List:
         if self._sorted_time_values is None:
