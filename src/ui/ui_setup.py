@@ -299,7 +299,7 @@ class UiMainWindow:
         
         export_group = QGroupBox("数据导出"); export_layout = QVBoxLayout(export_group)
         info_label = QLabel("将当前数据集（可应用全局过滤器）导出为单个CSV文件。"); info_label.setWordWrap(True); export_layout.addWidget(info_label)
-        self.export_data_csv_btn = QPushButton("导出数据到 CSV..."); export_layout.addWidget(self.export_data_csv_btn)
+        self.export_data_csv_btn = QPushButton("导出数据"); export_layout.addWidget(self.export_data_csv_btn)
         layout.addWidget(export_group)
 
         var_management_group = QGroupBox("变量管理")
