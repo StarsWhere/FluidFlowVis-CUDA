@@ -72,7 +72,6 @@ class DataManager(QObject):
     def get_db_connection(self) -> sqlite3.Connection:
         """返回一个新的数据库连接。调用者负责关闭连接。"""
         if not self.db_path: raise ConnectionError("数据库路径未设置。")
-        # 增加超时时间以应对潜在的短暂锁定
         return sqlite3.connect(self.db_path, timeout=15)
     
     def create_database_tables(self, conn: sqlite3.Connection):
@@ -90,7 +89,6 @@ class DataManager(QObject):
             definition TEXT NOT NULL UNIQUE
         );
         """)
-        # 新增：创建变量定义表
         cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS {VARIABLE_DEFINITIONS_TABLE_NAME} (
             name TEXT PRIMARY KEY,
@@ -101,30 +99,30 @@ class DataManager(QObject):
         conn.commit()
         logger.info("数据库元数据、自定义常量和变量定义表已确认存在。")
 
-
     def post_import_setup(self):
         """导入完成后，强制重新加载元数据。"""
         self.refresh_schema_info()
-        self.load_global_stats() # Load stats from db
-        # Set default time variable after schema is known
-        self.set_time_variable('frame_index' if 'frame_index' in self.get_variables() else self.get_time_candidates()[0])
+        self.load_global_stats()
+        time_candidates = self.get_time_candidates()
+        if time_candidates:
+            self.set_time_variable('frame_index' if 'frame_index' in time_candidates else time_candidates[0])
         logger.info("数据库设置完成。")
 
     def refresh_schema_info(self, include_id=False):
         """当数据库表结构发生变化时（如添加列），强制刷新元数据。"""
-        self._variables = None; self._frame_count = None; self._sorted_time_values = None
-        self.get_variables(include_id=include_id); self.get_frame_count()
+        self._variables = None
+        self._frame_count = None
+        self._sorted_time_values = None
+        self.get_frame_count()
         logger.info("DataManager schema info has been refreshed.")
 
     def set_global_filter(self, filter_text: str):
-        """设置并验证全局过滤器。"""
         if not filter_text.strip():
             self.global_filter_clause = ""
             logger.info("全局过滤器已清除。")
             self.cache.clear()
             return
         
-        # 简单的安全检查
         test_query = f"SELECT 1 FROM timeseries_data WHERE {filter_text} LIMIT 1;"
         try:
             conn = self.get_db_connection()
@@ -138,7 +136,6 @@ class DataManager(QObject):
         self.cache.clear()
 
     def set_time_variable(self, variable_name: str):
-        """设置用于时间演化的变量。"""
         if variable_name not in self.get_variables():
             msg = f"尝试将时间变量设置为不存在的列: {variable_name}"
             logger.error(msg)
@@ -166,17 +163,12 @@ class DataManager(QObject):
         return self._sorted_time_values
 
     def get_frame_data(self, frame_index: int, required_columns: Optional[List[str]] = None) -> Optional[pd.DataFrame]:
-        """
-        加载指定帧的数据。
-        [OPTIMIZED] 新增 `required_columns` 参数以实现按需加载。
-        """
         time_values = self._get_sorted_time_values()
         if not (0 <= frame_index < len(time_values)):
             return None
 
         time_value = time_values[frame_index]
         
-        # [OPTIMIZED] 缓存键现在必须包含请求的列，以避免返回不完整的数据
         required_cols_tuple = tuple(sorted(required_columns)) if required_columns else None
         cache_key = (frame_index, self.global_filter_clause, self.time_variable, required_cols_tuple)
 
@@ -188,16 +180,12 @@ class DataManager(QObject):
             conn = self.get_db_connection()
             db_vars = self.get_variables(include_id=True)
             
-            # [OPTIMIZED] 构建要查询的列列表
             if required_columns:
-                # 核心列是绘图和计算的基础，必须始终加载
                 core_cols = {'x', 'y', self.time_variable, 'id', 'frame_index'}
                 cols_to_select_set = set(required_columns).union(core_cols)
-                # 只选择数据库中实际存在的列
                 final_cols = [var for var in cols_to_select_set if var in db_vars]
                 cols_to_select_str = ", ".join([f'"{var}"' for var in final_cols])
             else:
-                # 如果未指定，则加载所有列（旧行为，用于数据导出等）
                 cols_to_select_str = ", ".join([f'"{var}"' for var in db_vars])
 
             if not cols_to_select_str:
@@ -231,7 +219,6 @@ class DataManager(QObject):
             conn = self.get_db_connection()
             variables = self.get_variables()
             
-            # Aggregate all variables except for spatial coordinates and the time variable itself.
             vars_to_avg = [var for var in variables if var not in ['x', 'y', self.time_variable, 'frame_index', 'id', 'source_file']]
             avg_cols = ", ".join([f'AVG("{var}") as "{var}"' for var in vars_to_avg])
             
@@ -308,26 +295,34 @@ class DataManager(QObject):
         }
 
     def get_variables(self, include_id: bool = False) -> List[str]:
+        """
+        [FIXED] 改进了缓存逻辑以正确处理 `include_id` 标志。
+        它现在缓存完整列表，并根据请求进行过滤。
+        """
         if self._variables is None:
-            if not self.is_database_ready(): return []
-            try:
-                conn = self.get_db_connection()
-                cursor = conn.execute("PRAGMA table_info(timeseries_data);")
-                all_cols = [row[1] for row in cursor.fetchall()]
-                conn.close()
-                excluded_cols = set() if include_id else {'id'}
-                self._variables = sorted([col for col in all_cols if col not in excluded_cols])
-            except Exception:
+            if not self.is_database_ready():
                 self._variables = []
-        return self._variables
+            else:
+                try:
+                    conn = self.get_db_connection()
+                    cursor = conn.execute("PRAGMA table_info(timeseries_data);")
+                    # 缓存从数据库中获得的完整、未经过滤的列名列表
+                    self._variables = sorted([row[1] for row in cursor.fetchall()])
+                    conn.close()
+                except Exception as e:
+                    logger.error(f"无法从数据库获取变量列表: {e}")
+                    self._variables = []
+        
+        # 现在，根据请求从缓存的完整列表中过滤
+        if not include_id:
+            return [col for col in self._variables if col != 'id']
+        else:
+            return self._variables
 
     def get_time_candidates(self) -> List[str]:
         """获取可用作时间轴的变量列表 (所有数值型变量)。"""
         if not self.is_database_ready(): return []
-        # 'frame_index' is always a candidate
         candidates = ['frame_index']
-        # In a real scenario, you might query dtype, but for simplicity we list all except non-numeric ones
-        # For this implementation, we assume all columns other than 'source_file' are numeric
         all_vars = self.get_variables()
         for var in all_vars:
             if var != 'frame_index' and var != 'source_file' and var != 'id':
@@ -365,7 +360,7 @@ class DataManager(QObject):
         try:
             conn = self.get_db_connection()
             cursor = conn.cursor()
-            cursor.execute(f"DELETE FROM {CUSTOM_CONSTANTS_TABLE_NAME}") # Clear old definitions
+            cursor.execute(f"DELETE FROM {CUSTOM_CONSTANTS_TABLE_NAME}")
             data_to_insert = [(d,) for d in definitions]
             if data_to_insert:
                 cursor.executemany(f"INSERT INTO {CUSTOM_CONSTANTS_TABLE_NAME} (definition) VALUES (?)", data_to_insert)
@@ -389,7 +384,6 @@ class DataManager(QObject):
             return []
 
     def delete_global_stats(self, stat_names: List[str]):
-        """删除指定名称的全局常量值。"""
         if not self.db_path or not stat_names:
             return
         try:
@@ -401,7 +395,6 @@ class DataManager(QObject):
             conn.commit()
             conn.close()
             logger.info(f"已从数据库中删除全局常量值: {stat_names}")
-            # Also remove from memory
             for name in stat_names:
                 self.global_stats.pop(name, None)
         except Exception as e:
@@ -447,33 +440,26 @@ class DataManager(QObject):
         logger.info("内存中的全局统计数据已清除。")
         
     def delete_variable(self, var_name: str):
-        """
-        从数据库中删除一个变量列及其关联的元数据，使用单一连接和事务。
-        """
         core_vars = {'x', 'y', 'id', 'frame_index', 'source_file'}
         if var_name in core_vars:
             raise ValueError(f"无法删除核心变量 '{var_name}'。")
 
         conn = self.get_db_connection()
         try:
-            # SQLite的ALTER TABLE语句会隐式提交事务，所以必须单独执行。
             logger.info(f"正在从 timeseries_data 表中删除列: {var_name}")
             conn.execute(f'ALTER TABLE timeseries_data DROP COLUMN "{var_name}";')
 
-            # 在一个新事务中处理所有元数据表的更改
             cursor = conn.cursor()
             cursor.execute("BEGIN TRANSACTION;")
 
-            # 1. 删除关联的全局统计数据
             stats_pattern_to_delete = f"{var_name}_global_%"
             logger.info(f"正在从 {METADATA_TABLE_NAME} 表中删除键匹配 '{stats_pattern_to_delete}' 的统计数据")
             cursor.execute(f"DELETE FROM {METADATA_TABLE_NAME} WHERE key LIKE ?", (stats_pattern_to_delete,))
             
-            # 2. 从变量定义表中删除
             logger.info(f"正在删除变量 '{var_name}' 的定义")
             cursor.execute(f"DELETE FROM {VARIABLE_DEFINITIONS_TABLE_NAME} WHERE name = ?", (var_name,))
             
-            conn.commit() # 提交元数据更改
+            conn.commit()
             logger.info(f"成功删除变量 '{var_name}' 及其关联数据。")
 
         except Exception as e:
@@ -483,14 +469,10 @@ class DataManager(QObject):
         finally:
             conn.close()
         
-        # 3. 刷新内存中的缓存和状态
         self.refresh_schema_info()
         self.load_global_stats()
 
     def rename_variable(self, old_name: str, new_name: str):
-        """
-        在数据库中重命名一个变量列及其关联的元数据，使用单一连接和事务。
-        """
         core_vars = {'x', 'y', 'id', 'frame_index', 'source_file'}
         if old_name in core_vars:
             raise ValueError(f"无法重命名核心变量 '{old_name}'。")
@@ -501,15 +483,12 @@ class DataManager(QObject):
 
         conn = self.get_db_connection()
         try:
-            # 同样，先执行非事务性的 RENAME COLUMN
             logger.info(f"正在重命名列 '{old_name}' 为 '{new_name}'")
             conn.execute(f'ALTER TABLE timeseries_data RENAME COLUMN "{old_name}" TO "{new_name}";')
 
-            # 在一个新事务中处理所有元数据表的更改
             cursor = conn.cursor()
             cursor.execute("BEGIN TRANSACTION;")
             
-            # 1. 更新关联的全局统计数据键
             stats_pattern = f"{old_name}_global_%"
             logger.info(f"正在更新匹配 '{stats_pattern}' 的统计数据键")
             cursor.execute(f"SELECT key FROM {METADATA_TABLE_NAME} WHERE key LIKE ?", (stats_pattern,))
@@ -524,7 +503,6 @@ class DataManager(QObject):
                 cursor.executemany(f"UPDATE {METADATA_TABLE_NAME} SET key = ? WHERE key = ?", updates)
                 logger.info(f"已更新 {len(updates)} 个统计数据键。")
 
-            # 2. 更新变量定义表中的名称
             logger.info(f"正在更新变量定义表中的 '{old_name}'")
             cursor.execute(f"UPDATE {VARIABLE_DEFINITIONS_TABLE_NAME} SET name = ? WHERE name = ?", (new_name, old_name))
 
@@ -538,6 +516,5 @@ class DataManager(QObject):
         finally:
             conn.close()
 
-        # 3. 刷新内存状态
         self.refresh_schema_info()
         self.load_global_stats()
